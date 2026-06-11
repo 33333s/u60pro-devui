@@ -6,7 +6,9 @@
 
 `u60pro-devui` 是 ZTE U60Pro 前面板屏幕 UI 的一个 clean-room 开源替代实现。目标形态是一份单独的静态 `aarch64` 二进制，只依赖标准 Linux/OpenWRT 接口，不链接 ZTE 私有库，也不提交任何专有资源。
 
-核心设计原则是把 UI 和厂商二进制解耦，这样代码就能被审计、分享，并且可以从源代码重新构建。
+当前 UI 默认配套的后端是 `zwrt-datad` 仓库里的 `u60pro` 分支。UI 只读取该分支输出的 `/tmp/zwrt-datad/state.json`，不直接调用 `ubus`。
+
+核心设计原则是把 UI 和后端解耦，这样代码就能被审计、分享，并且可以从源代码重新构建。
 
 ## 当前状态
 
@@ -33,14 +35,12 @@
 仓库里有两个协作的二进制：
 
 - `u60pro-devui`：基于 LVGL 实现的屏幕 UI，运行在 DRM/KMS 和 evdev 之上
-- `u60-datad`：单进程数据采集器，轮询 ubus 并写出 JSON 快照供 UI 读取
+- `zwrt-datad` 的 `u60pro` 分支：单进程数据采集器，轮询 ubus 并写出 JSON 快照供 UI 读取
 
-UI 不直接调用 ubus，而是读取 `/tmp/u60-datad/state.json`，并以 1 Hz 刷新。这样可以保持显示进程简单，也不会频繁打扰厂商服务。
+UI 不直接调用 ubus，而是读取 `/tmp/zwrt-datad/state.json`，并以 1 Hz 刷新。这样可以保持显示进程简单，也不会频繁打扰后端服务。
 
 ```text
-ubus 服务 -> u60-datad -> /tmp/u60-datad/state.json -> u60pro-devui
-                                                    |
-                                                    +-> 其他插件
+ubus 服务 -> zwrt-datad/u60pro -> /tmp/zwrt-datad/state.json -> u60pro-devui
 ```
 
 `u60pro-devui` 当前使用：
@@ -87,7 +87,7 @@ bash scripts/build.sh
 adb shell "killall -9 u60pro-devui; /etc/init.d/zte_topsw_devui start"
 ```
 
-部署时有几个重要坑需要记住：
+重要坑位：
 
 - 要完全接管面板时，先执行 `/etc/init.d/zte_topsw_devui stop`。单纯 `killall` 不够，因为 procd 可能会把它重新拉起来。
 - 在 `adb push` 之前先杀掉正在运行的 `u60pro-devui`，否则可能出现 `Text file busy`，并且会悄悄保留旧二进制。
@@ -96,7 +96,7 @@ adb shell "killall -9 u60pro-devui; /etc/init.d/zte_topsw_devui start"
 
 ## 数据模型
 
-`u60-datad` 会轮询以下服务族，并把结果规范化成 JSON 快照：
+`zwrt-datad` 的 `u60pro` 分支会轮询以下服务族，并把结果规范化成 JSON 快照：
 
 - `zte_nwinfo_api` 提供的网络和信号信息
 - `zwrt_bsp.*` 提供的电池和充电状态
@@ -133,5 +133,5 @@ adb shell "killall -9 u60pro-devui; /etc/init.d/zte_topsw_devui start"
 - 不提交父目录里的 vendor blobs 或分析产物。
 - 项目必须能仅靠公开源码和标准接口构建。
 - 如果要新增字体或 UI 资源，优先选择开源许可证资源。
-- 如果某条经验对后续开发有帮助，但又不适合只留在本地记忆里，就写进这里或 `docs/HARDWARE.md`。
+- 如果某条经验对后续开发有帮助，但又不适合只留在本地记忆里，就写进这里或 [HARDWARE.md](HARDWARE.md)。
 

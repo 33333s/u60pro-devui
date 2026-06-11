@@ -1,12 +1,14 @@
 # u60pro-devui
 
-这是 ZTE U60Pro 以及类似 SDX 系列 5G MiFi 设备前面板屏幕 UI 的一个 clean-room 开源替代实现。项目基于 **LVGL**，运行在标准 Linux 的 **DRM/KMS** 和 **evdev** 接口之上，目标是做到：
+这是 ZTE U60Pro 以及类似 SDX 系列 5G MiFi 设备前面板屏幕 UI 的一个 clean-room 开源替代实现。项目基于 **LVGL**，运行在标准 Linux 的 **DRM/KMS** 和 **evdev** 接口之上，目标是：
 
-- 独立于原本设备ui运行
-- 完善可显示的参数以及高度自定义的ui
-- 最终可编译成单个静态 `aarch64` 二进制，拷到设备上就能运行
+- 独立于原厂设备 UI 运行
+- 提供可显示、可交互、可扩展的界面
+- 最终编译成单个静态 `aarch64` 二进制，拷到设备上就能运行
 
-> 这是一个基于公开 Linux/OpenWRT 接口的独立重实现，有关U60Pro硬件相关说明见 [docs/HARDWARE.md](docs/HARDWARE.md)。
+> 这是一个基于公开 Linux/OpenWRT 接口的独立重实现，不隶属于 ZTE，也不受其认可。硬件相关说明见 [docs/HARDWARE.md](docs/HARDWARE.md)。
+
+> 当前 UI 默认配套的后端是 `zwrt-datad` 仓库里的 `u60pro` 分支；UI 只读取该分支产出的 `/tmp/zwrt-datad/state.json`，不直接轮询 `ubus`。
 
 ## 架构
 
@@ -26,6 +28,7 @@
 - **显示**：[src/drm_disp.c](src/drm_disp.c) 打开 `/dev/dri/card0`，运行时枚举面板、crtc 和 mode，映射 RGB565 dumb framebuffer，并通过 `DIRTYFB` 提交更新。
 - **触摸**：[src/touch_input.c](src/touch_input.c) 自动探测 `/dev/input/event*` 中的触摸屏设备，并把原始坐标缩放到屏幕坐标。
 - **GUI**：[src/ui.c](src/ui.c) 中放置 LVGL 组件。仓库内置的 demo 页面展示了一个实时运行时间计数器和一个点击计数按钮。
+- **后端**：默认配套 `zwrt-datad` 仓库的 `u60pro` 分支，它负责轮询 `ubus` 并写出 `/tmp/zwrt-datad/state.json`，UI 只负责读取快照。
 - 设备相关的默认值和 fallback 都放在 [include/devui_config.h](include/devui_config.h)。
 
 ## 构建
@@ -57,7 +60,7 @@ pwsh scripts/deploy.ps1
 pwsh scripts/deploy.ps1 -Persist
 ```
 
-如果你想手动启动，前提是 `adb` 已经能连上设备：
+如果你想手动启动，前提是 `adb` 已经能连上设备，并且后端 `zwrt-datad` 的 `u60pro` 分支已经在设备上运行：
 
 ```sh
 adb push u60pro-devui /tmp/ && adb shell '
