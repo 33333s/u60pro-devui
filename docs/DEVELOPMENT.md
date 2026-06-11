@@ -18,17 +18,17 @@
 - 触摸输入工作正常，包括 180 度旋转映射。
 - UI 已经从早期 demo 页面切换为实时仪表盘。
 - 网络、电池、信号、速度、客户端数量、运行时间、CPU 和内存信息都能从后端快照中读取并显示。
-- 支持多页面横向滑动，包含 Home 和 Network 详情页。
-- 电源键逻辑已可用：
-  - 短按切换背光
-  - 长按打开电源菜单
+- 支持多页面横向滑动：Home 仪表盘、Network 详情、WiFi 分享（SSID/密码/二维码）三页，底部圆点指示当前页。
+- 主页信号改为 5 段递增信号条，按强度变色（弱红 / 中橙 / 强绿）。
+- 电源键逻辑已可用：短按切换背光（亮屏/息屏），长按打开电源菜单（关机 / 重启 / 取消）。
+- 已实现开机自启：二进制安装到持久化目录 `/data/u60pro/`，并在 `/etc/rc.local` 中挂钩启动。
 - 经过全屏缓冲区和 flush 路径优化后，渲染已经流畅。
 
 后续页面按设备需求的优先级如下：
 
-- WiFi 分享，包含 SSID 和二维码
 - 短信
 - 设置
+- WiFi 页的多频段 / 访客网络展示（当前只展示主 SSID）
 
 ## 架构
 
@@ -92,7 +92,35 @@ adb shell "killall -9 u60pro-devui; /etc/init.d/zte_topsw_devui start"
 - 要完全接管面板时，先执行 `/etc/init.d/zte_topsw_devui stop`。单纯 `killall` 不够，因为 procd 可能会把它重新拉起来。
 - 在 `adb push` 之前先杀掉正在运行的 `u60pro-devui`，否则可能出现 `Text file busy`，并且会悄悄保留旧二进制。
 - Busybox 不提供 `setsid`，所以后台运行要用 `nohup ... &`，否则 adb 会话结束时进程会收到 `SIGHUP`。
-- PowerShell 5.1 传给原生命令的带引号参数容易被弄乱，复杂 shell 命令最好写成脚本文件再执行。
+- PowerShell 5.1 传给原生命令的带引号参数容易被弄乱（如 `grep "a|b"` 会按 `|` 拆开），复杂 shell 命令最好写成脚本文件再 `adb push` 后执行。
+
+## 开机自启
+
+`/tmp` 是 tmpfs，重启即清空，所以自启必须把二进制装到持久化分区。设备上 `/data` 是既定的扩展目录（ufi-tools、kano 插件都装在这里），因此安装到 `/data/u60pro/`：
+
+```text
+/data/u60pro/u60pro-devui    # UI
+/data/u60pro/zwrt-datad      # 数据后端
+/data/u60pro/start.sh        # 启动脚本：停原厂 UI，nohup 拉起后端 + UI
+```
+
+`/etc/rc.local` 存在且可写（其它插件也在这里挂钩），结尾是 `exit 0`。`scripts/install-autostart.sh` 用 awk 在 `exit 0` 之前**幂等**插入一行：
+
+```sh
+[ -x /data/u60pro/start.sh ] && sh /data/u60pro/start.sh >/tmp/u60pro-boot.log 2>&1 &
+```
+
+安装步骤：
+
+```sh
+adb shell "mkdir -p /data/u60pro"
+adb push u60pro-devui.stripped /data/u60pro/u60pro-devui
+adb push zwrt-datad.stripped   /data/u60pro/zwrt-datad
+adb push scripts/start.sh      /data/u60pro/start.sh
+adb push scripts/install-autostart.sh /tmp/ && adb shell sh /tmp/install-autostart.sh
+```
+
+`start.sh` 用 `nohup ... &` 启动（busybox 无 setsid）。开机时原厂 UI 可能先起来，rc.local 较晚执行时由 `start.sh` 停掉它再接管，会有短暂切换。
 
 ## 数据模型
 
@@ -103,30 +131,40 @@ adb shell "killall -9 u60pro-devui; /etc/init.d/zte_topsw_devui start"
 - `zwrt_bsp.thermal` 提供的 CPU 温度
 - `zwrt_router.api` 提供的已连接客户端数量
 - `zwrt_router.api` 提供的 WAN 状态
-- `zwrt_data` 提供的流量统计和速率
+- `zwrt_data` 提供的流量统计和速率（`get_wwandst`，参数须为 `cid:1, type:1`，否则返回 Invalid argument）
 - `system info` 和 `system board` 提供的运行时间和内存信息
+- `uci wireless.main_2g.{ssid,key,encryption}` 提供的主 WiFi 名称/密码（2.4G/5G 共用一个 SSID）
 
 这个 JSON 快照是后端和 UI 之间的接口契约。如果字段新增、删除或改名，后端 schema 和 UI 的读取逻辑必须一起更新。
 
+注意：快照里 WiFi 信息段的键名用 `wlan` 而不是 `wifi`。因为 UI 端的 `json_get` 是子串匹配，`wifi` 会先命中 `clients.wifi`（客户端计数）导致解析错位、SSID/密码读成空。
+
 ## UI 结构
 
-当前 UI 以 tile view 组织：
+当前 UI 以 LVGL `lv_tileview` 横向分页组织，三页可左右滑动切换：
 
-- Home 页：仪表盘
-- Network 页：无线和 WAN 详情
+- **Home 页**：仪表盘。运营商 / 制式 / 频段、5 段信号条 + RSRP/SNR/RSSI、电池条 + 温度/充电、上下行速率、客户端数、运行时间/CPU/内存。
+- **Network 页**：5G NR 频段/带宽/信道、RSRP/RSRQ/SNR/RSSI、PCI/Cell ID、PLMN、LTE、WAN 状态。
+- **WiFi 页**：主 SSID、密码，以及用 `lv_qrcode` 生成的标准 WiFi 二维码（`WIFI:T:WPA;S:..;P:..;;`），扫码即可连。二维码只在凭据变化时重建，避免每秒重绘。
 
-顶层 layer 也用于临时覆盖层，例如电源菜单。页码圆点是直接画在 top layer 上的 LVGL 对象，不是 label recolor。
+顶层 layer（`lv_layer_top`）用于覆盖层：电源菜单和页码圆点都画在这里。圆点是直接画的 LVGL 对象（`lv_obj` 小圆），不是 label recolor —— LVGL v9 已移除 `lv_label_set_recolor`。获取当前页用 `lv_tileview_get_tile_active()`。
+
+### 电源键与背光
+
+- 真实电源键是 `/dev/input/event0`（`pmic_pwrkey`），键码 `KEY_POWER`(116)。注意触摸屏（event3）也会上报 KEY_POWER，所以探测时要求设备**有 KEY_POWER 且没有 EV_ABS**，以排除触摸屏。
+- 背光走 `/sys/class/leds/led:lcd/brightness`（0..255，没有 `/sys/class/backlight`）。
+- 交互：**短按 = 亮屏/息屏**；**长按（≥1.2s）= 切换电源菜单**（Power Off→`poweroff` / Reboot→`reboot` / Cancel）。按键用 50ms 的 `lv_timer` 轮询。
+- 菜单按钮目前是英文，中文需另加 FreeType + 开源 CJK 字体。
 
 ## 性能说明
 
-让 UI 恢复流畅的关键优化主要有：
+早期"刷新率很低 / 滑动卡顿"的根因是：LVGL draw buffer 只有 1/8 屏（一次重绘要多次零碎 flush），以及 flush 回调里对整屏做逐像素旋转拷贝。关键优化：
 
-- 改成全屏 draw buffer
-- 简化旋转后的 flush 路径
-- 降低主循环的 sleep 上限
-- 把 LVGL 刷新周期设为 0 ms
+- draw buffer 改成全屏双缓冲：一次整屏重绘（翻页）= 一次 flush + 一次 DIRTYFB，而不是很多小块。
+- 旋转拷贝用指针递增重写；非旋转路径直接按行 `memcpy`。
+- 主循环 sleep 上限 16ms → 8ms；`lv_conf.h` 的 `LV_DEF_REFR_PERIOD` 33ms → 20ms。
 
-这些改动很重要，因为这块屏更接近命令式显示而不是连续扫描屏。对它来说，完整页面刷新应该尽量表现为一次 flush，而不是很多零碎小块更新。
+这些改动很重要，因为这块屏更接近命令式显示（DIRTYFB 推帧、`vrefresh=1`）而不是连续扫描屏。对它来说，完整页面刷新应该尽量表现为一次 flush，而不是很多零碎小块更新。
 
 ## 仓库约定
 
