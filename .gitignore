@@ -1,0 +1,22 @@
+# Build artifacts
+*.o
+*.a
+/u60pro-devui
+/u60pro-devui.stripped
+
+# --- Do NOT commit vendor blobs (analysis only, proprietary) ---
+# These belong to ZTE and must never enter this open-source repo.
+zte_topsw_devui
+zte_topsw_devui*.txt
+libzte_*.so
+*.strings.txt
+*.llvm-readobj.txt
+usr_ui/
+drm_text
+*.ttf
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
