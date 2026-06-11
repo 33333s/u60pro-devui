@@ -15,15 +15,19 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* ---- shared widget handles ---- */
 /* Home page */
-static lv_obj_t *s_operator, *s_nettype, *s_sig_bar, *s_sig_detail;
+static lv_obj_t *s_operator, *s_nettype, *s_sig_seg[5], *s_sig_detail;
 static lv_obj_t *s_bat_bar, *s_bat_detail, *s_down, *s_up, *s_clients, *s_sys;
 /* Network page */
 static lv_obj_t *s_n_band, *s_n_nrsig, *s_n_cell, *s_n_plmn, *s_n_lte, *s_n_wan;
+/* WiFi page */
+static lv_obj_t *s_w_ssid, *s_w_pass, *s_w_enc, *s_w_qr;
 /* nav + power */
-static lv_obj_t   *s_tv, *s_tile_home, *s_tile_net, *s_dot0, *s_dot1;
+#define UI_PAGES 3
+static lv_obj_t   *s_tv, *s_tiles[UI_PAGES], *s_dots[UI_PAGES];
 static key_input_t s_key;
 static lv_obj_t   *s_power_menu;
 
@@ -64,12 +68,16 @@ static void build_home(lv_obj_t *t)
     lv_label_set_text(s_nettype, "");
 
     mkheader(t, "SIGNAL", 84);
-    s_sig_bar = lv_bar_create(t);
-    lv_obj_set_size(s_sig_bar, 296, 14);
-    lv_obj_align(s_sig_bar, LV_ALIGN_TOP_MID, 0, 104);
-    lv_bar_set_range(s_sig_bar, 0, 100);
-    lv_obj_set_style_bg_color(s_sig_bar, lv_color_hex(0x4ea1ff), LV_PART_INDICATOR);
-    s_sig_detail = mklabel(t, 12, 124, &lv_font_montserrat_14, 0xc0c8d0);
+    for (int i = 0; i < 5; i++) {              /* 5 rising segment bars */
+        s_sig_seg[i] = lv_obj_create(t);
+        lv_obj_remove_style_all(s_sig_seg[i]);
+        int h = 10 + i * 5;
+        lv_obj_set_size(s_sig_seg[i], 20, h);
+        lv_obj_set_style_radius(s_sig_seg[i], 2, 0);
+        lv_obj_set_style_bg_opa(s_sig_seg[i], LV_OPA_COVER, 0);
+        lv_obj_align(s_sig_seg[i], LV_ALIGN_TOP_LEFT, 14 + i * 26, 128 - h);
+    }
+    s_sig_detail = mklabel(t, 12, 134, &lv_font_montserrat_14, 0xc0c8d0);
 
     mkheader(t, "BATTERY", 156);
     s_bat_bar = lv_bar_create(t);
@@ -106,6 +114,57 @@ static void build_net(lv_obj_t *t)
     s_n_wan   = mklabel(t, 12, 272, &lv_font_montserrat_16, 0xa0ffa0);
 }
 
+static void build_wifi(lv_obj_t *t)
+{
+    lv_obj_t *title = lv_label_create(t);
+    lv_label_set_text(title, "WIFI");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x4ea1ff), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
+
+    s_w_ssid = lv_label_create(t);
+    lv_obj_set_style_text_font(s_w_ssid, &lv_font_montserrat_20, 0);
+    lv_obj_align(s_w_ssid, LV_ALIGN_TOP_MID, 0, 42);
+
+    s_w_pass = lv_label_create(t);
+    lv_obj_set_style_text_font(s_w_pass, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_w_pass, lv_color_hex(0xc0c8d0), 0);
+    lv_obj_align(s_w_pass, LV_ALIGN_TOP_MID, 0, 74);
+
+    s_w_qr = lv_qrcode_create(t);
+    lv_qrcode_set_size(s_w_qr, 184);
+    lv_qrcode_set_dark_color(s_w_qr, lv_color_black());
+    lv_qrcode_set_light_color(s_w_qr, lv_color_white());
+    lv_obj_set_style_border_color(s_w_qr, lv_color_white(), 0);
+    lv_obj_set_style_border_width(s_w_qr, 6, 0);    /* white quiet zone */
+    lv_obj_align(s_w_qr, LV_ALIGN_TOP_MID, 0, 104);
+
+    s_w_enc = lv_label_create(t);
+    lv_obj_set_style_text_font(s_w_enc, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_w_enc, lv_color_hex(0x9aa4ae), 0);
+    lv_obj_align(s_w_enc, LV_ALIGN_TOP_MID, 0, 306);
+}
+
+static void refresh_wifi(const devui_data_t *d)
+{
+    static char last_qr[256] = "";
+    int open = (strstr(d->wifi_enc, "none") != NULL) || d->wifi_key[0] == 0;
+    char qr[256];
+
+    lv_label_set_text(s_w_ssid, d->wifi_ssid[0] ? d->wifi_ssid : "—");
+    lv_label_set_text_fmt(s_w_pass, "key: %s", d->wifi_key[0] ? d->wifi_key : "(open)");
+    lv_label_set_text(s_w_enc, open ? "open  ·  scan to join" : "WPA  ·  scan to join");
+
+    if (open) snprintf(qr, sizeof qr, "WIFI:T:nopass;S:%s;;", d->wifi_ssid);
+    else      snprintf(qr, sizeof qr, "WIFI:T:WPA;S:%s;P:%s;;", d->wifi_ssid, d->wifi_key);
+
+    /* Rebuild the QR bitmap only when the credentials actually change. */
+    if (strcmp(qr, last_qr) != 0 && d->wifi_ssid[0]) {
+        lv_qrcode_update(s_w_qr, qr, strlen(qr));
+        strcpy(last_qr, qr);
+    }
+}
+
 /* ---- refresh ---- */
 static void refresh_cb(lv_timer_t *t)
 {
@@ -114,7 +173,7 @@ static void refresh_cb(lv_timer_t *t)
     char b1[32];
 
     if (!data_refresh(&d)) {
-        lv_label_set_text(s_operator, "u60-datad offline");
+        lv_label_set_text(s_operator, "zwrt-datad offline");
         lv_label_set_text(s_nettype, "start the backend");
         return;
     }
@@ -122,7 +181,10 @@ static void refresh_cb(lv_timer_t *t)
     /* Home */
     lv_label_set_text(s_operator, d.operator_name[0] ? d.operator_name : "—");
     lv_label_set_text_fmt(s_nettype, "%s  %s", d.net_type, d.band);
-    lv_bar_set_value(s_sig_bar, d.bars * 20, LV_ANIM_OFF);
+    uint32_t sig_col = d.bars <= 1 ? 0xff5040 : d.bars <= 2 ? 0xffa040 : 0x4caf50;
+    for (int i = 0; i < 5; i++)
+        lv_obj_set_style_bg_color(s_sig_seg[i],
+            lv_color_hex(i < d.bars ? sig_col : 0x2a3038), 0);
     lv_label_set_text_fmt(s_sig_detail, "RSRP %d  SNR %s  RSSI %d",
                           d.nr_rsrp, d.nr_snr[0] ? d.nr_snr : "-", d.nr_rssi);
     lv_bar_set_value(s_bat_bar, d.bat_percent, LV_ANIM_OFF);
@@ -153,6 +215,9 @@ static void refresh_cb(lv_timer_t *t)
     else
         lv_label_set_text(s_n_lte, "not aggregated");
     lv_label_set_text(s_n_wan, d.wan_status[0] ? d.wan_status : "-");
+
+    /* WiFi */
+    refresh_wifi(&d);
 }
 
 /* ---- power menu ---- */
@@ -228,9 +293,10 @@ static lv_obj_t *make_dot(void)
 }
 static void update_dots(void)
 {
-    int home = (lv_tileview_get_tile_active(s_tv) == s_tile_home);
-    lv_obj_set_style_bg_color(s_dot0, lv_color_hex(home ? 0x4ea1ff : 0x3a4048), 0);
-    lv_obj_set_style_bg_color(s_dot1, lv_color_hex(home ? 0x3a4048 : 0x4ea1ff), 0);
+    lv_obj_t *act = lv_tileview_get_tile_active(s_tv);
+    for (int i = 0; i < UI_PAGES; i++)
+        lv_obj_set_style_bg_color(s_dots[i],
+            lv_color_hex(s_tiles[i] == act ? 0x4ea1ff : 0x3a4048), 0);
 }
 static void tv_changed_cb(lv_event_t *e) { LV_UNUSED(e); update_dots(); }
 
@@ -245,17 +311,18 @@ void ui_create(void)
     lv_obj_set_style_bg_opa(s_tv, LV_OPA_COVER, 0);
     lv_obj_set_scrollbar_mode(s_tv, LV_SCROLLBAR_MODE_OFF);
 
-    s_tile_home = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_HOR);
-    s_tile_net  = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_HOR);
-    build_home(s_tile_home);
-    build_net(s_tile_net);
+    for (int i = 0; i < UI_PAGES; i++)
+        s_tiles[i] = lv_tileview_add_tile(s_tv, i, 0, LV_DIR_HOR);
+    build_home(s_tiles[0]);
+    build_net(s_tiles[1]);
+    build_wifi(s_tiles[2]);
     lv_obj_add_event_cb(s_tv, tv_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     /* page indicator dots (top layer, bottom center) */
-    s_dot0 = make_dot();
-    s_dot1 = make_dot();
-    lv_obj_align(s_dot0, LV_ALIGN_BOTTOM_MID, -8, -6);
-    lv_obj_align(s_dot1, LV_ALIGN_BOTTOM_MID,  8, -6);
+    for (int i = 0; i < UI_PAGES; i++) {
+        s_dots[i] = make_dot();
+        lv_obj_align(s_dots[i], LV_ALIGN_BOTTOM_MID, (i - (UI_PAGES - 1) / 2) * 16, -6);
+    }
     update_dots();
 
     lv_timer_create(refresh_cb, 1000, NULL);

@@ -33,6 +33,9 @@ typedef struct {
     /* clients */
     int  clients_total, clients_wifi, clients_lan;
 
+    /* wifi (main SSID) */
+    char wifi_ssid[64], wifi_key[64], wifi_enc[24];
+
     /* traffic (bytes, bytes/s) */
     long rx_speed, tx_speed, rx_bytes, tx_bytes;
 

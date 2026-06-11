@@ -10,7 +10,7 @@
 #include <string.h>
 
 #ifndef DEVUI_STATE_FILE
-#define DEVUI_STATE_FILE "/tmp/u60-datad/state.json"
+#define DEVUI_STATE_FILE "/tmp/zwrt-datad/state.json"
 #endif
 
 static void getstr(const char *obj, const char *key, char *dst, size_t n)
@@ -66,6 +66,12 @@ int data_refresh(devui_data_t *d)
         d->clients_total = (int)json_get_int(sec, "total", 0);
         d->clients_wifi  = (int)json_get_int(sec, "wifi", 0);
         d->clients_lan   = (int)json_get_int(sec, "lan", 0);
+    }
+
+    if (json_get(buf, "wlan", sec, sizeof sec)) {
+        getstr(sec, "ssid", d->wifi_ssid, sizeof d->wifi_ssid);
+        getstr(sec, "key",  d->wifi_key,  sizeof d->wifi_key);
+        getstr(sec, "enc",  d->wifi_enc,  sizeof d->wifi_enc);
     }
 
     if (json_get(buf, "traffic", sec, sizeof sec)) {

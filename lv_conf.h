@@ -42,6 +42,9 @@
 #define LV_FONT_MONTSERRAT_28 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_16
 
+/* QR code widget for the WiFi share page. */
+#define LV_USE_QRCODE 1
+
 /* No bundled demos/examples in the binary. */
 #define LV_USE_DEMO_WIDGETS 0
 #define LV_BUILD_EXAMPLES   0
