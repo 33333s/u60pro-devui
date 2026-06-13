@@ -30,9 +30,11 @@
 
 ```text
 /data/ui/
-├── 01-signal.html    # 第 1 页（按文件名排序）
-├── 02-wifi.html      # 第 2 页
-├── 03-system.html    # 第 3 页
+├── 01-signal.html    # 第 1 页（按文件名排序）：信号 / 载波
+├── 02-wifi.html      # 第 2 页：WiFi / 设备 / DHCP
+├── 03-lock.html      # 第 3 页：选网 / 锁频
+├── 04-charts.html    # 第 4 页：CPU / 内存 / 网速 图表
+├── 05-system.html    # 第 5 页：系统信息 / 屏幕 / 开关
 ├── menu.html         # 电源键长按弹出的菜单（不算翻页）
 └── style.css         # 所有页面共享的样式
 ```
@@ -99,50 +101,62 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 |------|------|
 | `{{STATUSBAR}}` | 顶部状态栏：时间 · 实时网速 · 制式 · 信号格 · 电池 · 电量 |
 | `{{DOTS}}` | 底部翻页圆点，自动高亮当前页 |
-| `{{NR_ROWS}}` | NR 每个载波一张卡片（频段·频宽 / PCI / RSRP / SINR） |
-| `{{LTE_ROWS}}` | LTE 每个载波一张卡片 |
+| `{{CARRIERS}}` | 信号页载波区：表头（组网模式 · L LTE + M NR 载波 · 总X MHz）+ 每载波一张卡片（频段·频宽 / EARFCN / PCI / RSRP / SINR，按质量上色，未激活置灰） |
+| `{{NETSEG}}` | 选网方式分段控件（自动 / 5G SA / 5G NSA / 4G，当前模式高亮，支持点/滑） |
+| `{{TOAST}}` | 居中提示气泡（无提示时为空），如"锁频成功" |
+
+> 信号格条已并入 `{{STATUSBAR}}`；锁频的频段芯片由程序在二级弹窗里生成，页面只需用 `{{CURSA}}/{{CURNSA}}/{{CURLTE}}` 显示当前锁定摘要。
 
 ### 数据令牌（标量值）
 
 | 令牌 | 含义 | 例 |
 |------|------|----|
-| `{{TIME}}` | 时间 | `14:30` |
-| `{{THEME}}` | 主题类名 | `dark` / `light` |
-| `{{OPER}}` | 运营商（大陆四家显示中文） | `中国移动` |
-| `{{NETTYPE}}` | 制式 | `SA` |
-| `{{GEN}}` / `{{GENCLASS}}` | 网络代际文字 / 对应样式类 | `5G+` / `g5p` |
-| `{{BAT}}` / `{{BATCLASS}}` | 电量百分比 / 低电量类 | `100` / `low` |
-| `{{QCI}}` / `{{AMBR}}` | QoS QCI / 速率上限 | `6` / `3000/200 Mbps` |
-| `{{CA_CC}}` / `{{CA_BW}}` | NR 载波数 / 聚合频宽(MHz) | `2` / `130` |
-| `{{LTE_SHOW}}` | 没有 LTE 时为 `display:none` | |
-| `{{RXSPEED}}` `{{TXSPEED}}` | 下载/上传速率 | `1.2 MB/s` |
+| `{{TIME}}` `{{THEME}}` | 时间 / 主题类名 | `14:30` / `dark` |
+| `{{OPER}}` `{{NETTYPE}}` | 运营商（大陆四家中文）/ 制式 | `中国移动` / `SA` |
+| `{{GEN}}` `{{GENCLASS}}` | 网络代际文字 / 样式类 | `5G+` / `g5p` |
+| `{{BAT}}` `{{BATCLASS}}` | 电量% / 低电量类 | `100` / `low` |
+| `{{QCI}}` `{{AMBR}}` | QoS QCI / 速率上限 | `6` / `3000/200 Mbps` |
+| `{{RXSPEED}}` `{{TXSPEED}}` | 下载/上传速率（单位随设置） | `1.2 MB/s` |
 | `{{RXBYTES}}` `{{TXBYTES}}` | 本次会话流量 | `120.5 MB` |
-| `{{PCI}}` `{{ARFCN}}` `{{ARFCNBTN}}` | 小区 PCI / ARFCN(默认打码) / 显示按钮文字 | |
+| `{{PCI}}` | 小区 PCI | `273` |
+| `{{CELLID}}` `{{CELLBTN}}` | NR Cell ID(默认打码) / 显示按钮文字 | `8641413121` / `显示` |
 | `{{SSID}}` `{{KEY}}` `{{KEYBTN}}` `{{ENC}}` | WiFi 名 / 密码(默认打码) / 显示按钮 / 加密 | |
-| `{{CLIENTS}}` | 已连接设备数 | `1` |
-| `{{MODEL}}` `{{FW}}` `{{UPTIME}}` | 型号 / 固件 / 运行时间 | |
-| `{{CPU}}` `{{MEM}}` | CPU 温度 / 内存占用% | `46` / `52` |
-| `{{ADBCLASS}}` `{{ADBSTATE}}` | ADB 开关类/状态文字 | `on` / `已开启` |
-| `{{THEMECLASS}}` `{{THEMESTATE}}` | 主题开关类/状态 | `on` / `浅色模式` |
-| `{{SPUNITCLASS}}` `{{SPUNITSTATE}}` | 速率单位开关类/状态 | `on` / `比特率 Mbps` |
-| `{{PAGE}}` `{{NPAGES}}` | 当前页 / 总页数 | `1` / `3` |
+| `{{CLIENTS}}` `{{CLIENTLIST}}` | 设备数 / 已连接设备列表(整段) | `2` |
+| `{{DHCP_IP}}` `{{DHCP_POOL}}` `{{DHCP_LEASE}}` | 网关 / 地址池 / 租期 | `192.168.0.1` |
+| `{{MODEL}}` `{{FW}}` `{{SWVER}}` `{{IMEI}}` `{{IMEIBTN}}` | 型号 / 固件 / 版本号 / IMEI(打码) / 显示按钮 | |
+| `{{UPTIME}}` `{{UPSHORT}}` | 运行时间(完整 / 紧凑) | `2d 03:04:05` / `2天3时` |
+| `{{CPUUSAGE}}` `{{CPUTEMP}}` `{{BATTEMP}}` | CPU占用% / CPU温度 / 电池温度 | `17` / `46` / `33` |
+| `{{MEM}}` `{{MEMDETAIL}}` | 内存占用% / 已用·总(MB) | `52` / `837/1590 MB` |
+| `{{BRIGHT}}` | 屏幕亮度% | `80` |
+| `{{AUTOOFF}}` | 自动息屏预设按钮组(整段，当前项高亮) | |
+| `{{CURSA}}` `{{CURNSA}}` `{{CURLTE}}` | 各制式当前锁定频段摘要 | `已锁 n41 n78` |
+| `{{ADBCLASS}}/{{ADBSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMECLASS}}/{{THEMESTATE}}` `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{DTAPCLASS}}/{{DTAPSTATE}}` | 各开关的类(`on`/`off`) 与状态文字 | `on` / `已开启` |
+| `{{PAGE}}` `{{NPAGES}}` | 当前页 / 总页数 | `3` / `5` |
 
-> 安全提示：`{{KEY}}`（WiFi 密码）和 `{{ARFCN}}` **默认是打码的**（显示 `*`），只有点了对应的"显示"动作才明文。请保留这个行为，别把密码默认明文摆屏幕上。
+> 安全提示：`{{KEY}}`(WiFi 密码)、`{{CELLID}}`、`{{IMEI}}` **默认打码**(显示 `*`)，点对应"显示"动作才明文。请保留此行为。
 
 ---
 
 ## 6. 动作 `href="act:xxx"`
 
-把一个链接的 `href` 写成 `act:动作名`，点它就会触发动作，程序处理完重绘当前页：
+把链接 `href` 写成 `act:动作名`，点它触发动作并重绘当前页：
 
 | 动作 | 效果 |
 |------|------|
-| `act:theme` | 深色 / 浅色主题切换 |
-| `act:revealkey` | 明文 / 打码显示 WiFi 密码 |
-| `act:revealarfcn` | 显示 / 隐藏小区 ARFCN |
-| `act:spunit` | 网速单位 Mbps(比特率) / MB/s(字节率) 切换 |
-| `act:adb` | 切换 ADB 调试（发 ubus 改 USB 模式；`debug`=开，`user`=关） |
-| `act:poweroff` / `act:reboot` / `act:close` / `act:menu` | 关机 / 重启 / 关菜单 / 开菜单（一般只在 `menu.html` 用） |
+| `act:theme` | 深色 / 浅色切换 |
+| `act:revealkey` `act:revealcell` `act:revealimei` | 明文/打码 显示 WiFi 密码 / Cell ID / IMEI |
+| `act:spunit` | 网速单位 Mbps(比特率) / MB/s(字节率) |
+| `act:adb` | 切换 ADB 调试(`debug`=开 / `user`=关) |
+| `act:wifi` `act:nfc` | 切换 WiFi 开关 / NFC 碰一碰 |
+| `act:dtap` | 切换"双击点亮"(息屏后双击唤醒) |
+| `act:bright` | 在亮度滑条上点/拖设置亮度（按命中位置算） |
+| `act:autooff:<毫秒>` | 选自动息屏预设（`act:autooff:30000` 等，`0`=关） |
+| `act:net:<值>` | 切选网模式（`WL_AND_5G`/`Only_5G`/`LTE_AND_5G`/`Only_LTE`） |
+| `act:openmodal:sa` `:nsa` `:lte` | 打开对应制式的锁频二级弹窗 |
+| `act:bsa:<频段>` `act:bnsa:<n>` `act:blte:<n>` | 在弹窗里勾选/取消某频段（仅本地缓存） |
+| `act:mall` `act:minv` `act:mapply` | 弹窗：全选/全不选 · 反选 · 应用（应用才提交锁频） |
+| `act:resetband` | 解锁所有频段并恢复默认 |
+| `act:poweroff` `act:reboot` `act:close` `act:menu` | 关机 / 重启 / 关菜单 / 开菜单（一般只在 `menu.html`） |
 
 例：一个开关按钮
 
@@ -151,6 +165,8 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 ```
 
 `{{THEMECLASS}}` 是 `on`/`off`，配合 CSS 的 `.sw.on` / `.sw.off` 把圆钮画在右/左，就是一个拨动开关。
+
+> 滑条/分段控件类（亮度 `id="bright-bar"`、选网 `id="netseg"`）由程序按元素 `id` 定位并处理点击/拖动，所以这些元素**要带对应的 `id`**。
 
 ---
 
