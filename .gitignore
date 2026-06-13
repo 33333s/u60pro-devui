@@ -9,6 +9,9 @@
 /fbserver
 /touchsim
 
+# Release packaging
+/ui.tar.gz
+
 # Debug / capture artifacts
 /fb.dump
 *.ppm
