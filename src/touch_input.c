@@ -52,6 +52,8 @@ struct input_absinfo_compat {
 #define EVIOCGBIT_(ev, len) _IOC(_IOC_READ, 'E', 0x20 + (ev), len)
 #define EVIOCGABS_(abs)     _IOC(_IOC_READ, 'E', 0x40 + (abs), sizeof(struct input_absinfo_compat))
 
+static unsigned long s_report_count = 0;   /* total SYN_REPORT samples */
+
 static int test_bit(const unsigned long *arr, int bit)
 {
     return (arr[bit / (8 * sizeof(long))] >> (bit % (8 * sizeof(long)))) & 1UL;
@@ -194,6 +196,7 @@ void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed)
             t->cur_x = sx;
             t->cur_y = sy;
             t->pressed = new_press;
+            s_report_count++;
         }
     }
 
@@ -201,6 +204,8 @@ void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed)
     *y = t->cur_y;
     *pressed = t->pressed;
 }
+
+unsigned long touch_input_report_count(void) { return s_report_count; }
 
 void touch_input_close(touch_input_t *t)
 {

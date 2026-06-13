@@ -1,0 +1,120 @@
+/* Shared styles for /data/ui. 320x480, litehtml (no grid/JS/animation).
+   Theme via <body class="{{THEME}}">  (dark | light). */
+
+html, body { margin: 0; padding: 0; }
+body {
+  width: 320px; min-height: 480px; position: relative;
+  font-family: sans-serif; font-size: 13px;
+}
+body.dark  { background: #15161a; color: #e9ebee; }
+body.light { background: #eceef1; color: #1b1d22; }
+
+/* ---- status bar ---- */
+.sbar { height: 26px; line-height: 26px; padding: 0 10px; overflow: hidden; font-size: 13px; }
+body.dark  .sbar { background: #1d2733; }
+body.light .sbar { background: #d8e2f0; }
+.sbar .clk { font-weight: 700; }
+.sbar .r { float: right; }
+.sbar .r > span { display: inline-block; margin-left: 6px; vertical-align: middle; }
+.spd { font-size: 11px; color: #c2c8d0; }
+body.light .spd { color: #3a4048; }
+
+/* generation as plain text, unified white (inherits bar text color) */
+.gt { font-size: 12px; font-weight: 700; }
+
+/* generation badge (unused in status bar now; kept for other pages). Backgrounds
+ * are scoped to .gen so the .gt text spans don't pick up a colored box. */
+.gen { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 6px;
+       border-radius: 5px; color: #fff; }
+.gen.g5ga { background: #c026d3; } .gen.g5p { background: #7c4def; } .gen.g5 { background: #2f6fe0; }
+.gen.g4 { background: #1f9d4d; } .gen.glte { background: #0b96b8; } .gen.g3 { background: #6b7280; }
+
+/* battery icon + charge sweep. battery body + terminal are wrapped in .bw so the
+ * inter-item margin applies to the wrapper, not between body and terminal. */
+.bw { display: inline-block; vertical-align: middle; white-space: nowrap; font-size: 0; }
+.batt { display: inline-block; width: 24px; height: 12px; padding: 1px; position: relative;
+        border: 1px solid currentColor; border-radius: 3px; vertical-align: middle; }
+.batt .bf { display: block; height: 100%; border-radius: 1px; background: #5ec85e; }
+.batt.low .bf { background: #e8533a; }
+.batt .glow { position: absolute; top: 1px; bottom: 1px; width: 5px; border-radius: 2px;
+              background: #ffffff; opacity: 0.55; }
+.tip { display: inline-block; width: 2px; height: 6px; border-radius: 0 2px 2px 0;
+       background: currentColor; vertical-align: middle; }
+.bp { font-size: 12px; vertical-align: middle; }
+
+/* ---- cards ---- */
+.card { margin: 7px 8px 0; border-radius: 8px; padding: 8px 10px; }
+body.dark  .card { background: #23262c; border: 1px solid #323843; }
+body.light .card { background: #ffffff; border: 1px solid #dde1e8; }
+.title { font-size: 15px; font-weight: 700; overflow: hidden; }
+.title .sub { font-size: 12px; font-weight: 400; color: #6f7681; margin-left: 6px; }
+.ok { color: #5ec85e; }
+.r { float: right; }
+.sec { color: #8a929d; font-size: 11px; padding: 6px 0 3px; letter-spacing: 1px; }
+
+table { width: 100%; border-collapse: collapse; }
+td { padding: 3px 0; vertical-align: middle; font-size: 13px; }
+td.kv-l { width: 96px; color: #8a929d; white-space: nowrap; }
+.val { text-align: right; }
+a.rev { text-decoration: none; font-size: 12px; padding: 1px 8px; border-radius: 4px; }
+body.dark  a.rev { background: #2c2f37; color: #cfd4dc; }
+body.light a.rev { background: #d3d9e2; color: #2a2f38; }
+
+/* ---- signal meter (status bar): strength = number of filled cells ---- */
+.sig { display: inline-block; height: 17px; vertical-align: middle; line-height: 17px; }
+.sig i { display: inline-block; width: 4px; margin-right: 2px; vertical-align: bottom;
+         background: #3a4048; border-radius: 1px; }
+body.light .sig i { background: #c4cad3; }
+.sig i.on { background: #ffffff; }
+body.light .sig i.on { background: #2a2f38; }
+
+/* qci / ambr (signal card, top-right) */
+.qa { float: right; text-align: right; font-size: 11px; line-height: 1.5; color: #9aa2ad; }
+.qa b { color: #cdd3db; font-weight: 700; }
+body.light .qa b { color: #2a2f38; }
+
+/* per-carrier card */
+.ccd { padding: 7px 2px 6px; overflow: hidden; }
+body.dark  .ccd { border-top: 1px solid #2d323b; }
+body.light .ccd { border-top: 1px solid #e6e9ef; }
+.cb { font-size: 16px; font-weight: 700; }
+.cbw { font-size: 12px; color: #8a929d; }
+.cpci { float: right; font-size: 12px; color: #8a929d; padding-top: 3px; }
+.cm { margin-top: 4px; font-size: 14px; }
+.cm .ml { font-size: 11px; color: #8a929d; margin-right: 4px; }
+.cm .ml2 { margin-left: 22px; }
+.q-good { color: #4cc56a; font-weight: 700; }
+.q-mid  { color: #e9c244; font-weight: 700; }
+.q-bad  { color: #ec5a40; font-weight: 700; }
+.q-off  { color: #6b7280; font-weight: 700; }       /* configured but not active */
+.coff { display: inline-block; font-size: 10px; line-height: 15px; color: #6b7280;
+        margin-left: 12px; padding: 0 6px; border: 1px solid #4a515c; border-radius: 4px;
+        vertical-align: middle; }
+
+.big { font-size: 26px; font-weight: 700; }
+
+/* ---- toggle switch (settings) ---- */
+.row { overflow: hidden; padding: 6px 0; }
+body.dark  .row + .row { border-top: 1px solid #2d323b; }
+body.light .row + .row { border-top: 1px solid #e6e9ef; }
+.row .lab { font-size: 14px; }
+.row .lab .st { display: block; font-size: 11px; color: #8a929d; margin-top: 1px; }
+.sw { float: right; display: inline-block; width: 44px; height: 24px; border-radius: 12px;
+      position: relative; text-decoration: none; margin-top: 2px; }
+.sw.off { background: #4a515c; } .sw.on { background: #34b863; }
+.sw .kn { position: absolute; top: 2px; width: 20px; height: 20px; border-radius: 10px; background: #fff; }
+.sw.off .kn { left: 2px; } .sw.on .kn { left: 22px; }
+
+/* ---- bottom page dots (centered, no box) ---- */
+.dots { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; }
+.dots .dot { display: inline-block; width: 6px; height: 6px; margin: 0 4px; border-radius: 3px;
+             background: #4a515c; }
+body.light .dots .dot { background: #b7bec9; }
+.dots .dot.on { background: #d0d6de; width: 16px; }
+body.light .dots .dot.on { background: #4a515c; }
+
+/* ---- power menu ---- */
+.menu-title { text-align: center; font-size: 22px; color: #9aa2ad; padding: 30px 0 18px; }
+a.mbtn { display: block; text-decoration: none; color: #fff; text-align: center; font-size: 19px;
+         padding: 16px; margin: 0 26px 16px; border-radius: 10px; }
+.mb-off { background: #d2483c; } .mb-reboot { background: #e0892a; } .mb-cancel { background: #4a515c; }

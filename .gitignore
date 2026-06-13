@@ -1,8 +1,24 @@
-# Build artifacts
+# Build artifacts (binaries are published as GitHub Releases, not committed)
 *.o
 *.a
 /u60pro-devui
 /u60pro-devui.stripped
+/html-poc
+/html-poc.stripped
+/drm_test
+/fbserver
+/touchsim
+
+# Debug / capture artifacts
+/fb.dump
+*.ppm
+after_swipe.png
+frame_*.png
+screenshot.png
+
+# Generated icon assets — the renderer does not draw images yet, so these are
+# unused. Author UI with CSS shapes / Unicode instead (see docs/UI-GUIDE.md).
+ui/icon/
 
 # --- Do NOT commit vendor blobs (analysis only, proprietary) ---
 # These belong to ZTE and must never enter this open-source repo.

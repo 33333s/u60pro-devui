@@ -1,6 +1,41 @@
 # 更新日志
 
-## Unreleased
+## v0.2.0 - 2026-06-13
+
+这一版是一次**架构级改动**：界面从内置的 LVGL 代码改为**运行时渲染 HTML/CSS**。程序变成固定的"框架"，真正的界面是 `/data/ui` 目录里的 HTML 文件，用户改界面不用再重新编译。详见新增的 [docs/UI-GUIDE.md](docs/UI-GUIDE.md)。
+
+### 架构
+
+- **改用 litehtml + FreeType 渲染 HTML/CSS** 到 RGB565 framebuffer，全静态链接 aarch64 musl 单文件。
+- 界面与程序解耦：`/data/ui/NN-名字.html` 每个文件一页，`style.css` 共享样式，`menu.html` 为电源菜单。
+- HTML 里的 `{{令牌}}` 在渲染前由程序替换为实时数据；`href="act:xxx"` 为交互动作。每次刷新重读文件，改完即时生效。
+- 后端从 `zwrt-datad` 切换为 `u60-datad`，快照路径统一为 `/tmp/u60-datad/state.json`。
+
+### 新增
+
+- **信号页**：按载波分卡片显示 频段·频宽 / PCI / RSRP / SINR，按质量上色；未激活副载波（RSRP 为 -140 哨兵值）置灰并标"未激活"。
+- **状态栏**：时间 · 实时网速(`↑上 ↓下`，单位可切) · 网络代际文字(5GA/5G+/5G/4G/LTE/3G) · 格数信号强度 · 电池(带充电流光) · 电量。
+- **WiFi 页**：SSID、密码（默认打码，点按才明文）、加密方式、设备数。
+- **系统/设置页**：速率流量、PCI、ARFCN（默认隐藏）、型号/运行/温度/内存，以及 ADB 调试 / 速率单位 / 界面主题三个开关。
+- **网络代际徽章**：按 MCC/MNC + 载波聚合判定 5GA / 5G+ / 5G / 4G / LTE / 3G。
+- **运营商中文名**：中国移动 / 联通 / 电信 / 广电。
+- **QCI / AMBR**：从后端 QoS 读取并显示（AMBR 统一 Mbps）。
+- **跟手翻页动画**、**充电流光动画**（宿主驱动帧，绕过 litehtml 无 CSS 动画的限制）。
+- **底部圆点**翻页指示。
+- 文档：新增《自定义界面教程》[docs/UI-GUIDE.md](docs/UI-GUIDE.md)；DEVELOPMENT.md 全面重写为 HTML 架构。
+
+### 修复
+
+- 纯 NR-SA 下误显示 LTE 载波（modem 残留 lte_rsrp）。
+- 后端补回/新增 `nrca`/`lteca`/`usb_mode`/`wlan` 字段（缺 `wlan` 会导致 WiFi 页读空）。
+- 状态栏制式徽章背景色因裸 class 名泄漏到纯文字 span（紫色框），改为带 `.gen` 前缀。
+- 状态栏文字与 inline-block 元素对齐错位；电池正极脱节。
+
+### 安全
+
+- WiFi 密码、ARFCN 默认打码，需显式点按才明文显示。
+
+## Unreleased（LVGL 时期）
 
 ### 新增
 

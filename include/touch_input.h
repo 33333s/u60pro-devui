@@ -30,6 +30,9 @@ int  touch_input_init(touch_input_t *t, int screen_w, int screen_h);
  * x/y are in display pixels, pressed is 0/1. */
 void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed);
 
+/* Total SYN_REPORT samples seen (for measuring touch report rate). */
+unsigned long touch_input_report_count(void);
+
 void touch_input_close(touch_input_t *t);
 
 #endif /* U60PRO_TOUCH_INPUT_H */

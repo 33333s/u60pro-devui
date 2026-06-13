@@ -64,3 +64,16 @@ void backlight_toggle(void)
 }
 
 int backlight_is_on(void) { return s_is_on; }
+
+void backlight_set(int level)
+{
+    int max = read_int(BL_MAX, 255);
+    if (level < 0) level = 0;
+    if (level > max) level = max;
+    write_int(BL_BRIGHTNESS, level);
+    if (level > 0) { s_on_level = level; s_is_on = 1; }
+    else           { s_is_on = 0; }
+}
+
+int backlight_get(void) { return read_int(BL_BRIGHTNESS, 0); }
+int backlight_max(void) { return read_int(BL_MAX, 255); }

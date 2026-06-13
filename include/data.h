@@ -25,6 +25,7 @@ typedef struct {
     int  rssi, mcc, mnc, nr_pci;
     long nr_cell_id, nr_channel;
     char nr_bw[12];
+    char nrca[256], lteca[256];
     char wan_status[32];
 
     /* battery */
@@ -38,6 +39,11 @@ typedef struct {
 
     /* traffic (bytes, bytes/s) */
     long rx_speed, tx_speed, rx_bytes, tx_bytes;
+
+    /* qos (parsed from modem key.log by the backend) */
+    int    qci;
+    double ambr_dl, ambr_ul;   /* Mbps */
+    char   usb_mode[16];       /* "user" = adb off, "debug" = adb on */
 
     /* system */
     long uptime, cpu_temp, mem_used_pct;

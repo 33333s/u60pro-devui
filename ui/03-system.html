@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
+<body class="{{THEME}}">
+  {{STATUSBAR}}
+
+  <div class="card">
+    <div class="title">网络 / 流量</div>
+    <table>
+      <tr><td class="kv-l">本次流量</td><td class="val">↓{{RXBYTES}} · ↑{{TXBYTES}}</td></tr>
+      <tr><td class="kv-l">小区 PCI</td><td class="val">{{PCI}}</td></tr>
+      <tr><td class="kv-l">ARFCN <a href="act:revealarfcn" class="rev">{{ARFCNBTN}}</a></td><td class="val">{{ARFCN}}</td></tr>
+      <tr><td class="kv-l">型号</td><td class="val">{{MODEL}}</td></tr>
+      <tr><td class="kv-l">运行</td><td class="val">{{UPTIME}}</td></tr>
+      <tr><td class="kv-l">CPU / 内存</td><td class="val">{{CPU}}°C · {{MEM}}%</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="lab">ADB 调试<span class="st">{{ADBSTATE}}</span></span>
+      <a href="act:adb" class="sw {{ADBCLASS}}"><span class="kn"></span></a>
+    </div>
+    <div class="row">
+      <span class="lab">速率单位<span class="st">{{SPUNITSTATE}}</span></span>
+      <a href="act:spunit" class="sw {{SPUNITCLASS}}"><span class="kn"></span></a>
+    </div>
+    <div class="row">
+      <span class="lab">界面主题<span class="st">{{THEMESTATE}}</span></span>
+      <a href="act:theme" class="sw {{THEMECLASS}}"><span class="kn"></span></a>
+    </div>
+  </div>
+
+  {{DOTS}}
+</body>
+</html>

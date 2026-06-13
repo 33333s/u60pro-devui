@@ -7,10 +7,11 @@
 #include "json.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef DEVUI_STATE_FILE
-#define DEVUI_STATE_FILE "/tmp/zwrt-datad/state.json"
+#define DEVUI_STATE_FILE "/tmp/u60-datad/state.json"
 #endif
 
 static void getstr(const char *obj, const char *key, char *dst, size_t n)
@@ -40,6 +41,8 @@ int data_refresh(devui_data_t *d)
         getstr(sec, "wan_status", d->wan_status, sizeof d->wan_status);
         getstr(sec, "lte_snr", d->lte_snr, sizeof d->lte_snr);
         getstr(sec, "nr_bw", d->nr_bw, sizeof d->nr_bw);
+        getstr(sec, "nrca", d->nrca, sizeof d->nrca);
+        getstr(sec, "lteca", d->lteca, sizeof d->lteca);
         d->bars     = (int)json_get_int(sec, "bars", 0);
         d->nr_rsrp  = (int)json_get_int(sec, "nr_rsrp", 0);
         d->nr_rsrq  = (int)json_get_int(sec, "nr_rsrq", 0);
@@ -79,6 +82,14 @@ int data_refresh(devui_data_t *d)
         d->tx_speed = json_get_int(sec, "tx_speed", 0);
         d->rx_bytes = json_get_int(sec, "rx_bytes", 0);
         d->tx_bytes = json_get_int(sec, "tx_bytes", 0);
+    }
+
+    if (json_get(buf, "qos", sec, sizeof sec)) {
+        char tmp[32];
+        d->qci = (int)json_get_int(sec, "qci", 0);
+        d->ambr_dl = json_get(sec, "ambr_dl", tmp, sizeof tmp) ? atof(tmp) : 0.0;
+        d->ambr_ul = json_get(sec, "ambr_ul", tmp, sizeof tmp) ? atof(tmp) : 0.0;
+        getstr(sec, "usb_mode", d->usb_mode, sizeof d->usb_mode);
     }
 
     if (json_get(buf, "system", sec, sizeof sec)) {

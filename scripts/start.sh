@@ -13,6 +13,6 @@ sleep 1
 
 # Data aggregator first (the UI reads its snapshot), then the UI. nohup so they
 # survive the launching shell; busybox has no setsid.
-[ -x "$DIR/zwrt-datad" ] && nohup "$DIR/zwrt-datad" -i 1000 >/tmp/zwrt-datad.log 2>&1 </dev/null &
+[ -x "$DIR/u60-datad" ] && nohup "$DIR/u60-datad" -i 1000 >/tmp/u60-datad.log 2>&1 </dev/null &
 sleep 1
 [ -x "$DIR/u60pro-devui" ] && nohup "$DIR/u60pro-devui" >/tmp/u60pro-devui.log 2>&1 </dev/null &

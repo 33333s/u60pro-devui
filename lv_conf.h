@@ -45,6 +45,11 @@
 /* QR code widget for the WiFi share page. */
 #define LV_USE_QRCODE 1
 
+/* FreeType for CJK (Chinese) text — loads a TTF from the device at runtime. */
+#define LV_USE_FREETYPE 1
+#define LV_FREETYPE_USE_LVGL_PORT 0
+#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 256
+
 /* No bundled demos/examples in the binary. */
 #define LV_USE_DEMO_WIDGETS 0
 #define LV_BUILD_EXAMPLES   0

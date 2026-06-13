@@ -21,6 +21,7 @@
 
 static drm_disp_t    g_disp;
 static touch_input_t g_touch;
+unsigned long        g_frame_count = 0;   /* flushes pushed to the panel */
 static volatile sig_atomic_t g_run = 1;
 
 static void on_signal(int sig) { (void)sig; g_run = 0; }
@@ -66,6 +67,7 @@ static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
     dy1 = area->y1; dy2 = area->y2;
 #endif
     drm_disp_dirty(&g_disp, dx1, dy1, dx2, dy2);
+    g_frame_count++;
 
     lv_display_flush_ready(disp);
 }
