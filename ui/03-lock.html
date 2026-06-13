@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
+<body class="{{THEME}}">
+  {{STATUSBAR}}
+
+  <div class="card">
+    <div class="title">选网方式</div>
+    {{NETSEG}}
+  </div>
+
+  <a href="act:openmodal:sa" class="card lockcard">
+    <div class="lc-t">5G SA 锁频</div>
+    <div class="lc-b">{{CURSA}}</div>
+  </a>
+  <a href="act:openmodal:nsa" class="card lockcard">
+    <div class="lc-t">5G NSA 锁频</div>
+    <div class="lc-b">{{CURNSA}}</div>
+  </a>
+  <a href="act:openmodal:lte" class="card lockcard">
+    <div class="lc-t">4G 锁频</div>
+    <div class="lc-b">{{CURLTE}}</div>
+  </a>
+
+  <a href="act:resetband" class="card resetbtn2">恢复默认配置</a>
+
+  <div class="pgpad"></div>
+  {{TOAST}}
+  {{DOTS}}
+</body>
+</html>

@@ -43,6 +43,10 @@ int data_refresh(devui_data_t *d)
         getstr(sec, "nr_bw", d->nr_bw, sizeof d->nr_bw);
         getstr(sec, "nrca", d->nrca, sizeof d->nrca);
         getstr(sec, "lteca", d->lteca, sizeof d->lteca);
+        getstr(sec, "net_select", d->net_select, sizeof d->net_select);
+        getstr(sec, "sa_bands", d->sa_bands, sizeof d->sa_bands);
+        getstr(sec, "nsa_bands", d->nsa_bands, sizeof d->nsa_bands);
+        getstr(sec, "lte_bands", d->lte_bands, sizeof d->lte_bands);
         d->bars     = (int)json_get_int(sec, "bars", 0);
         d->nr_rsrp  = (int)json_get_int(sec, "nr_rsrp", 0);
         d->nr_rsrq  = (int)json_get_int(sec, "nr_rsrq", 0);
@@ -125,6 +129,8 @@ int data_refresh(devui_data_t *d)
         d->cpu_temp     = json_get_int(sec, "cpu_temp", 0);
         d->cpu_usage    = json_get_int(sec, "cpu_usage", -1);
         d->mem_used_pct = json_get_int(sec, "mem_used_pct", 0);
+        d->mem_total    = json_get_int(sec, "mem_total", 0);
+        d->mem_avail    = json_get_int(sec, "mem_avail", 0);
         getstr(sec, "model", d->model, sizeof d->model);
         getstr(sec, "fw", d->fw, sizeof d->fw);
         getstr(sec, "sw_version", d->sw_version, sizeof d->sw_version);

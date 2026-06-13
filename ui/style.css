@@ -105,12 +105,96 @@ body.light .ccd { border-top: 1px solid #e6e9ef; }
 .ctitle .unit { font-size: 11px; font-weight: 400; color: #8a929d; }
 .ctitle .r > span { margin-left: 8px; font-size: 11px; font-weight: 700; }
 .l1d { color: #4f8bff; } .l2d { color: #ff8c42; } .l3d { color: #46c46f; }
-.chart { position: relative; height: 66px; border-radius: 4px; overflow: hidden; }
+/* chart placeholder: litehtml lays out the empty box, the host draws the
+   polyline natively into it (see draw_charts in htmlmain.c). */
+.chart { height: 66px; border-radius: 4px; }
 .chart.sm { height: 46px; }
 body.dark  .chart { background: #1b1d22; }
 body.light .chart { background: #f1f3f6; }
-.chart i { position: absolute; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 2px; }
-.chart i.l1 { background: #4f8bff; } .chart i.l2 { background: #ff8c42; } .chart i.l3 { background: #46c46f; }
+
+/* ---- two-column data grid with a continuous center divider ---- */
+.grid2 { width: 100%; border-collapse: collapse; }
+.grid2 td { width: 50%; padding: 5px 9px; font-size: 13px; vertical-align: middle; color: #9aa2ad; }
+.grid2 td b { color: #e9ebee; font-weight: 700; }
+body.light .grid2 td b { color: #1b1d22; }
+body.dark  .grid2 td.gl { border-right: 1px solid #2d323b; }
+body.light .grid2 td.gl { border-right: 1px solid #e6e9ef; }
+
+.memrow { font-size: 13px; padding: 7px 0 4px; margin-top: 2px; color: #9aa2ad; overflow: hidden; }
+.memrow .mv { float: right; }
+.memrow b { color: #e9ebee; font-weight: 700; }
+body.light .memrow b { color: #1b1d22; }
+body.dark  .memrow { border-top: 1px solid #2d323b; }
+body.light .memrow { border-top: 1px solid #e6e9ef; }
+.membar { height: 6px; border-radius: 3px; overflow: hidden; margin-bottom: 4px; }
+body.dark  .membar { background: #353a44; }
+body.light .membar { background: #dde1e8; }
+.membar .memfill { display: block; height: 100%; border-radius: 3px; background: #46c46f; }
+
+/* ---- auto-off preset buttons (selected = .aoff-on) ---- */
+.aoffs { overflow: hidden; padding-top: 3px; }
+.aoff, .aoff-on { display: inline-block; font-size: 12px; padding: 4px 9px; margin: 3px 6px 0 0;
+        border-radius: 5px; text-decoration: none; }
+body.dark  .aoff { background: #2c2f37; color: #cfd4dc; }
+body.light .aoff { background: #d3d9e2; color: #2a2f38; }
+.aoff-on { background: #2f6fe0; color: #fff; font-weight: 700; }
+
+.resetbtn { display: block; text-align: center; }
+
+/* ---- lock page: segmented control ---- */
+.seg { display: table; table-layout: fixed; width: 100%; margin-top: 5px;
+       border-radius: 8px; overflow: hidden; }
+body.dark  .seg { background: #2c2f37; }
+body.light .seg { background: #d3d9e2; }
+.segc { display: table-cell; width: 25%; text-align: center; font-size: 15px; padding: 12px 0;
+        text-decoration: none; }
+body.dark  .segc { color: #cfd4dc; }
+body.light .segc { color: #2a2f38; }
+.segc.seg-on { background: #2f6fe0; color: #fff; font-weight: 700; }
+
+/* lock summary cards (whole card tappable) */
+.card.lockcard { display: block; text-decoration: none; }
+body.dark  .lockcard { color: #e9ebee; }
+body.light .lockcard { color: #1b1d22; }
+.lc-t { font-size: 15px; font-weight: 700; }
+.lc-b { font-size: 12px; color: #8a929d; margin-top: 4px; }
+.card.resetbtn2 { display: block; text-align: center; text-decoration: none; font-size: 14px; }
+body.dark  .resetbtn2 { color: #ec5a40; }
+body.light .resetbtn2 { color: #d2483c; }
+
+/* ---- second-level band-lock dialog ---- */
+body.mo { background: transparent; }
+.modal { position: absolute; left: 14px; right: 14px; top: 36px; bottom: 16px;
+         border-radius: 14px; padding: 14px; overflow: hidden; }
+.modal.dark  { background: #23262c; border: 1px solid #3a4150; color: #e9ebee; }
+.modal.light { background: #ffffff; border: 1px solid #dde1e8; color: #1b1d22; }
+.mtitle { font-size: 17px; font-weight: 700; text-align: center; padding-bottom: 10px; }
+.mbands { text-align: center; }
+/* 4-per-row aligned grid of band chips (fixed width + symmetric margin = centered) */
+.bchip, .bchip-on { display: inline-block; width: 56px; vertical-align: top; text-align: center;
+        font-size: 15px; padding: 9px 0; margin: 5px 4px 0; border-radius: 8px; text-decoration: none; }
+body.dark  .bchip { background: #2c2f37; color: #cfd4dc; }
+body.light .bchip { background: #e2e6ec; color: #2a2f38; }
+.bchip-on { background: #2f6fe0; color: #fff; font-weight: 700; }
+.mbtns { position: absolute; left: 14px; right: 14px; bottom: 14px; overflow: hidden; }
+.mbtn2 { display: inline-block; width: 31%; text-align: center; font-size: 14px; padding: 11px 0;
+         border-radius: 8px; text-decoration: none; margin-right: 2%;
+         background: #2f6fe0; color: #fff; font-weight: 700; }
+.mbtn2.prim { background: #1f5fd0; }   /* 应用 = deeper blue */
+
+/* ---- toast (centered on screen) ---- */
+.toast { position: absolute; left: 36px; right: 36px; top: 210px; text-align: center;
+         font-size: 15px; padding: 14px; border-radius: 12px; background: #2f6fe0; color: #fff; }
+
+/* ---- brightness slider ---- */
+.srow { overflow: hidden; font-size: 13px; padding-bottom: 2px; }
+.srow .sval { float: right; color: #8a929d; }
+.slider { display: block; height: 16px; border-radius: 8px; margin: 2px 0 4px;
+          position: relative; text-decoration: none; overflow: hidden; }
+body.dark  .slider { background: #353a44; }
+body.light .slider { background: #dde1e8; }
+.slider .sfill { display: block; height: 100%; border-radius: 8px; background: #4f8bff; }
+a.rev.r { float: right; }
 
 /* ---- connected device list ---- */
 .cli { overflow: hidden; padding: 4px 0; font-size: 13px; }
@@ -130,6 +214,9 @@ body.light .row + .row { border-top: 1px solid #e6e9ef; }
 .sw.off { background: #4a515c; } .sw.on { background: #34b863; }
 .sw .kn { position: absolute; top: 2px; width: 20px; height: 20px; border-radius: 10px; background: #fff; }
 .sw.off .kn { left: 2px; } .sw.on .kn { left: 22px; }
+
+/* bottom spacer on long pages so the absolute dots don't cover the last card */
+.pgpad { height: 40px; }
 
 /* ---- bottom page dots (centered, no box) ---- */
 .dots { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; }

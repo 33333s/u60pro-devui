@@ -208,6 +208,7 @@ public:
 /* ---- C interface for the (C) main harness ---- */
 static fb_container   *g_container;
 static document::ptr   g_doc;
+static int             g_scroll_y;   /* vertical scroll offset (logical px) */
 
 extern "C" void html_view_init(uint16_t *fb, int w, int h, int pitch_px, int rotate, const char *font_path)
 {
@@ -223,11 +224,25 @@ extern "C" int html_view_render_html(const char *html)
 {
     g_doc = document::createFromString(html, g_container);
     if (!g_doc) return -1;
-    int hh = (int)g_doc->render((pixel_t)g_w);
+    g_doc->render((pixel_t)g_w);
     for (int i = 0; i < g_pitch_px * g_h; i++) g_fb[i] = 0;
     position clip(0, 0, (pixel_t)g_w, (pixel_t)g_h);
+    g_doc->draw((uint_ptr)0, 0, -g_scroll_y, &clip);   /* shift up by scroll */
+    element::ptr root = g_doc->root();                 /* full content height */
+    return root ? (int)root->get_placement().height : g_h;
+}
+
+/* Render an overlay on top of the current framebuffer (no clear): the body must
+ * be transparent so only its boxes paint. g_doc is set to the overlay so taps
+ * hit it. Used for modal dialogs. */
+extern "C" int html_view_render_overlay(const char *html)
+{
+    g_doc = document::createFromString(html, g_container);
+    if (!g_doc) return -1;
+    g_doc->render((pixel_t)g_w);
+    position clip(0, 0, (pixel_t)g_w, (pixel_t)g_h);
     g_doc->draw((uint_ptr)0, 0, 0, &clip);
-    return hh;
+    return 0;
 }
 
 /* Render into a plain logical W*H RGB565 buffer (no rotation) for animations. */
@@ -241,6 +256,26 @@ extern "C" int html_view_render_to(uint16_t *buf, const char *html)
 }
 
 extern "C" void html_view_set_uidir(const char *d) { g_ui_dir = d; }
+extern "C" void html_view_set_scroll(int y) { g_scroll_y = y < 0 ? 0 : y; }
+
+/* Render the full page (no rotation, no clip to 480) into a tall W*bufh logical
+ * buffer, for smooth windowed scrolling. Returns content height. */
+extern "C" int html_view_render_tall(uint16_t *buf, const char *html, int bufh)
+{
+    uint16_t *sfb = g_fb; int sh = g_h, sp = g_pitch_px, sr = g_rotate, ssc = g_scroll_y;
+    g_fb = buf; g_h = bufh; g_pitch_px = g_w; g_rotate = 0; g_scroll_y = 0;
+    int hh = html_view_render_html(html);
+    g_fb = sfb; g_h = sh; g_pitch_px = sp; g_rotate = sr; g_scroll_y = ssc;
+    return hh;
+}
+
+/* Fill a rect directly (used for the scrollbar overlay). */
+extern "C" void html_view_fill_rect(int x, int y, int w, int h, int r, int g, int b, int a)
+{
+    for (int yy = y; yy < y + h; yy++)
+        for (int xx = x; xx < x + w; xx++)
+            put_px(xx, yy, r, g, b, a);
+}
 
 /* Hit-test a tap; returns the clicked anchor href ("" if none). */
 extern "C" const char *html_view_click(float x, float y)
@@ -248,8 +283,79 @@ extern "C" const char *html_view_click(float x, float y)
     g_clicked.clear();
     if (g_doc) {
         position::vector rb;
-        g_doc->on_lbutton_down(x, y, x, y, rb);
-        g_doc->on_lbutton_up(x, y, x, y, rb);
+        float yy = y + g_scroll_y;   /* content is shifted up by scroll */
+        g_doc->on_lbutton_down(x, yy, x, yy, rb);
+        g_doc->on_lbutton_up(x, yy, x, yy, rb);
     }
     return g_clicked.c_str();
+}
+
+/* ---- custom chart drawing: native polylines into a litehtml placeholder ----
+ * Flow: render the page (which lays out an empty <div id="chart-..">), query the
+ * div's box with html_view_rect(), then draw series into it with html_view_polyline().
+ * Coords are logical (pre-rotation); put_px maps to the panel. */
+
+/* Bresenham line, thick px wide, clipped to [rx,rx+rw) x [ry,ry+rh). */
+static void chart_line(int x0, int y0, int x1, int y1,
+                       int rx, int ry, int rw, int rh, int r, int g, int b, int thick)
+{
+    int dx = std::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -std::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    for (;;) {
+        for (int ty = 0; ty < thick; ty++)
+            for (int tx = 0; tx < thick; tx++) {
+                int px = x0 + tx, py = y0 + ty;
+                if (px >= rx && px < rx + rw && py >= ry && py < ry + rh)
+                    put_px(px, py, r, g, b, 255);
+            }
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+/* Find an element by CSS selector and return its laid-out box. 1 if found. */
+extern "C" int html_view_rect(const char *sel, int *x, int *y, int *w, int *h)
+{
+    if (!g_doc) return 0;
+    element::ptr root = g_doc->root();
+    if (!root) return 0;
+    element::ptr el = root->select_one(sel);
+    if (!el) return 0;
+    position p = el->get_placement();
+    *x = (int)p.x; *y = (int)p.y - g_scroll_y; *w = (int)p.width; *h = (int)p.height;
+    return (*w > 1 && *h > 1);
+}
+
+/* Draw a value series as a polyline inside the rect. vals normalized by
+ * [vmin,vmax]; top = vmax. fill_a>0 fills the area under the line at that alpha. */
+extern "C" void html_view_polyline(int x, int y, int w, int h,
+                                   const int *vals, int n, int vmin, int vmax,
+                                   int r, int g, int b, int thick, int fill_a)
+{
+    if (n <= 0 || w <= 1 || h <= 1) return;
+    if (vmax <= vmin) vmax = vmin + 1;
+
+    if (fill_a > 0) {
+        for (int col = 0; col < w; col++) {
+            double t = (n > 1) ? (double)col / (w - 1) * (n - 1) : 0.0;
+            int i0 = (int)t; double fr = t - i0;
+            int v0 = vals[i0], v1 = (i0 + 1 < n) ? vals[i0 + 1] : v0;
+            double v = v0 + (v1 - v0) * fr;
+            if (v < vmin) v = vmin; if (v > vmax) v = vmax;
+            int py = y + (h - 1) - (int)((v - vmin) * (h - 1) / (vmax - vmin));
+            for (int yy = py; yy < y + h; yy++) put_px(x + col, yy, r, g, b, fill_a);
+        }
+    }
+
+    int px = 0, py = 0;
+    for (int i = 0; i < n; i++) {
+        int v = vals[i]; if (v < vmin) v = vmin; if (v > vmax) v = vmax;
+        int cx = x + (n > 1 ? i * (w - 1) / (n - 1) : 0);
+        int cy = y + (h - 1) - (int)((long)(v - vmin) * (h - 1) / (vmax - vmin));
+        if (i > 0) chart_line(px, py, cx, cy, x, y, w, h, r, g, b, thick);
+        px = cx; py = cy;
+    }
 }

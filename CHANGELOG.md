@@ -4,17 +4,33 @@
 
 ### 新增
 
-- **新增图表页**（第 3 页，插在 WiFi 与系统之间）：CPU 占用率+温度同图双色折线、内存占用率折线、网速上下行双色折线（单位跟随设置）。UI 端保留 48 秒滚动历史，每秒采样。
+- **新增图表页**：CPU 占用率+温度同图双色折线、内存占用率折线、网速上下行双色折线（单位跟随设置）。折线用 Bresenham 原生绘制到占位框（litehtml 无 canvas），UI 端保留 48 秒滚动历史、每秒采样。
+- **新增锁频页**（第 3 页）：
+  - 顶部「选网方式」**分段控件**（自动 / 5G SA / 5G NSA / 4G），蓝色高亮原生绘制、跟手滑动、松手吸附并应用；单击亦可。值映射：自动=`WL_AND_5G`、5G SA=`Only_5G`、5G NSA=`LTE_AND_5G`、4G=`Only_LTE`。
+  - **5G SA / 5G NSA / 4G 三张锁频卡**，卡片底部显示当前锁定频段；点开弹出**二级弹窗**（约 90% 屏幕、背景变暗仍可见、状态栏留空、禁操作一级菜单）。弹窗内频段一行四个居中排列，底部「全选/全不选 · 反选 · 应用」；应用后弹出居中**提示**并回到一级菜单。
+  - 底部「恢复默认配置」一键解锁并恢复默认（`nwinfo_reset_band_cell_setting`）。
+  - 底层用厂商 API：`nwinfo_set_netselect`、`nwinfo_set_nrbandlock`(type 0=SA/1=NSA)、`nwinfo_set_lte_ext_band`（逗号频段列表）。
 - **WiFi 页**新增：WiFi 开关、NFC 碰一碰开关、已连接设备列表（名称/IP，来自 DHCP 租约）、DHCP 信息（网关/地址池/租期）。
-- **系统页**：删除小区 PCI；CPU/内存改为显示占用率，新增 CPU 温度与电池温度；新增系统版本号（`BD_FLYMODEMMU5250V1.0.0B27`）与 IMEI（默认打码，点击显示）。
-- 后端 `u60-datad` 新增字段：`system.cpu_usage`（/proc/stat 实时占用率）、`system.sw_version`、`system.imei`、`clients.list`（DHCP 租约设备列表）、`wlan.enabled`、`nfc.switch`、`dhcp.*`。
+- **系统页**：删除小区 PCI；CPU/内存显示占用率（内存附 `已用/总 MB`）、CPU 温度、电池温度；系统版本号、IMEI（默认打码）；**屏幕亮度滑条**（点/拖直接调背光）、**自动息屏**预设（关/30秒/1/2/5/10分，当前项高亮）、**双击点亮**开关、ADB / 速率单位 / 界面主题开关。
+- **长页面竖向滚动**：内容超一屏时可上下拖动（预渲染整页到缓冲再窗口贴图，跟手流畅），右侧有滚动条。
+- **自动息屏 + 双击唤醒**：无操作超时自动关背光，双击屏幕唤醒（可开关）。
+- 渲染器新增原语：原生折线、占位框定位（`get_placement`）、整页高度（修正 `render()` 返回宽度的坑）、覆盖层渲染（modal）、矩形/滚动条绘制、竖向滚动偏移。
+- 后端 `u60-datad` 新增字段：`system.cpu_usage`/`mem_total`/`mem_avail`/`sw_version`/`imei`、`clients.list`、`wlan.enabled`、`nfc.switch`、`dhcp.*`、`net.net_select`/`sa_bands`/`nsa_bands`/`lte_bands`；qci/ambr 日志窗口扩大并缓存最后已知值。
 
 ### 调整
 
-- 充电流光动画裁剪到电池框内（电池框加 `overflow:hidden`），不再越过边框跑到正极图标外。
-- ARFCN/EARFCN 移到信号页每张载波卡的右上角，位于 PCI 正上方。
-- 原系统页 ARFCN 行改为显示 Cell ID（`nr5g_cell_id`），保留默认打码 + 点击显示/隐藏。
-- 页面从 3 页增加到 5 页：信号 / WiFi / 图表 / 系统（+电源菜单）。
+- **信号页载波显示按组网模式重写**：表头随 `5G SA / 5G NSA / EN-DC / 4G` 变化，显示「L LTE + M NR 载波 · 总 X MHz」；4G/NSA 下 LTE 与 NR 载波都显示，LTE 频段/EARFCN/PCI 解析自 `lteca`。频宽规则：SA=NR、4G=LTE、NSA=有 NR 取 NR 否则 LTE（不相加）、EN-DC=LTE+NR 相加。
+- 充电流光动画裁剪到电池框内（`overflow:hidden`），不再越过边框。
+- ARFCN/EARFCN 移到信号页每张载波卡右上角（PCI 正上方）；系统页 ARFCN 行改为 Cell ID（默认打码 + 点击显示）。
+- 运营商对中国大陆四家显示中文（中国移动 / 联通 / 电信 / 广电）。
+- 页面从 3 页增加到 5 页：信号 / WiFi / 锁频 / 图表 / 系统（+电源菜单）。
+
+### 修复
+
+- 选网分段控件松手/单击后高亮回弹（改用乐观 pending，高亮立即停在所选模式直至模组切换完成）。
+- 纯 SA 误显示 LTE 载波；NSA 锁频可用频段被启动瞬时子集带偏（改为取历来最大集合，已选实时跟随模组）。
+- 系统页 CPU 占用率/版本号/IMEI 读取错误（`data.c` 漏解析）。
+- WiFi 页内容超出被裁、第四页底部开关被翻页圆点遮挡（加底部留白）。
 
 ## v0.2.0 - 2026-06-13
 

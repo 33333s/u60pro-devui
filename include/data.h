@@ -27,6 +27,8 @@ typedef struct {
     char nr_bw[12];
     char nrca[256], lteca[256];
     char wan_status[32];
+    char net_select[16];
+    char sa_bands[256], nsa_bands[256], lte_bands[256];
 
     /* battery */
     int  bat_percent, bat_temp, charging, charger_connect;
@@ -55,7 +57,7 @@ typedef struct {
     char   usb_mode[16];       /* "user" = adb off, "debug" = adb on */
 
     /* system */
-    long uptime, cpu_temp, cpu_usage, mem_used_pct;
+    long uptime, cpu_temp, cpu_usage, mem_used_pct, mem_total, mem_avail;
     char model[64], fw[80], sw_version[80], imei[24];
 } devui_data_t;
 

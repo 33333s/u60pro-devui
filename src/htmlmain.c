@@ -27,6 +27,13 @@ extern void        html_view_set_uidir(const char *dir);
 extern int         html_view_render_html(const char *html);
 extern int         html_view_render_to(uint16_t *buf, const char *html);
 extern const char *html_view_click(float x, float y);
+extern int         html_view_rect(const char *sel, int *x, int *y, int *w, int *h);
+extern void        html_view_polyline(int x, int y, int w, int h, const int *vals, int n,
+                                      int vmin, int vmax, int r, int g, int b, int thick, int fill_a);
+extern void        html_view_set_scroll(int y);
+extern void        html_view_fill_rect(int x, int y, int w, int h, int r, int g, int b, int a);
+extern int         html_view_render_tall(uint16_t *buf, const char *html, int bufh);
+extern int         html_view_render_overlay(const char *html);
 
 #ifndef UI_DIR
 #define UI_DIR "/data/ui"
@@ -52,6 +59,10 @@ static int  g_show_imei;   /* reveal IMEI (default hidden) */
 static int  g_speed_bits = 1; /* 1 = Mbps (bit rate), 0 = MB/s (byte rate) */
 static int  g_charging;   /* set from snapshot; drives charge animation cadence */
 static unsigned g_phase;  /* animation tick (battery charge sweep) */
+static int  g_scroll;     /* current page vertical scroll offset */
+static int  g_page_h;     /* last rendered page content height */
+static int  g_autooff_ms; /* auto screen-off timeout, 0 = never */
+static int  g_dtap_wake = 1; /* double-tap to wake the screen */
 
 static void scan_pages(void)
 {
@@ -91,6 +102,12 @@ static void fmt_bytes(char *o, size_t n, long b) {
 static void fmt_uptime(char *o, size_t n, long s) {
     long d = s / 86400; s %= 86400;
     snprintf(o, n, "%ldd %02ld:%02ld:%02ld", d, s / 3600, (s / 60) % 60, s % 60);
+}
+static void fmt_uptime_s(char *o, size_t n, long s) {   /* compact, for the grid */
+    long d = s / 86400, hh = (s % 86400) / 3600, mm = (s % 3600) / 60;
+    if (d > 0)       snprintf(o, n, "%ld天%ld时", d, hh);
+    else if (hh > 0) snprintf(o, n, "%ld时%ld分", hh, mm);
+    else             snprintf(o, n, "%ld分", mm);
 }
 /* compact speed for the status bar: 3.0M / 80K / 224B */
 static void fmt_speed_c(char *o, size_t n, long bps) {
@@ -229,22 +246,117 @@ static void hist_push(const devui_data_t *d)
     h_tx[i]  = d->tx_speed;
 }
 
-/* Emit a line series (values normalized to 0..100): interpolate CHARTW closely
- * spaced points between the samples so the dots merge into a continuous line. */
-#define CHARTW 90
-static int dotline(char *b, int o, int cap, const int *norm, int n, const char *cls)
+/* Draw the chart placeholders (#chart-cpu/#chart-mem/#chart-net) natively as
+ * Bresenham polylines over the history. Called after the page is rendered; a
+ * no-op on pages without those elements. */
+static void draw_charts(void)
 {
-    if (n <= 0) return o;
-    for (int j = 0; j < CHARTW; j++) {
-        double t = (n > 1) ? (double)j / (CHARTW - 1) * (n - 1) : 0.0;
-        int i0 = (int)t; double fr = t - i0;
-        double v = (i0 + 1 < n) ? norm[i0] + (norm[i0 + 1] - norm[i0]) * fr : norm[i0];
-        int y = (int)(v + 0.5); if (y < 0) y = 0; if (y > 100) y = 100;
-        int x = j * 100 / (CHARTW - 1);
-        o += snprintf(b + o, cap - o, "<i class='%s' style='left:%d%%;top:%d%%'></i>",
-                      cls, x, 100 - y);
+    int x, y, w, h;
+    if (html_view_rect("#chart-cpu", &x, &y, &w, &h)) {
+        html_view_polyline(x, y, w, h, h_cpu, h_n, 0, 100, 0x4f, 0x8b, 0xff, 2, 26); /* 占用 蓝 */
+        html_view_polyline(x, y, w, h, h_ct,  h_n, 20, 70, 0xff, 0x8c, 0x42, 2, 0);  /* 温度 橙 */
     }
-    return o;
+    if (html_view_rect("#chart-mem", &x, &y, &w, &h))
+        html_view_polyline(x, y, w, h, h_mem, h_n, 0, 100, 0x46, 0xc4, 0x6f, 2, 34); /* 内存 绿 */
+    if (html_view_rect("#chart-net", &x, &y, &w, &h)) {
+        static int rxi[HIST], txi[HIST];
+        long mx = 1;
+        for (int i = 0; i < h_n; i++) { if (h_rx[i] > mx) mx = h_rx[i]; if (h_tx[i] > mx) mx = h_tx[i]; }
+        for (int i = 0; i < h_n; i++) { rxi[i] = (int)h_rx[i]; txi[i] = (int)h_tx[i]; }
+        html_view_polyline(x, y, w, h, rxi, h_n, 0, (int)mx, 0x4f, 0x8b, 0xff, 2, 22); /* 下行 蓝 */
+        html_view_polyline(x, y, w, h, txi, h_n, 0, (int)mx, 0xff, 0x8c, 0x42, 2, 0);  /* 上行 橙 */
+    }
+}
+
+/* ---- band lock (锁频): comma-list band sets ---- */
+static int  g_modal;           /* 0 none, 1 SA, 2 NSA, 3 LTE (second-level dialog) */
+static int  g_segdrag;         /* dragging the segmented control (suppress cell highlight) */
+static char g_toast[48];       /* toast message ("" = hidden) */
+static uint32_t g_toast_until; /* millis the toast hides at */
+static char g_net_pending[16]; /* optimistic net mode until net_select catches up */
+static char g_uni_sa[256], g_uni_nsa[256], g_uni_lte[256];   /* available bands (max seen) */
+static char g_sel_sa[256], g_sel_nsa[256], g_sel_lte[256];   /* selected (to lock) */
+
+static int band_count(const char *s) { if (!s[0]) return 0; int n = 1; for (; *s; s++) if (*s == ',') n++; return n; }
+
+static int band_in(const char *list, const char *b)
+{
+    size_t bl = strlen(b);
+    for (const char *p = list; *p; ) {
+        const char *c = p; while (*c && *c != ',') c++;
+        if ((size_t)(c - p) == bl && !strncmp(p, b, bl)) return 1;
+        p = *c ? c + 1 : c;
+    }
+    return 0;
+}
+static void band_toggle(char *list, size_t cap, const char *b)
+{
+    if (band_in(list, b)) {
+        char out[256]; int o = 0; size_t bl = strlen(b);
+        for (const char *p = list; *p; ) {
+            const char *c = p; while (*c && *c != ',') c++;
+            if (!((size_t)(c - p) == bl && !strncmp(p, b, bl))) {
+                if (o) out[o++] = ',';
+                int n = (int)(c - p); if (o + n < (int)sizeof out) { memcpy(out + o, p, n); o += n; }
+            }
+            p = *c ? c + 1 : c;
+        }
+        out[o] = 0; snprintf(list, cap, "%s", out);
+    } else {
+        size_t l = strlen(list);
+        snprintf(list + l, cap - l, "%s%s", l ? "," : "", b);
+    }
+}
+/* Render bands as pill chips (selected = highlighted) with the given classes. */
+static void build_chips_cls(char *buf, size_t cap, const char *uni, const char *sel,
+                            const char *act, const char *pfx, const char *on, const char *off)
+{
+    char u[256]; snprintf(u, sizeof u, "%s", uni);
+    int o = 0;
+    for (char *tk = strtok(u, ","); tk; tk = strtok(NULL, ",")) {
+        o += snprintf(buf + o, cap - o, "<a href='act:%s:%s' class='%s'>%s%s</a>",
+                      act, tk, band_in(sel, tk) ? on : off, pfx, tk);
+    }
+    if (o == 0) snprintf(buf, cap, "<span class='muted'>无可用频段</span>");
+}
+
+/* One-line summary of a card's current band selection. */
+static void band_summary(char *buf, size_t cap, const char *uni, const char *sel, const char *pfx)
+{
+    if (!sel[0]) { snprintf(buf, cap, "未选择频段"); return; }
+    if (!strcmp(uni, sel)) { snprintf(buf, cap, "全部频段（未锁定）"); return; }
+    char s[256]; snprintf(s, sizeof s, "%s", sel);
+    int o = 0;
+    for (char *tk = strtok(s, ","); tk; tk = strtok(NULL, ","))
+        o += snprintf(buf + o, cap - o, "%s%s%s", o ? " " : "已锁 ", pfx, tk);
+}
+
+/* network-mode segmented control cells (shared with the touch handler). */
+static const struct { const char *v, *lab; } g_netmodes[4] = {
+    { "WL_AND_5G", "自动" }, { "Only_5G", "5G SA" },
+    { "LTE_AND_5G", "5G NSA" }, { "Only_LTE", "4G" } };
+
+/* Build the second-level band-lock dialog (overlaid on the dimmed page). */
+static const char *modal_html(void)
+{
+    static char out[3200];
+    const char *uni, *sel, *pfx, *title, *act;
+    if (g_modal == 1)      { uni = g_uni_sa;  sel = g_sel_sa;  pfx = "n"; act = "bsa";  title = "5G SA 锁频"; }
+    else if (g_modal == 2) { uni = g_uni_nsa; sel = g_sel_nsa; pfx = "n"; act = "bnsa"; title = "5G NSA 锁频"; }
+    else                   { uni = g_uni_lte; sel = g_sel_lte; pfx = "B"; act = "blte"; title = "4G 锁频"; }
+    char chips[2200];
+    build_chips_cls(chips, sizeof chips, uni, sel, act, pfx, "bchip-on", "bchip");
+    snprintf(out, sizeof out,
+        "<!DOCTYPE html><html><head><meta charset='UTF-8'><link rel='stylesheet' href='style.css'></head>"
+        "<body class='mo'><div class='modal %s'>"
+        "<div class='mtitle'>%s</div><div class='mbands'>%s</div>"
+        "<div class='mbtns'>"
+        "<a href='act:mall' class='mbtn2'>全选/全不选</a>"
+        "<a href='act:minv' class='mbtn2'>反选</a>"
+        "<a href='act:mapply' class='mbtn2 prim'>应用</a></div>"
+        "</div></body></html>",
+        g_theme ? "light" : "dark", title, chips);
+    return out;
 }
 
 /* Fill a kv table from the current device state. Buffers are static. */
@@ -301,57 +413,76 @@ static int build_kv(struct kv *t)
 
     build_sigbars(s_sig, sizeof s_sig, d.nr_rsrp ? d.nr_rsrp : d.lte_rsrp);
 
-    /* ---- per-carrier rows + generation badge ----
-     * CA group fields: idx,pci,?,band,arfcn,bw,?,rsrp,rsrq,sinr,rssi */
-    static char s_nrrows[1500], s_lterows[1700], s_cacc[8], s_cabw[8], s_gen[8], s_lteshow[20];
-    int is_nr = strstr(d.net_type, "SA") || strstr(d.net_type, "NSA") || strstr(d.net_type, "NR");
-    int sa_only = strstr(d.net_type, "SA") && !strstr(d.net_type, "NSA");
-    int nr_cc = 0, nr_bw = 0, no = 0, lo = 0;
+    /* ---- per-carrier display + generation badge ----
+     * nrca group: idx,pci,?,band,arfcn,bw,?,rsrp,rsrq,sinr,rssi
+     * lteca group: pci,band,?,earfcn,bw   (includes the serving cell) */
+    static char s_nrrows[1500], s_lterows[1700], s_carriers[3600], s_gen[8];
+    int is_endc = strstr(d.net_type, "ENDC") || strstr(d.net_type, "EN-DC");
+    int is_nsa  = strstr(d.net_type, "NSA") != NULL;
+    int is_sa   = strstr(d.net_type, "SA") && !is_nsa;
+    int is_lte  = !is_nsa && !is_sa && (strstr(d.net_type, "LTE") || strstr(d.net_type, "4G"));
+    int show_nr  = is_sa || is_nsa || is_endc;
+    int show_lte = is_nsa || is_endc || is_lte;
+    int nr_cc = 0, nr_bw = 0, lte_cc = 0, lte_bw = 0, no = 0, lo = 0;
     char rp[12], pc[12], ac[16];
 
+    /* NR carriers: PCell from main fields + nrca SCells */
     s_nrrows[0] = 0;
-    if (is_nr && d.band[0]) {                       /* NR PCell */
+    if (show_nr && d.band[0] && d.nr_bw[0]) {
         snprintf(rp, sizeof rp, "%d", d.nr_rsrp); snprintf(pc, sizeof pc, "%d", d.nr_pci);
         snprintf(ac, sizeof ac, "%ld", d.nr_channel);
         no = car_row(s_nrrows, no, sizeof s_nrrows, d.band, d.nr_bw, ac, pc, rp, d.nr_snr);
         nr_cc = 1; nr_bw = atoi(d.nr_bw);
     }
-    char nrca[256]; strncpy(nrca, d.nrca, sizeof nrca - 1); nrca[sizeof nrca - 1] = 0;
-    for (char *grp = strtok(nrca, ";"); grp; grp = strtok(NULL, ";")) {
-        char g[96]; strncpy(g, grp, sizeof g - 1); g[sizeof g - 1] = 0;
-        char *f[12]; int nf = ca_split(g, f, 12);
-        if (nf > 5 && atoi(f[5]) > 0) {
-            char bn[12]; snprintf(bn, sizeof bn, "n%s", f[3]);
-            no = car_row(s_nrrows, no, sizeof s_nrrows, bn, f[5], nf > 4 ? f[4] : "-",
-                         nf > 1 ? f[1] : "-", nf > 7 ? f[7] : "-", nf > 9 ? f[9] : "-");
-            nr_cc++; nr_bw += atoi(f[5]);
-        }
-    }
-
-    /* LTE: only meaningful when an LTE anchor exists (NSA / LTE / 4G), never on
-     * pure NR-SA, where the modem leaves stale lte_rsrp around. */
-    s_lterows[0] = 0; int lte_cc = 0;
-    if (!sa_only && d.lte_rsrp < 0 && d.lte_rsrp > -140) {   /* LTE PCell */
-        snprintf(rp, sizeof rp, "%d", d.lte_rsrp);
-        lo = car_row(s_lterows, lo, sizeof s_lterows, "LTE", "-", "-", "-", rp, d.lte_snr);
-        lte_cc = 1;
-    }
-    if (!sa_only) {
-        char lteca[256]; strncpy(lteca, d.lteca, sizeof lteca - 1); lteca[sizeof lteca - 1] = 0;
-        for (char *grp = strtok(lteca, ";"); grp; grp = strtok(NULL, ";")) {
+    if (show_nr) {
+        char nrca[256]; strncpy(nrca, d.nrca, sizeof nrca - 1); nrca[sizeof nrca - 1] = 0;
+        for (char *grp = strtok(nrca, ";"); grp; grp = strtok(NULL, ";")) {
             char g[96]; strncpy(g, grp, sizeof g - 1); g[sizeof g - 1] = 0;
             char *f[12]; int nf = ca_split(g, f, 12);
             if (nf > 5 && atoi(f[5]) > 0) {
-                char bn[12]; snprintf(bn, sizeof bn, "B%s", f[3]);
-                lo = car_row(s_lterows, lo, sizeof s_lterows, bn, f[5], nf > 4 ? f[4] : "-",
+                char bn[12]; snprintf(bn, sizeof bn, "n%s", f[3]);
+                no = car_row(s_nrrows, no, sizeof s_nrrows, bn, f[5], nf > 4 ? f[4] : "-",
                              nf > 1 ? f[1] : "-", nf > 7 ? f[7] : "-", nf > 9 ? f[9] : "-");
-                lte_cc++;
+                nr_cc++; nr_bw += atoi(f[5]);
             }
         }
     }
-    snprintf(s_lteshow, sizeof s_lteshow, "%s", lte_cc ? "" : "display:none");
-    snprintf(s_cacc, sizeof s_cacc, "%d", nr_cc);
-    snprintf(s_cabw, sizeof s_cabw, "%d", nr_bw);
+
+    /* LTE carriers: lteca "pci,band,?,earfcn,bw" (first entry = serving cell) */
+    s_lterows[0] = 0;
+    if (show_lte) {
+        char lteca[256]; strncpy(lteca, d.lteca, sizeof lteca - 1); lteca[sizeof lteca - 1] = 0;
+        for (char *grp = strtok(lteca, ";"); grp; grp = strtok(NULL, ";")) {
+            char g[96]; strncpy(g, grp, sizeof g - 1); g[sizeof g - 1] = 0;
+            char *f[8]; int nf = ca_split(g, f, 8);
+            if (nf >= 5 && atoi(f[4]) > 0) {
+                char bn[12]; snprintf(bn, sizeof bn, "B%s", f[1]);
+                char lr[12] = "-", ls[12] = "-";
+                if (lte_cc == 0) {   /* serving-cell signal from main fields */
+                    if (d.lte_rsrp) snprintf(lr, sizeof lr, "%d", d.lte_rsrp);
+                    if (d.lte_snr[0]) snprintf(ls, sizeof ls, "%s", d.lte_snr);
+                }
+                lo = car_row(s_lterows, lo, sizeof s_lterows, bn, f[4], f[3], f[0], lr, ls);
+                lte_cc++; lte_bw += atoi(f[4]);
+            }
+        }
+    }
+    (void)no; (void)lo; (void)pc; (void)ac;
+
+    /* total bandwidth per NSA/ENDC rules; header label */
+    int total_bw; const char *cmode;
+    if (is_endc)     { total_bw = nr_bw + lte_bw; cmode = "EN-DC"; }
+    else if (is_nsa) { total_bw = nr_cc > 0 ? nr_bw : lte_bw; cmode = "5G NSA"; }
+    else if (is_sa)  { total_bw = nr_bw; cmode = "5G SA"; }
+    else if (is_lte) { total_bw = lte_bw; cmode = (d.mcc == 460) ? "4G" : "4G LTE"; }
+    else             { total_bw = 0; cmode = d.net_type[0] ? d.net_type : "无服务"; }
+    { char cnt[48];
+      if (lte_cc && nr_cc) snprintf(cnt, sizeof cnt, "%d LTE + %d NR 载波", lte_cc, nr_cc);
+      else if (nr_cc)      snprintf(cnt, sizeof cnt, "%d NR 载波", nr_cc);
+      else if (lte_cc)     snprintf(cnt, sizeof cnt, "%d LTE 载波", lte_cc);
+      else                 snprintf(cnt, sizeof cnt, "无载波");
+      snprintf(s_carriers, sizeof s_carriers, "<div class='sec'>%s · %s · %d MHz</div>%s%s",
+               cmode, cnt, total_bw, s_nrrows, s_lterows); }
 
     /* generation badge: 5GA / 5G+ / 5G / 4G / LTE / 3G */
     int op = 0;   /* 1 mobile, 2 unicom, 3 telecom, 4 broadnet, 5 other-mainland */
@@ -370,13 +501,13 @@ static int build_kv(struct kv *t)
     }
 
     const char *gen = "--";
-    if (sa_only) {
+    if (is_sa) {
         if ((op == 1 || op == 4) && nr_cc >= 3) gen = "5GA";
         else if ((op == 2 || op == 3) && nr_bw >= 200) gen = "5GA";
         else if (nr_bw > 100) gen = "5G+";
         else gen = "5G";
-    } else if (is_nr) gen = "5G";
-    else if (strstr(d.net_type, "LTE") || strstr(d.net_type, "4G")) gen = (d.mcc == 460) ? "4G" : "LTE";
+    } else if (is_nsa || is_endc) gen = "5G";
+    else if (is_lte) gen = (d.mcc == 460) ? "4G" : "LTE";
     else if (d.net_type[0]) gen = "3G";
     snprintf(s_gen, sizeof s_gen, "%s", gen);
     const char *genc = "g3";
@@ -417,28 +548,55 @@ static int build_kv(struct kv *t)
         snprintf(s_dots + o, sizeof s_dots - o, "</div>");
     }
 
-    /* ---- charts (dot-line series over the rolling history) ---- */
-    static char s_chcpu[9000], s_chmem[4600], s_chnet[9000];
-    {
-        int cpu_n[HIST], tmp_n[HIST], mem_n[HIST], rxn[HIST], txn[HIST];
-        long mx = 1;
-        for (int i = 0; i < h_n; i++) { if (h_rx[i] > mx) mx = h_rx[i]; if (h_tx[i] > mx) mx = h_tx[i]; }
-        for (int i = 0; i < h_n; i++) {
-            cpu_n[i] = h_cpu[i];
-            tmp_n[i] = (h_ct[i] - 20) * 2;            /* 20..70 C -> 0..100 */
-            mem_n[i] = h_mem[i];
-            rxn[i] = (int)(h_rx[i] * 100 / mx);
-            txn[i] = (int)(h_tx[i] * 100 / mx);
-        }
-        int o = dotline(s_chcpu, 0, sizeof s_chcpu, cpu_n, h_n, "l1");
-        dotline(s_chcpu, o, sizeof s_chcpu, tmp_n, h_n, "l2");
-        dotline(s_chmem, 0, sizeof s_chmem, mem_n, h_n, "l3");
-        o = dotline(s_chnet, 0, sizeof s_chnet, rxn, h_n, "l1");
-        dotline(s_chnet, o, sizeof s_chnet, txn, h_n, "l2");
-    }
+    /* charts are drawn natively after render (see draw_charts), not via tokens. */
 
-    /* ---- system extras: usage, temps, version, imei ---- */
-    static char s_cusage[8], s_ctemp[8], s_btemp[8], s_swver[80], s_imei[24], s_spu[8];
+    /* ---- band lock: universe grows to the largest set seen; selection mirrors
+     * the live lock unless the user is editing in the modal ---- */
+    static char s_netseg[640], s_cursa[300], s_curnsa[300], s_curlte[300], s_toast[120];
+    if (band_count(d.sa_bands)  >= band_count(g_uni_sa))  snprintf(g_uni_sa,  sizeof g_uni_sa,  "%s", d.sa_bands);
+    if (band_count(d.nsa_bands) >= band_count(g_uni_nsa)) snprintf(g_uni_nsa, sizeof g_uni_nsa, "%s", d.nsa_bands);
+    if (band_count(d.lte_bands) >= band_count(g_uni_lte)) snprintf(g_uni_lte, sizeof g_uni_lte, "%s", d.lte_bands);
+    if (!g_modal) {
+        if (d.sa_bands[0])  snprintf(g_sel_sa,  sizeof g_sel_sa,  "%s", d.sa_bands);
+        if (d.nsa_bands[0]) snprintf(g_sel_nsa, sizeof g_sel_nsa, "%s", d.nsa_bands);
+        if (d.lte_bands[0]) snprintf(g_sel_lte, sizeof g_sel_lte, "%s", d.lte_bands);
+    }
+    band_summary(s_cursa,  sizeof s_cursa,  g_uni_sa,  g_sel_sa,  "n");
+    band_summary(s_curnsa, sizeof s_curnsa, g_uni_nsa, g_sel_nsa, "n");
+    band_summary(s_curlte, sizeof s_curlte, g_uni_lte, g_sel_lte, "B");
+    {   /* segmented control: highlight current mode (pending overrides until it applies) */
+        if (g_net_pending[0] && !strcmp(g_net_pending, d.net_select)) g_net_pending[0] = 0;
+        const char *cur = g_net_pending[0] ? g_net_pending : d.net_select;
+        int active = 0;
+        for (int k = 0; k < 4; k++) if (!strcmp(g_netmodes[k].v, cur)) active = k;
+        int hl = g_segdrag ? -1 : active;   /* during drag the native box is the highlight */
+        int o = snprintf(s_netseg, sizeof s_netseg, "<div id='netseg' class='seg'>");
+        for (int k = 0; k < 4; k++)
+            o += snprintf(s_netseg + o, sizeof s_netseg - o, "<a href='act:net:%s' class='segc%s'>%s</a>",
+                          g_netmodes[k].v, k == hl ? " seg-on" : "", g_netmodes[k].lab);
+        snprintf(s_netseg + o, sizeof s_netseg - o, "</div>");
+    }
+    s_toast[0] = 0;
+    if (g_toast[0]) snprintf(s_toast, sizeof s_toast, "<div class='toast'>%s</div>", g_toast);
+
+    /* ---- system extras: usage, temps, version, imei, brightness, auto-off ---- */
+    static char s_cusage[8], s_ctemp[8], s_btemp[8], s_swver[80], s_imei[24], s_spu[8], s_bright[8];
+    static char s_memdet[24], s_upshort[16], s_autooff[420];
+    { int bmax = backlight_max(); if (bmax <= 0) bmax = 255;
+      snprintf(s_bright, sizeof s_bright, "%d", clampi(backlight_get() * 100 / bmax, 0, 100)); }
+    { long mt = d.mem_total, ma = d.mem_avail;
+      snprintf(s_memdet, sizeof s_memdet, "%ld/%ld MB", mt ? (mt - ma) / 1048576 : 0, mt / 1048576); }
+    fmt_uptime_s(s_upshort, sizeof s_upshort, d.uptime);
+    {   /* auto-off preset buttons, current one highlighted */
+        static const struct { int ms; const char *lab; } AO[] = {
+            { 0, "关" }, { 30000, "30秒" }, { 60000, "1分" },
+            { 120000, "2分" }, { 300000, "5分" }, { 600000, "10分" } };
+        int o = 0;
+        for (int k = 0; k < 6; k++)
+            o += snprintf(s_autooff + o, sizeof s_autooff - o,
+                "<a href='act:autooff:%d' class='%s'>%s</a>",
+                AO[k].ms, AO[k].ms == g_autooff_ms ? "aoff-on" : "aoff", AO[k].lab);
+    }
     snprintf(s_cusage, sizeof s_cusage, "%ld", d.cpu_usage < 0 ? 0 : d.cpu_usage);
     snprintf(s_ctemp, sizeof s_ctemp, "%ld", d.cpu_temp);
     snprintf(s_btemp, sizeof s_btemp, "%d", d.bat_temp);
@@ -495,9 +653,7 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "ENC", d.wifi_enc[0] ? d.wifi_enc : "-" };
     t[i++] = (struct kv){ "MODEL", s_model };       t[i++] = (struct kv){ "FW", s_fw };
     t[i++] = (struct kv){ "PAGE", s_page };         t[i++] = (struct kv){ "NPAGES", s_np };
-    t[i++] = (struct kv){ "CA_CC", s_cacc };        t[i++] = (struct kv){ "CA_BW", s_cabw };
-    t[i++] = (struct kv){ "NR_ROWS", s_nrrows };    t[i++] = (struct kv){ "LTE_ROWS", s_lterows };
-    t[i++] = (struct kv){ "LTE_SHOW", s_lteshow };  t[i++] = (struct kv){ "GEN", s_gen };
+    t[i++] = (struct kv){ "CARRIERS", s_carriers }; t[i++] = (struct kv){ "GEN", s_gen };
     t[i++] = (struct kv){ "GENCLASS", genc };
     t[i++] = (struct kv){ "THEME", g_theme ? "light" : "dark" };
     t[i++] = (struct kv){ "BATCLASS", d.bat_percent <= 20 ? "low" : "" };
@@ -514,9 +670,14 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "BATTEMP", s_btemp };    t[i++] = (struct kv){ "SWVER", s_swver };
     t[i++] = (struct kv){ "IMEI", s_imei };
     t[i++] = (struct kv){ "IMEIBTN", g_show_imei ? "隐藏" : "显示" };
-    /* charts page */
-    t[i++] = (struct kv){ "CHART_CPU", s_chcpu };  t[i++] = (struct kv){ "CHART_MEM", s_chmem };
-    t[i++] = (struct kv){ "CHART_NET", s_chnet };
+    t[i++] = (struct kv){ "BRIGHT", s_bright }; t[i++] = (struct kv){ "AUTOOFF", s_autooff };
+    t[i++] = (struct kv){ "MEMDETAIL", s_memdet }; t[i++] = (struct kv){ "UPSHORT", s_upshort };
+    t[i++] = (struct kv){ "DTAPCLASS", g_dtap_wake ? "on" : "off" };
+    t[i++] = (struct kv){ "DTAPSTATE", g_dtap_wake ? "开启" : "关闭" };
+    /* lock page */
+    t[i++] = (struct kv){ "NETSEG", s_netseg };  t[i++] = (struct kv){ "TOAST", s_toast };
+    t[i++] = (struct kv){ "CURSA", s_cursa };    t[i++] = (struct kv){ "CURNSA", s_curnsa };
+    t[i++] = (struct kv){ "CURLTE", s_curlte };
     /* wifi page */
     t[i++] = (struct kv){ "NFCCLASS", d.nfc_switch ? "on" : "off" };
     t[i++] = (struct kv){ "NFCSTATE", d.nfc_switch ? "已开启" : "已关闭" };
@@ -539,11 +700,26 @@ static const char *page_html(const char *path)
     return html;
 }
 
+static void capture_fb(drm_disp_t *d);   /* fwd: fb snapshot for modal overlay */
+
 static void render(drm_disp_t *disp, const char *path)
 {
     const char *html = page_html(path);
     if (!html) return;
-    html_view_render_html(html);
+    html_view_set_scroll(g_scroll);
+    g_page_h = html_view_render_html(html);
+    draw_charts();   /* native polylines into any #chart-* placeholders */
+    int H = disp->height, maxs = g_page_h - H;
+    if (g_modal) {                                    /* dim page + second-level dialog */
+        html_view_fill_rect(0, 28, disp->width, H - 28, 0, 0, 0, 150);
+        capture_fb(disp);                             /* snapshot page+dim for fast modal refresh */
+        html_view_render_overlay(modal_html());
+    } else if (maxs > 0) {                            /* scrollbar overlay */
+        int th = H * H / g_page_h; if (th < 18) th = 18;
+        int ty = g_scroll * (H - th) / maxs;
+        html_view_fill_rect(disp->width - 3, 0, 3, H, 0x3a, 0x40, 0x48, 110);
+        html_view_fill_rect(disp->width - 3, ty, 3, th, 0xc8, 0xce, 0xd6, 220);
+    }
     drm_disp_dirty(disp, 0, 0, disp->width - 1, disp->height - 1);
 }
 
@@ -567,17 +743,19 @@ static void compose_frame(drm_disp_t *d, int o)
     drm_disp_dirty(d, 0, 0, W - 1, H - 1);
 }
 
-/* Render the page pair for a drag direction into A(left)/B(right). dir>0 = next. */
+/* Render the page pair for a drag direction into A(left)/B(right). dir>0 = next.
+ * The current page keeps its scroll; the target page comes in at the top. */
 static void prep_pair(int target, int dir)
 {
     const char *h;
     if (dir > 0) {   /* next: left=current, right=target */
-        h = page_html(g_pages[g_cur]);  if (h) html_view_render_to(g_bufA, h);
-        h = page_html(g_pages[target]); if (h) html_view_render_to(g_bufB, h);
+        html_view_set_scroll(g_scroll); h = page_html(g_pages[g_cur]);  if (h) html_view_render_to(g_bufA, h);
+        html_view_set_scroll(0);        h = page_html(g_pages[target]); if (h) html_view_render_to(g_bufB, h);
     } else {         /* prev: left=target, right=current */
-        h = page_html(g_pages[target]); if (h) html_view_render_to(g_bufA, h);
-        h = page_html(g_pages[g_cur]);  if (h) html_view_render_to(g_bufB, h);
+        html_view_set_scroll(0);        h = page_html(g_pages[target]); if (h) html_view_render_to(g_bufA, h);
+        html_view_set_scroll(g_scroll); h = page_html(g_pages[g_cur]);  if (h) html_view_render_to(g_bufB, h);
     }
+    html_view_set_scroll(g_scroll);
 }
 
 /* Settle the offset from o0 to o1 over a few frames. */
@@ -585,6 +763,65 @@ static void anim_o(drm_disp_t *d, int o0, int o1)
 {
     const int FR = 5;
     for (int f = 1; f <= FR; f++) compose_frame(d, o0 + (o1 - o0) * f / FR);
+}
+
+/* Smooth vertical scrolling: the full page is pre-rendered once into g_scrollbuf
+ * (logical, unrotated); each drag frame just blits the visible window + scrollbar
+ * — no re-parse/re-layout, so it keeps up like the horizontal swipe. */
+#define SCROLLMAX 1280
+static uint16_t g_scrollbuf[320 * SCROLLMAX];
+static int g_scroll_h;
+
+static void scroll_blit(drm_disp_t *d, int scroll)
+{
+    const int W = d->width, Hh = d->height, pp = d->pitch_px;
+    for (int y = 0; y < Hh; y++) {
+        int sy = y + scroll;
+        const uint16_t *src = (sy >= 0 && sy < g_scroll_h) ? &g_scrollbuf[(size_t)sy * W] : NULL;
+        uint16_t *dp = d->fb + (size_t)(Hh - 1 - y) * pp + (W - 1);
+        for (int x = 0; x < W; x++) *dp-- = src ? src[x] : 0;
+    }
+    int maxs = g_page_h - Hh;
+    if (maxs > 0) {
+        int th = Hh * Hh / g_page_h; if (th < 18) th = 18;
+        int ty = scroll * (Hh - th) / maxs;
+        html_view_fill_rect(W - 3, 0, 3, Hh, 0x3a, 0x40, 0x48, 110);
+        html_view_fill_rect(W - 3, ty, 3, th, 0xc8, 0xce, 0xd6, 220);
+    }
+    drm_disp_dirty(d, 0, 0, W - 1, Hh - 1);
+}
+
+/* fb snapshot for fast overlay refresh (modal toggles, segmented-control drag):
+ * avoids re-laying-out the whole page on every interaction. */
+static uint16_t g_overbg[320 * 480];
+static void capture_fb(drm_disp_t *d) { memcpy(g_overbg, d->fb, (size_t)d->pitch_px * d->height * sizeof(uint16_t)); }
+static void restore_fb(drm_disp_t *d) { memcpy(d->fb, g_overbg, (size_t)d->pitch_px * d->height * sizeof(uint16_t)); }
+
+/* Redraw the modal over the cached dimmed page (fast: no page relayout). */
+static void render_modal_overlay(drm_disp_t *d)
+{
+    restore_fb(d);
+    html_view_render_overlay(modal_html());
+    drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
+}
+
+/* Draw the sliding segmented-control highlight box at the finger, over cached fb. */
+static void seg_box(drm_disp_t *d, int sx, int sy, int sw, int sh, int fx)
+{
+    restore_fb(d);
+    int cw = sw / 4, bx = fx - cw / 2;
+    if (bx < sx) bx = sx; if (bx > sx + sw - cw) bx = sx + sw - cw;
+    html_view_fill_rect(bx, sy, cw, sh, 0x2f, 0x6f, 0xe0, 150);
+    drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
+}
+
+/* Set backlight from a tap/drag x within the brightness bar [bx, bx+bw). */
+static void set_bright_x(int x, int bx, int bw)
+{
+    if (bw <= 0) return;
+    int f = (x - bx) * 100 / bw; if (f < 3) f = 3; if (f > 100) f = 100;
+    int m = backlight_max(); if (m <= 0) m = 255;
+    backlight_set(f * m / 100);
 }
 
 int main(void)
@@ -606,14 +843,17 @@ int main(void)
 
     int menu = 0, prev_press = 0, down_x = 0, down_y = 0;
     int dragging = 0, drag_dir = 0, drag_target = 0;
-    const int W = disp.width;
+    int scroll_dir = 0, scroll_start = 0;
+    int sliding = 0, bar_x = 0, bar_w = 0;   /* brightness slider drag */
+    int segging = 0, seg_x = 0, seg_y = 0, seg_w = 0, seg_h = 0;   /* net-mode segmented control */
+    const int W = disp.width, H = disp.height;
     char menu_path[300];
     snprintf(menu_path, sizeof menu_path, "%s/menu.html", UI_DIR);
 
     #define CUR_PATH (menu ? menu_path : g_pages[g_cur])
 
     render(&disp, CUR_PATH);
-    uint32_t last_data = millis();
+    uint32_t last_data = millis(), last_act = millis(), last_wake_tap = 0;
 
     while (g_run) {
         uint32_t now = millis();
@@ -621,6 +861,7 @@ int main(void)
 
         /* power key */
         int ev = key_input_poll(&key, now);
+        if (ev == KEY_EV_SHORT || ev == KEY_EV_LONG) last_act = now;
         if (ev == KEY_EV_SHORT) {
             backlight_toggle();
             if (backlight_is_on()) need_render = 1;
@@ -630,35 +871,117 @@ int main(void)
             }
         } else if (ev == KEY_EV_LONG) { backlight_on(); menu = !menu; need_render = 1; }
 
-        /* touch: follow-finger page swipe + tap actions */
+        /* touch: follow-finger swipe (pages) / drag (scroll) + tap actions */
         int x, y, pressed;
         touch_input_read(&touch, &x, &y, &pressed);
-        if (backlight_is_on()) {
-            if (pressed && !prev_press) { down_x = x; down_y = y; dragging = 1; drag_dir = 0; }
+        if (pressed) last_act = now;
+
+        if (!backlight_is_on()) {
+            /* double-tap wakes the screen (if enabled); gesture is consumed */
+            if (pressed && !prev_press) {
+                if (g_dtap_wake && now - last_wake_tap < 400) { backlight_on(); need_render = 1; }
+                last_wake_tap = now;
+            }
+        } else if (g_modal) {
+            /* second-level band-lock dialog: tap only (level-1 is disabled) */
+            if (!pressed && prev_press) {
+                const char *act = html_view_click((float)x, (float)y);
+                char *sel = g_modal == 1 ? g_sel_sa : g_modal == 2 ? g_sel_nsa : g_sel_lte;
+                const char *uni = g_modal == 1 ? g_uni_sa : g_modal == 2 ? g_uni_nsa : g_uni_lte;
+                if (!strncmp(act, "act:", 4)) {
+                    const char *a = act + 4;
+                    if (!strncmp(a, "bsa:", 4) || !strncmp(a, "bnsa:", 5) || !strncmp(a, "blte:", 5)) {
+                        band_toggle(sel, 256, strchr(a, ':') + 1); render_modal_overlay(&disp); animating = 1;
+                    } else if (!strcmp(a, "mall")) {
+                        if (!strcmp(sel, uni)) sel[0] = 0; else snprintf(sel, 256, "%s", uni);
+                        render_modal_overlay(&disp); animating = 1;
+                    } else if (!strcmp(a, "minv")) {
+                        char u[256]; snprintf(u, sizeof u, "%s", uni); char out[256]; int o = 0;
+                        for (char *tk = strtok(u, ","); tk; tk = strtok(NULL, ","))
+                            if (!band_in(sel, tk)) o += snprintf(out + o, sizeof out - o, "%s%s", o ? "," : "", tk);
+                        out[o] = 0; snprintf(sel, 256, "%s", out); render_modal_overlay(&disp); animating = 1;
+                    } else if (!strcmp(a, "mapply")) {
+                        if (sel[0]) { char cmd[360];
+                            if (g_modal == 3)
+                                snprintf(cmd, sizeof cmd, "ubus call zte_nwinfo_api nwinfo_set_lte_ext_band '{\"lte_band\":\"%s\"}' >/dev/null 2>&1 &", sel);
+                            else
+                                snprintf(cmd, sizeof cmd, "ubus call zte_nwinfo_api nwinfo_set_nrbandlock '{\"nr5g_type\":\"%s\",\"nr5g_band\":\"%s\"}' >/dev/null 2>&1 &", g_modal == 1 ? "0" : "1", sel);
+                            system(cmd);
+                        }
+                        snprintf(g_toast, sizeof g_toast, "锁频成功"); g_toast_until = now + 1600;
+                        g_modal = 0; need_render = 1;
+                    }
+                } else { g_modal = 0; need_render = 1; }   /* tap outside closes */
+            }
+        } else {
+            int maxs = g_page_h > H ? g_page_h - H : 0;
+            if (pressed && !prev_press) {
+                down_x = x; down_y = y; dragging = 1; drag_dir = 0; scroll_dir = 0; scroll_start = g_scroll; sliding = 0; segging = 0;
+                int bx, by, bw, bh;   /* grab the brightness slider / segmented control if pressed on it */
+                if (html_view_rect("#bright-bar", &bx, &by, &bw, &bh) &&
+                    x >= bx && x < bx + bw && y >= by - 5 && y < by + bh + 5) {
+                    sliding = 1; bar_x = bx; bar_w = bw;
+                    set_bright_x(x, bx, bw); render(&disp, CUR_PATH); animating = 1;
+                } else if (html_view_rect("#netseg", &bx, &by, &bw, &bh) &&
+                           x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) {
+                    segging = 1; seg_x = bx; seg_y = by; seg_w = bw; seg_h = bh;
+                    g_segdrag = 1;
+                    render(&disp, CUR_PATH);          /* plain seg (no cell highlight) */
+                    capture_fb(&disp);
+                    seg_box(&disp, seg_x, seg_y, seg_w, seg_h, x);
+                    animating = 1;
+                }
+            }
             else if (pressed && dragging && !menu) {
+                if (sliding) { set_bright_x(x, bar_x, bar_w); render(&disp, CUR_PATH); animating = 1; }
+                else if (segging) { seg_box(&disp, seg_x, seg_y, seg_w, seg_h, x); animating = 1; }
+                else {
                 int dx = x - down_x, dy = y - down_y;
                 int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
-                if (drag_dir == 0) {
+                if (drag_dir == 0 && scroll_dir == 0) {
                     if (g_npages > 1 && adx > 14 && adx > ady) {
                         drag_dir = dx < 0 ? 1 : -1;
                         drag_target = (g_cur + (drag_dir > 0 ? 1 : g_npages - 1)) % g_npages;
                         prep_pair(drag_target, drag_dir);
-                    } else if (ady > 20) dragging = 0;
+                    } else if (ady > 14 && ady >= adx && maxs > 0) {
+                        scroll_dir = 1; scroll_start = g_scroll;
+                        int bufh = g_page_h > SCROLLMAX ? SCROLLMAX : g_page_h;  /* prerender once */
+                        const char *hp = page_html(CUR_PATH);
+                        g_scroll_h = hp ? html_view_render_tall(g_scrollbuf, hp, bufh) : g_page_h;
+                    } else if (ady > 24) dragging = 0;
                 }
                 if (drag_dir != 0) {
                     compose_frame(&disp, drag_dir > 0 ? -dx : (W - dx));
                     animating = 1;
+                } else if (scroll_dir != 0) {
+                    int ns = scroll_start - dy;
+                    if (ns < 0) ns = 0; if (ns > maxs) ns = maxs;
+                    if (ns != g_scroll) { g_scroll = ns; scroll_blit(&disp, g_scroll); }
+                    animating = 1;
+                }
                 }
             }
             else if (!pressed && prev_press) {
                 int dx = x - down_x;
-                if (dragging && drag_dir != 0) {            /* finish or snap back */
+                if (sliding) { /* brightness drag finished */ }
+                else if (segging) {   /* snap to nearest cell + apply the network mode */
+                    int c = clampi((x - seg_x) * 4 / (seg_w > 0 ? seg_w : 1), 0, 3);
+                    char cmd[160];
+                    snprintf(cmd, sizeof cmd,
+                        "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1 &", g_netmodes[c].v);
+                    system(cmd);
+                    snprintf(g_net_pending, sizeof g_net_pending, "%s", g_netmodes[c].v);  /* hold highlight here */
+                    g_segdrag = 0; need_render = 1;
+                }
+                else if (dragging && drag_dir != 0) {            /* finish or snap back */
                     int adx = dx < 0 ? -dx : dx;
                     int commit = adx > W * 30 / 100;
                     int o_now = drag_dir > 0 ? -dx : (W - dx);
                     if (o_now < 0) o_now = 0; if (o_now > W) o_now = W;
                     anim_o(&disp, o_now, drag_dir > 0 ? (commit ? W : 0) : (commit ? 0 : W));
-                    if (commit) g_cur = drag_target;
+                    if (commit) { g_cur = drag_target; g_scroll = 0; }
+                    need_render = 1;
+                } else if (dragging && scroll_dir != 0) {   /* scroll settled */
                     need_render = 1;
                 } else if (dragging) {                      /* tap -> action */
                     const char *act = html_view_click((float)x, (float)y);
@@ -699,12 +1022,54 @@ int main(void)
                             system(cmd);
                             need_render = 1;
                         }
+                        else if (!strcmp(a, "bright")) {    /* tap position on the bar = level */
+                            int bx, by, bw, bh;
+                            if (html_view_rect("#bright-bar", &bx, &by, &bw, &bh) && bw > 0) {
+                                int frac = (x - bx) * 100 / bw;
+                                if (frac < 3) frac = 3; if (frac > 100) frac = 100;
+                                int bmax = backlight_max(); if (bmax <= 0) bmax = 255;
+                                backlight_set(frac * bmax / 100);
+                            }
+                            need_render = 1;
+                        }
+                        else if (!strncmp(a, "autooff:", 8)) {   /* preset select */
+                            g_autooff_ms = atoi(a + 8); last_act = now; need_render = 1;
+                        }
+                        else if (!strcmp(a, "dtap")) { g_dtap_wake = !g_dtap_wake; need_render = 1; }
+                        else if (!strncmp(a, "net:", 4)) {   /* segmented control tap fallback */
+                            char cmd[160];
+                            snprintf(cmd, sizeof cmd,
+                                "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1 &", a + 4);
+                            system(cmd);
+                            snprintf(g_net_pending, sizeof g_net_pending, "%s", a + 4);
+                            need_render = 1;
+                        }
+                        else if (!strncmp(a, "openmodal:", 10)) {   /* open band-lock dialog */
+                            const char *r = a + 10;
+                            g_modal = !strcmp(r, "sa") ? 1 : !strcmp(r, "nsa") ? 2 : 3;
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "resetband")) {
+                            system("ubus call zte_nwinfo_api nwinfo_reset_band_cell_setting '{}' >/dev/null 2>&1 &");
+                            snprintf(g_toast, sizeof g_toast, "锁频已恢复默认"); g_toast_until = now + 1600;
+                            need_render = 1;   /* selection re-syncs from the live lock automatically */
+                        }
                     }
                 }
-                dragging = 0; drag_dir = 0;
+                dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0; g_segdrag = 0;
             }
         }
         prev_press = pressed;
+
+        /* dismiss the toast after its timeout */
+        if (g_toast[0] && now >= g_toast_until) { g_toast[0] = 0; need_render = 1; }
+
+        /* auto screen-off after the configured idle timeout */
+        if (g_autooff_ms > 0 && backlight_is_on() && now - last_act >= (uint32_t)g_autooff_ms) {
+            backlight_off();
+            memset(disp.fb, 0, (size_t)disp.pitch_px * disp.height * sizeof(uint16_t));
+            drm_disp_dirty(&disp, 0, 0, disp.width - 1, disp.height - 1);
+        }
 
         /* periodic data refresh (not mid-drag). While charging, refresh faster so
          * the battery charge sweep animates. */

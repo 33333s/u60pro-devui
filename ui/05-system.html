@@ -5,19 +5,32 @@
   {{STATUSBAR}}
 
   <div class="card">
+    <div class="title">屏幕</div>
+    <div class="srow"><span>亮度</span><span class="sval">{{BRIGHT}}%</span></div>
+    <a href="act:bright" id="bright-bar" class="slider"><span class="sfill" style="width:{{BRIGHT}}%"></span></a>
+    <div class="srow"><span>自动息屏</span></div>
+    <div class="aoffs">{{AUTOOFF}}</div>
+  </div>
+
+  <div class="card">
     <div class="title">系统</div>
+    <table class="grid2">
+      <tr><td class="gl">CPU 占用 <b>{{CPUUSAGE}}%</b></td><td>CPU 温度 <b>{{CPUTEMP}}°</b></td></tr>
+      <tr><td class="gl">电池温度 <b>{{BATTEMP}}°</b></td><td>运行 <b>{{UPSHORT}}</b></td></tr>
+    </table>
+    <div class="memrow"><span>内存占用</span><span class="mv"><b>{{MEM}}%</b> <span class="muted">{{MEMDETAIL}}</span></span></div>
+    <div class="membar"><span class="memfill" style="width:{{MEM}}%"></span></div>
     <table>
-      <tr><td class="kv-l">CPU 占用</td><td class="val">{{CPUUSAGE}}%</td></tr>
-      <tr><td class="kv-l">内存占用</td><td class="val">{{MEM}}%</td></tr>
-      <tr><td class="kv-l">CPU 温度</td><td class="val">{{CPUTEMP}}°C</td></tr>
-      <tr><td class="kv-l">电池温度</td><td class="val">{{BATTEMP}}°C</td></tr>
-      <tr><td class="kv-l">运行时间</td><td class="val">{{UPTIME}}</td></tr>
       <tr><td class="kv-l">版本号</td><td class="val sm">{{SWVER}}</td></tr>
       <tr><td class="kv-l">IMEI <a href="act:revealimei" class="rev">{{IMEIBTN}}</a></td><td class="val sm">{{IMEI}}</td></tr>
     </table>
   </div>
 
   <div class="card">
+    <div class="row">
+      <span class="lab">双击点亮<span class="st">息屏后双击屏幕唤醒</span></span>
+      <a href="act:dtap" class="sw {{DTAPCLASS}}"><span class="kn"></span></a>
+    </div>
     <div class="row">
       <span class="lab">ADB 调试<span class="st">{{ADBSTATE}}</span></span>
       <a href="act:adb" class="sw {{ADBCLASS}}"><span class="kn"></span></a>
@@ -32,6 +45,7 @@
     </div>
   </div>
 
+  <div class="pgpad"></div>
   {{DOTS}}
 </body>
 </html>

@@ -8,19 +8,19 @@
     <div class="ctitle">CPU
       <span class="r"><span class="l1d">占用 {{CPUUSAGE}}%</span><span class="l2d">温度 {{CPUTEMP}}°C</span></span>
     </div>
-    <div class="chart">{{CHART_CPU}}</div>
+    <div id="chart-cpu" class="chart"></div>
   </div>
 
   <div class="card">
-    <div class="ctitle">内存 <span class="r l3d">{{MEM}}%</span></div>
-    <div class="chart sm">{{CHART_MEM}}</div>
+    <div class="ctitle">内存 <span class="r l3d">{{MEM}}% · {{MEMDETAIL}}</span></div>
+    <div id="chart-mem" class="chart sm"></div>
   </div>
 
   <div class="card">
     <div class="ctitle">网速 <span class="unit">({{SPUNIT}})</span>
       <span class="r"><span class="l1d">↓ {{RXSPEED}}</span><span class="l2d">↑ {{TXSPEED}}</span></span>
     </div>
-    <div class="chart">{{CHART_NET}}</div>
+    <div id="chart-net" class="chart"></div>
   </div>
 
   {{DOTS}}
