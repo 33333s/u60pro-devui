@@ -9,7 +9,7 @@
     <div class="srow"><span>亮度</span><span class="sval">{{BRIGHT}}%</span></div>
     <a href="act:bright" id="bright-bar" class="slider"><span class="sfill" style="width:{{BRIGHT}}%"></span></a>
     <div class="srow"><span>自动息屏</span></div>
-    <div class="aoffs">{{AUTOOFF}}</div>
+    {{AUTOOFF}}
   </div>
 
   <div class="card">
@@ -17,6 +17,8 @@
     <table class="grid2">
       <tr><td class="gl">CPU 占用 <b>{{CPUUSAGE}}%</b></td><td>CPU 温度 <b>{{CPUTEMP}}°</b></td></tr>
       <tr><td class="gl">电池温度 <b>{{BATTEMP}}°</b></td><td>运行 <b>{{UPSHORT}}</b></td></tr>
+      <tr><td class="gl">充电器 <b>{{CHGV}}V</b></td><td>电流 <b>{{CHGI}}mA</b></td></tr>
+      <tr><td class="gl">电池 <b>{{BATV}}V</b></td><td>电流 <b>{{BATI}}mA</b></td></tr>
     </table>
     <div class="memrow"><span>内存占用</span><span class="mv"><b>{{MEM}}%</b> <span class="muted">{{MEMDETAIL}}</span></span></div>
     <div class="membar"><span class="memfill" style="width:{{MEM}}%"></span></div>

@@ -32,6 +32,7 @@ typedef struct {
 
     /* battery */
     int  bat_percent, bat_temp, charging, charger_connect;
+    long chg_uv, chg_ua, bat_uv, bat_ua;   /* charger/battery voltage(µV)/current(µA) */
 
     /* clients */
     int  clients_total, clients_wifi, clients_lan;

@@ -224,9 +224,17 @@ static void build_sigbars(char *buf, size_t cap, int rsrp)
 /* ---- rolling history for the charts page (sampled once per second) ---- */
 #define HIST 48
 static int    h_n;
-static int    h_cpu[HIST], h_mem[HIST], h_ct[HIST];
+static int    h_cpu[HIST], h_mem[HIST], h_ct[HIST], h_bt[HIST], h_pwr[HIST];
 static long   h_rx[HIST], h_tx[HIST];
 static time_t h_last;
+
+/* charge (charger input) or discharge (battery) power, in milliwatts. */
+static int power_mw(const devui_data_t *d)
+{
+    double w = d->charger_connect ? (d->chg_uv / 1e6) * (d->chg_ua / 1e6)
+                                  : (d->bat_uv / 1e6) * (labs(d->bat_ua) / 1e6);
+    return (int)(w * 1000);
+}
 
 static void hist_push(const devui_data_t *d)
 {
@@ -235,6 +243,8 @@ static void hist_push(const devui_data_t *d)
         memmove(h_cpu, h_cpu + 1, (HIST - 1) * sizeof h_cpu[0]);
         memmove(h_mem, h_mem + 1, (HIST - 1) * sizeof h_mem[0]);
         memmove(h_ct,  h_ct + 1,  (HIST - 1) * sizeof h_ct[0]);
+        memmove(h_bt,  h_bt + 1,  (HIST - 1) * sizeof h_bt[0]);
+        memmove(h_pwr, h_pwr + 1, (HIST - 1) * sizeof h_pwr[0]);
         memmove(h_rx,  h_rx + 1,  (HIST - 1) * sizeof h_rx[0]);
         memmove(h_tx,  h_tx + 1,  (HIST - 1) * sizeof h_tx[0]);
     }
@@ -242,6 +252,8 @@ static void hist_push(const devui_data_t *d)
     h_cpu[i] = d->cpu_usage < 0 ? 0 : (int)d->cpu_usage;
     h_mem[i] = d->mem_used_pct < 0 ? 0 : (int)d->mem_used_pct;
     h_ct[i]  = (int)d->cpu_temp;
+    h_bt[i]  = d->bat_temp;
+    h_pwr[i] = power_mw(d);
     h_rx[i]  = d->rx_speed;
     h_tx[i]  = d->tx_speed;
 }
@@ -265,6 +277,14 @@ static void draw_charts(void)
         for (int i = 0; i < h_n; i++) { rxi[i] = (int)h_rx[i]; txi[i] = (int)h_tx[i]; }
         html_view_polyline(x, y, w, h, rxi, h_n, 0, (int)mx, 0x4f, 0x8b, 0xff, 2, 22); /* 下行 蓝 */
         html_view_polyline(x, y, w, h, txi, h_n, 0, (int)mx, 0xff, 0x8c, 0x42, 2, 0);  /* 上行 橙 */
+    }
+    if (html_view_rect("#chart-batt", &x, &y, &w, &h)) {
+        static int tn[HIST], pn[HIST];
+        int mx = 1;
+        for (int i = 0; i < h_n; i++) if (h_pwr[i] > mx) mx = h_pwr[i];
+        for (int i = 0; i < h_n; i++) { tn[i] = (h_bt[i] - 20) * 2; pn[i] = (int)((long)h_pwr[i] * 100 / mx); }
+        html_view_polyline(x, y, w, h, pn, h_n, 0, 100, 0x4f, 0x8b, 0xff, 2, 22); /* 功率 蓝 */
+        html_view_polyline(x, y, w, h, tn, h_n, 0, 100, 0xff, 0x8c, 0x42, 2, 0);  /* 温度 橙 */
     }
 }
 
@@ -331,10 +351,13 @@ static void band_summary(char *buf, size_t cap, const char *uni, const char *sel
         o += snprintf(buf + o, cap - o, "%s%s%s", o ? " " : "已锁 ", pfx, tk);
 }
 
-/* network-mode segmented control cells (shared with the touch handler). */
+/* segmented-control cells (shared with the touch handler). */
 static const struct { const char *v, *lab; } g_netmodes[4] = {
     { "WL_AND_5G", "自动" }, { "Only_5G", "5G SA" },
     { "LTE_AND_5G", "5G NSA" }, { "Only_LTE", "4G" } };
+static const struct { int ms; const char *lab; } g_autooffs[6] = {
+    { 0, "关" }, { 30000, "30秒" }, { 60000, "1分" },
+    { 120000, "2分" }, { 300000, "5分" }, { 600000, "10分" } };
 
 /* Build the second-level band-lock dialog (overlaid on the dimmed page). */
 static const char *modal_html(void)
@@ -569,8 +592,8 @@ static int build_kv(struct kv *t)
         const char *cur = g_net_pending[0] ? g_net_pending : d.net_select;
         int active = 0;
         for (int k = 0; k < 4; k++) if (!strcmp(g_netmodes[k].v, cur)) active = k;
-        int hl = g_segdrag ? -1 : active;   /* during drag the native box is the highlight */
-        int o = snprintf(s_netseg, sizeof s_netseg, "<div id='netseg' class='seg'>");
+        int hl = g_segdrag == 1 ? -1 : active;   /* during drag the native box is the highlight */
+        int o = snprintf(s_netseg, sizeof s_netseg, "<div id='netseg' class='seg seg4'>");
         for (int k = 0; k < 4; k++)
             o += snprintf(s_netseg + o, sizeof s_netseg - o, "<a href='act:net:%s' class='segc%s'>%s</a>",
                           g_netmodes[k].v, k == hl ? " seg-on" : "", g_netmodes[k].lab);
@@ -586,16 +609,25 @@ static int build_kv(struct kv *t)
       snprintf(s_bright, sizeof s_bright, "%d", clampi(backlight_get() * 100 / bmax, 0, 100)); }
     { long mt = d.mem_total, ma = d.mem_avail;
       snprintf(s_memdet, sizeof s_memdet, "%ld/%ld MB", mt ? (mt - ma) / 1048576 : 0, mt / 1048576); }
+    static char s_chgv[8], s_chgi[10], s_batv[8], s_bati[10], s_pwr[10];
+    snprintf(s_chgv, sizeof s_chgv, "%.2f", d.chg_uv / 1e6);
+    snprintf(s_chgi, sizeof s_chgi, "%ld", d.chg_ua / 1000);
+    snprintf(s_batv, sizeof s_batv, "%.2f", d.bat_uv / 1e6);
+    snprintf(s_bati, sizeof s_bati, "%ld", labs(d.bat_ua) / 1000);
+    { double pw = d.charger_connect ? (d.chg_uv / 1e6) * (d.chg_ua / 1e6)
+                                    : (d.bat_uv / 1e6) * (labs(d.bat_ua) / 1e6);
+      snprintf(s_pwr, sizeof s_pwr, "%.1f", pw); }
     fmt_uptime_s(s_upshort, sizeof s_upshort, d.uptime);
-    {   /* auto-off preset buttons, current one highlighted */
-        static const struct { int ms; const char *lab; } AO[] = {
-            { 0, "关" }, { 30000, "30秒" }, { 60000, "1分" },
-            { 120000, "2分" }, { 300000, "5分" }, { 600000, "10分" } };
-        int o = 0;
+    {   /* auto-off segmented control (#autoseg), same UI as net mode */
+        int active = 0;
+        for (int k = 0; k < 6; k++) if (g_autooffs[k].ms == g_autooff_ms) active = k;
+        int hl = g_segdrag == 2 ? -1 : active;
+        int o = snprintf(s_autooff, sizeof s_autooff, "<div id='autoseg' class='seg seg6'>");
         for (int k = 0; k < 6; k++)
             o += snprintf(s_autooff + o, sizeof s_autooff - o,
-                "<a href='act:autooff:%d' class='%s'>%s</a>",
-                AO[k].ms, AO[k].ms == g_autooff_ms ? "aoff-on" : "aoff", AO[k].lab);
+                "<a href='act:autooff:%d' class='segc%s'>%s</a>",
+                g_autooffs[k].ms, k == hl ? " seg-on" : "", g_autooffs[k].lab);
+        snprintf(s_autooff + o, sizeof s_autooff - o, "</div>");
     }
     snprintf(s_cusage, sizeof s_cusage, "%ld", d.cpu_usage < 0 ? 0 : d.cpu_usage);
     snprintf(s_ctemp, sizeof s_ctemp, "%ld", d.cpu_temp);
@@ -672,6 +704,9 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "IMEIBTN", g_show_imei ? "隐藏" : "显示" };
     t[i++] = (struct kv){ "BRIGHT", s_bright }; t[i++] = (struct kv){ "AUTOOFF", s_autooff };
     t[i++] = (struct kv){ "MEMDETAIL", s_memdet }; t[i++] = (struct kv){ "UPSHORT", s_upshort };
+    t[i++] = (struct kv){ "CHGV", s_chgv };  t[i++] = (struct kv){ "CHGI", s_chgi };
+    t[i++] = (struct kv){ "BATV", s_batv };  t[i++] = (struct kv){ "BATI", s_bati };
+    t[i++] = (struct kv){ "PWR", s_pwr };    t[i++] = (struct kv){ "PWRLBL", d.charger_connect ? "充电" : "放电" };
     t[i++] = (struct kv){ "DTAPCLASS", g_dtap_wake ? "on" : "off" };
     t[i++] = (struct kv){ "DTAPSTATE", g_dtap_wake ? "开启" : "关闭" };
     /* lock page */
@@ -710,15 +745,11 @@ static void render(drm_disp_t *disp, const char *path)
     g_page_h = html_view_render_html(html);
     draw_charts();   /* native polylines into any #chart-* placeholders */
     int H = disp->height, maxs = g_page_h - H;
+    (void)maxs;
     if (g_modal) {                                    /* dim page + second-level dialog */
         html_view_fill_rect(0, 28, disp->width, H - 28, 0, 0, 0, 150);
         capture_fb(disp);                             /* snapshot page+dim for fast modal refresh */
         html_view_render_overlay(modal_html());
-    } else if (maxs > 0) {                            /* scrollbar overlay */
-        int th = H * H / g_page_h; if (th < 18) th = 18;
-        int ty = g_scroll * (H - th) / maxs;
-        html_view_fill_rect(disp->width - 3, 0, 3, H, 0x3a, 0x40, 0x48, 110);
-        html_view_fill_rect(disp->width - 3, ty, 3, th, 0xc8, 0xce, 0xd6, 220);
     }
     drm_disp_dirty(disp, 0, 0, disp->width - 1, disp->height - 1);
 }
@@ -781,13 +812,6 @@ static void scroll_blit(drm_disp_t *d, int scroll)
         uint16_t *dp = d->fb + (size_t)(Hh - 1 - y) * pp + (W - 1);
         for (int x = 0; x < W; x++) *dp-- = src ? src[x] : 0;
     }
-    int maxs = g_page_h - Hh;
-    if (maxs > 0) {
-        int th = Hh * Hh / g_page_h; if (th < 18) th = 18;
-        int ty = scroll * (Hh - th) / maxs;
-        html_view_fill_rect(W - 3, 0, 3, Hh, 0x3a, 0x40, 0x48, 110);
-        html_view_fill_rect(W - 3, ty, 3, th, 0xc8, 0xce, 0xd6, 220);
-    }
     drm_disp_dirty(d, 0, 0, W - 1, Hh - 1);
 }
 
@@ -805,11 +829,12 @@ static void render_modal_overlay(drm_disp_t *d)
     drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
 }
 
-/* Draw the sliding segmented-control highlight box at the finger, over cached fb. */
-static void seg_box(drm_disp_t *d, int sx, int sy, int sw, int sh, int fx)
+/* Draw the sliding segmented-control highlight box at the finger, over cached fb.
+ * n = number of cells. */
+static void seg_box(drm_disp_t *d, int sx, int sy, int sw, int sh, int n, int fx)
 {
     restore_fb(d);
-    int cw = sw / 4, bx = fx - cw / 2;
+    int cw = sw / n, bx = fx - cw / 2;
     if (bx < sx) bx = sx; if (bx > sx + sw - cw) bx = sx + sw - cw;
     html_view_fill_rect(bx, sy, cw, sh, 0x2f, 0x6f, 0xe0, 150);
     drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
@@ -845,7 +870,8 @@ int main(void)
     int dragging = 0, drag_dir = 0, drag_target = 0;
     int scroll_dir = 0, scroll_start = 0;
     int sliding = 0, bar_x = 0, bar_w = 0;   /* brightness slider drag */
-    int segging = 0, seg_x = 0, seg_y = 0, seg_w = 0, seg_h = 0;   /* net-mode segmented control */
+    int segging = 0, seg_x = 0, seg_y = 0, seg_w = 0, seg_h = 0;   /* segmented control drag */
+    int seg_which = 0, seg_n = 4;   /* 1 = net mode (4 cells), 2 = auto-off (6) */
     const int W = disp.width, H = disp.height;
     char menu_path[300];
     snprintf(menu_path, sizeof menu_path, "%s/menu.html", UI_DIR);
@@ -922,19 +948,26 @@ int main(void)
                     x >= bx && x < bx + bw && y >= by - 5 && y < by + bh + 5) {
                     sliding = 1; bar_x = bx; bar_w = bw;
                     set_bright_x(x, bx, bw); render(&disp, CUR_PATH); animating = 1;
-                } else if (html_view_rect("#netseg", &bx, &by, &bw, &bh) &&
-                           x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) {
-                    segging = 1; seg_x = bx; seg_y = by; seg_w = bw; seg_h = bh;
-                    g_segdrag = 1;
-                    render(&disp, CUR_PATH);          /* plain seg (no cell highlight) */
-                    capture_fb(&disp);
-                    seg_box(&disp, seg_x, seg_y, seg_w, seg_h, x);
-                    animating = 1;
+                } else {   /* segmented controls: net mode (#netseg) or auto-off (#autoseg) */
+                    int which = 0, n = 4;
+                    if (html_view_rect("#netseg", &bx, &by, &bw, &bh) &&
+                        x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 1; n = 4; }
+                    else if (html_view_rect("#autoseg", &bx, &by, &bw, &bh) &&
+                             x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 2; n = 6; }
+                    if (which) {
+                        segging = 1; seg_which = which; seg_n = n;
+                        seg_x = bx; seg_y = by; seg_w = bw; seg_h = bh;
+                        g_segdrag = which;
+                        render(&disp, CUR_PATH);          /* plain seg (no cell highlight) */
+                        capture_fb(&disp);
+                        seg_box(&disp, seg_x, seg_y, seg_w, seg_h, seg_n, x);
+                        animating = 1;
+                    }
                 }
             }
             else if (pressed && dragging && !menu) {
                 if (sliding) { set_bright_x(x, bar_x, bar_w); render(&disp, CUR_PATH); animating = 1; }
-                else if (segging) { seg_box(&disp, seg_x, seg_y, seg_w, seg_h, x); animating = 1; }
+                else if (segging) { seg_box(&disp, seg_x, seg_y, seg_w, seg_h, seg_n, x); animating = 1; }
                 else {
                 int dx = x - down_x, dy = y - down_y;
                 int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
@@ -964,13 +997,17 @@ int main(void)
             else if (!pressed && prev_press) {
                 int dx = x - down_x;
                 if (sliding) { /* brightness drag finished */ }
-                else if (segging) {   /* snap to nearest cell + apply the network mode */
-                    int c = clampi((x - seg_x) * 4 / (seg_w > 0 ? seg_w : 1), 0, 3);
-                    char cmd[160];
-                    snprintf(cmd, sizeof cmd,
-                        "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1 &", g_netmodes[c].v);
-                    system(cmd);
-                    snprintf(g_net_pending, sizeof g_net_pending, "%s", g_netmodes[c].v);  /* hold highlight here */
+                else if (segging) {   /* snap to nearest cell + apply */
+                    int c = clampi((x - seg_x) * seg_n / (seg_w > 0 ? seg_w : 1), 0, seg_n - 1);
+                    if (seg_which == 1) {
+                        char cmd[160];
+                        snprintf(cmd, sizeof cmd,
+                            "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1 &", g_netmodes[c].v);
+                        system(cmd);
+                        snprintf(g_net_pending, sizeof g_net_pending, "%s", g_netmodes[c].v);
+                    } else {
+                        g_autooff_ms = g_autooffs[c].ms; last_act = now;
+                    }
                     g_segdrag = 0; need_render = 1;
                 }
                 else if (dragging && drag_dir != 0) {            /* finish or snap back */

@@ -67,6 +67,10 @@ int data_refresh(devui_data_t *d)
         d->bat_temp        = (int)json_get_int(sec, "temp", 0);
         d->charging        = (int)json_get_int(sec, "charging", 0);
         d->charger_connect = (int)json_get_int(sec, "charger_connect", 0);
+        d->chg_uv = json_get_int(sec, "chg_uv", 0);
+        d->chg_ua = json_get_int(sec, "chg_ua", 0);
+        d->bat_uv = json_get_int(sec, "bat_uv", 0);
+        d->bat_ua = json_get_int(sec, "bat_ua", 0);
     }
 
     if (json_get(buf, "clients", sec, sizeof sec)) {
