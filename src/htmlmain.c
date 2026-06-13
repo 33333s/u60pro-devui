@@ -849,6 +849,26 @@ static void set_bright_x(int x, int bx, int bw)
     backlight_set(f * m / 100);
 }
 
+/* Screen off: fade backlight down (content still shown) then blank the fb. */
+static void screen_off(drm_disp_t *d)
+{
+    backlight_fade_off();
+    memset(d->fb, 0, (size_t)d->pitch_px * d->height * sizeof(uint16_t));
+    drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
+}
+/* Screen on: render, then "warm up" the command-mode panel with several frame
+ * pushes while the backlight is still 0 — this drives it past the idle-exit
+ * transient (the flash) invisibly — then fade the backlight up from 0. */
+static void screen_on(drm_disp_t *d, const char *path)
+{
+    render(d, path);       /* backlight still 0 from screen_off */
+    for (int k = 0; k < 5; k++) {            /* ~175ms of dark refresh */
+        usleep(35000);
+        drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
+    }
+    backlight_fade_on();   /* 0 -> user level */
+}
+
 int main(void)
 {
     signal(SIGINT, on_sig);
@@ -889,13 +909,13 @@ int main(void)
         int ev = key_input_poll(&key, now);
         if (ev == KEY_EV_SHORT || ev == KEY_EV_LONG) last_act = now;
         if (ev == KEY_EV_SHORT) {
-            backlight_toggle();
-            if (backlight_is_on()) need_render = 1;
-            else {   /* blank to black so nothing is visible under external light */
-                memset(disp.fb, 0, (size_t)disp.pitch_px * disp.height * sizeof(uint16_t));
-                drm_disp_dirty(&disp, 0, 0, disp.width - 1, disp.height - 1);
-            }
-        } else if (ev == KEY_EV_LONG) { backlight_on(); menu = !menu; need_render = 1; }
+            if (backlight_is_on()) screen_off(&disp);
+            else                   screen_on(&disp, CUR_PATH);
+        } else if (ev == KEY_EV_LONG) {
+            menu = !menu;
+            if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
+            else need_render = 1;
+        }
 
         /* touch: follow-finger swipe (pages) / drag (scroll) + tap actions */
         int x, y, pressed;
@@ -905,7 +925,7 @@ int main(void)
         if (!backlight_is_on()) {
             /* double-tap wakes the screen (if enabled); gesture is consumed */
             if (pressed && !prev_press) {
-                if (g_dtap_wake && now - last_wake_tap < 400) { backlight_on(); need_render = 1; }
+                if (g_dtap_wake && now - last_wake_tap < 400) screen_on(&disp, CUR_PATH);
                 last_wake_tap = now;
             }
         } else if (g_modal) {
@@ -1102,11 +1122,8 @@ int main(void)
         if (g_toast[0] && now >= g_toast_until) { g_toast[0] = 0; need_render = 1; }
 
         /* auto screen-off after the configured idle timeout */
-        if (g_autooff_ms > 0 && backlight_is_on() && now - last_act >= (uint32_t)g_autooff_ms) {
-            backlight_off();
-            memset(disp.fb, 0, (size_t)disp.pitch_px * disp.height * sizeof(uint16_t));
-            drm_disp_dirty(&disp, 0, 0, disp.width - 1, disp.height - 1);
-        }
+        if (g_autooff_ms > 0 && backlight_is_on() && now - last_act >= (uint32_t)g_autooff_ms)
+            screen_off(&disp);
 
         /* periodic data refresh (not mid-drag). While charging, refresh faster so
          * the battery charge sweep animates. */

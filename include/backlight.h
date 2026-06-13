@@ -10,10 +10,17 @@
 #define U60PRO_BACKLIGHT_H
 
 void backlight_init(void);
-void backlight_on(void);      /* restore the remembered on-level */
+void backlight_on(void);      /* restore the remembered on-level (instant) */
 void backlight_off(void);
 void backlight_toggle(void);
 int  backlight_is_on(void);
+
+/* Animated screen off/on (blocking): fade the live brightness without changing
+ * the remembered user level. Off ramps level->1 then 0 (≈0.25s at full, scaled
+ * by brightness); on ramps 1->level (≈1s at full, scaled). */
+void backlight_fade_off(void);
+void backlight_fade_on(void);
+void backlight_predim(void);  /* force live brightness to 1 (before a wake render) */
 
 void backlight_set(int level); /* set brightness directly (remembers on-level) */
 int  backlight_get(void);      /* current brightness */
