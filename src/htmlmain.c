@@ -47,7 +47,7 @@ static char g_pages[24][288];
 static int  g_npages, g_cur;
 static int  g_theme;      /* 0 = dark, 1 = light */
 static int  g_show_key;   /* reveal WiFi password (default hidden) */
-static int  g_show_arfcn; /* reveal cell ARFCN (default hidden) */
+static int  g_show_cellid; /* reveal NR Cell ID (default hidden) */
 static int  g_speed_bits = 1; /* 1 = Mbps (bit rate), 0 = MB/s (byte rate) */
 static int  g_charging;   /* set from snapshot; drives charge animation cadence */
 static unsigned g_phase;  /* animation tick (battery charge sweep) */
@@ -157,20 +157,21 @@ static char *read_file(const char *path)
  * A carrier reporting the floor sentinel (RSRP <= -140) is "configured but not
  * active" — its values are grayed out and tagged 未激活. */
 static int car_row(char *buf, int o, int cap, const char *band, const char *bw,
-                   const char *pci, const char *rsrp, const char *sinr)
+                   const char *arfcn, const char *pci, const char *rsrp, const char *sinr)
 {
     double rp = atof(rsrp), sn = atof(sinr);
     int inactive = rp <= -140.0;
     const char *rq = inactive ? "q-off" : rp >= -85 ? "q-good" : rp >= -105 ? "q-mid" : "q-bad";
     const char *sq = inactive ? "q-off" : sn >= 13  ? "q-good" : sn >= 0    ? "q-mid" : "q-bad";
     const char *tag = inactive ? "<span class='coff'>未激活</span>" : "";
+    const char *al = (band[0] == 'n') ? "ARFCN" : "EARFCN";   /* NR vs LTE */
     return o + snprintf(buf + o, cap - o,
         "<div class='ccd%s'><span class='cb'>%s</span><span class='cbw'> %sM</span>%s"
-        "<span class='cpci'>PCI %s</span>"
+        "<span class='cinfo'><span class='carfcn'>%s %s</span><span class='cpci'>PCI %s</span></span>"
         "<div class='cm'><span class='ml'>RSRP</span><span class='%s'>%s</span>"
         "<span class='ml ml2'>SINR</span><span class='%s'>%s</span></div></div>",
         inactive ? " off" : "", band, (bw && bw[0]) ? bw : "-", tag,
-        (pci && pci[0]) ? pci : "-",
+        al, (arfcn && arfcn[0]) ? arfcn : "-", (pci && pci[0]) ? pci : "-",
         rq, (rsrp && rsrp[0]) ? rsrp : "-", sq, (sinr && sinr[0]) ? sinr : "-");
 }
 
@@ -208,7 +209,7 @@ static int build_kv(struct kv *t)
     g_phase++;
 
     static char s_time[8], s_bat[8], s_rsrp[12], s_rsrq[12], s_sinr[12], s_bw[12];
-    static char s_arfcn[16], s_pci[12], s_clients[8], s_up[24], s_rxs[20], s_txs[20];
+    static char s_cellid[20], s_pci[12], s_clients[8], s_up[24], s_rxs[20], s_txs[20];
     static char s_rxb[16], s_txb[16], s_cpu[8], s_mem[8], w_rsrp[6], w_rsrq[6], w_sinr[6], w_bw[6];
     static char s_oper[48], s_ssid[64], s_key[64], s_page[8], s_np[8], s_model[64], s_fw[80];
     static char s_qci[8], s_ambr[24], s_sig[280], s_sbar[640], s_dots[320];
@@ -226,8 +227,8 @@ static int build_kv(struct kv *t)
     snprintf(s_rsrq, sizeof s_rsrq, "%d", d.nr_rsrq);
     snprintf(s_sinr, sizeof s_sinr, "%s", d.nr_snr[0] ? d.nr_snr : "-");
     snprintf(s_bw, sizeof s_bw, "%s", d.nr_bw[0] ? d.nr_bw : "-");
-    if (g_show_arfcn) snprintf(s_arfcn, sizeof s_arfcn, "%ld", d.nr_channel);
-    else              strcpy(s_arfcn, "******");
+    if (g_show_cellid) snprintf(s_cellid, sizeof s_cellid, "%ld", d.nr_cell_id);
+    else               strcpy(s_cellid, "********");
     snprintf(s_pci, sizeof s_pci, "%d", d.nr_pci);
     snprintf(s_clients, sizeof s_clients, "%d", d.clients_total);
     fmt_uptime(s_up, sizeof s_up, d.uptime);
@@ -261,12 +262,13 @@ static int build_kv(struct kv *t)
     int is_nr = strstr(d.net_type, "SA") || strstr(d.net_type, "NSA") || strstr(d.net_type, "NR");
     int sa_only = strstr(d.net_type, "SA") && !strstr(d.net_type, "NSA");
     int nr_cc = 0, nr_bw = 0, no = 0, lo = 0;
-    char rp[12], pc[12];
+    char rp[12], pc[12], ac[16];
 
     s_nrrows[0] = 0;
     if (is_nr && d.band[0]) {                       /* NR PCell */
         snprintf(rp, sizeof rp, "%d", d.nr_rsrp); snprintf(pc, sizeof pc, "%d", d.nr_pci);
-        no = car_row(s_nrrows, no, sizeof s_nrrows, d.band, d.nr_bw, pc, rp, d.nr_snr);
+        snprintf(ac, sizeof ac, "%ld", d.nr_channel);
+        no = car_row(s_nrrows, no, sizeof s_nrrows, d.band, d.nr_bw, ac, pc, rp, d.nr_snr);
         nr_cc = 1; nr_bw = atoi(d.nr_bw);
     }
     char nrca[256]; strncpy(nrca, d.nrca, sizeof nrca - 1); nrca[sizeof nrca - 1] = 0;
@@ -275,7 +277,7 @@ static int build_kv(struct kv *t)
         char *f[12]; int nf = ca_split(g, f, 12);
         if (nf > 5 && atoi(f[5]) > 0) {
             char bn[12]; snprintf(bn, sizeof bn, "n%s", f[3]);
-            no = car_row(s_nrrows, no, sizeof s_nrrows, bn, f[5],
+            no = car_row(s_nrrows, no, sizeof s_nrrows, bn, f[5], nf > 4 ? f[4] : "-",
                          nf > 1 ? f[1] : "-", nf > 7 ? f[7] : "-", nf > 9 ? f[9] : "-");
             nr_cc++; nr_bw += atoi(f[5]);
         }
@@ -286,7 +288,7 @@ static int build_kv(struct kv *t)
     s_lterows[0] = 0; int lte_cc = 0;
     if (!sa_only && d.lte_rsrp < 0 && d.lte_rsrp > -140) {   /* LTE PCell */
         snprintf(rp, sizeof rp, "%d", d.lte_rsrp);
-        lo = car_row(s_lterows, lo, sizeof s_lterows, "LTE", "-", "-", rp, d.lte_snr);
+        lo = car_row(s_lterows, lo, sizeof s_lterows, "LTE", "-", "-", "-", rp, d.lte_snr);
         lte_cc = 1;
     }
     if (!sa_only) {
@@ -296,7 +298,7 @@ static int build_kv(struct kv *t)
             char *f[12]; int nf = ca_split(g, f, 12);
             if (nf > 5 && atoi(f[5]) > 0) {
                 char bn[12]; snprintf(bn, sizeof bn, "B%s", f[3]);
-                lo = car_row(s_lterows, lo, sizeof s_lterows, bn, f[5],
+                lo = car_row(s_lterows, lo, sizeof s_lterows, bn, f[5], nf > 4 ? f[4] : "-",
                              nf > 1 ? f[1] : "-", nf > 7 ? f[7] : "-", nf > 9 ? f[9] : "-");
                 lte_cc++;
             }
@@ -380,8 +382,8 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "RSRQ", s_rsrq };        t[i++] = (struct kv){ "RSRQ_W", w_rsrq };
     t[i++] = (struct kv){ "SINR", s_sinr };        t[i++] = (struct kv){ "SINR_W", w_sinr };
     t[i++] = (struct kv){ "BW", s_bw };            t[i++] = (struct kv){ "BW_W", w_bw };
-    t[i++] = (struct kv){ "ARFCN", s_arfcn };      t[i++] = (struct kv){ "PCI", s_pci };
-    t[i++] = (struct kv){ "ARFCNBTN", g_show_arfcn ? "隐藏" : "显示" };
+    t[i++] = (struct kv){ "CELLID", s_cellid };    t[i++] = (struct kv){ "PCI", s_pci };
+    t[i++] = (struct kv){ "CELLBTN", g_show_cellid ? "隐藏" : "显示" };
     t[i++] = (struct kv){ "CLIENTS", s_clients };  t[i++] = (struct kv){ "UPTIME", s_up };
     t[i++] = (struct kv){ "RXSPEED", s_rxs };      t[i++] = (struct kv){ "TXSPEED", s_txs };
     t[i++] = (struct kv){ "RXBYTES", s_rxb };      t[i++] = (struct kv){ "TXBYTES", s_txb };
@@ -550,7 +552,7 @@ int main(void)
                         else if (!strcmp(a, "menu"))      { backlight_on(); menu = 1; need_render = 1; }
                         else if (!strcmp(a, "theme"))     { g_theme = !g_theme; need_render = 1; }
                         else if (!strcmp(a, "revealkey")) { g_show_key = !g_show_key; need_render = 1; }
-                        else if (!strcmp(a, "revealarfcn")) { g_show_arfcn = !g_show_arfcn; need_render = 1; }
+                        else if (!strcmp(a, "revealcell")) { g_show_cellid = !g_show_cellid; need_render = 1; }
                         else if (!strcmp(a, "spunit"))    { g_speed_bits = !g_speed_bits; need_render = 1; }
                         else if (!strcmp(a, "adb")) {
                             devui_data_t dd;

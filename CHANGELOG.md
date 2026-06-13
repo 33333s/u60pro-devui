@@ -1,5 +1,13 @@
 # 更新日志
 
+## Unreleased
+
+### 调整
+
+- 充电流光动画裁剪到电池框内（电池框加 `overflow:hidden`），不再越过边框跑到正极图标外。
+- ARFCN/EARFCN 移到信号页每张载波卡的右上角，位于 PCI 正上方。
+- 第三页原 ARFCN 行改为显示 Cell ID（`nr5g_cell_id`），保留默认打码 + 点击显示/隐藏。
+
 ## v0.2.0 - 2026-06-13
 
 这一版是一次**架构级改动**：界面从内置的 LVGL 代码改为**运行时渲染 HTML/CSS**。程序变成固定的"框架"，真正的界面是 `/data/ui` 目录里的 HTML 文件，用户改界面不用再重新编译。详见新增的 [docs/UI-GUIDE.md](docs/UI-GUIDE.md)。
