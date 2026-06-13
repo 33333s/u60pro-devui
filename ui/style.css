@@ -35,8 +35,10 @@ body.light .spd { color: #3a4048; }
 .batt { display: inline-block; width: 24px; height: 12px; padding: 1px; position: relative;
         border: 1px solid currentColor; border-radius: 3px; vertical-align: middle;
         overflow: hidden; }   /* clip the charge sweep to the battery frame */
-.batt .bf { display: block; height: 100%; border-radius: 1px; background: #5ec85e; }
-.batt.low .bf { background: #e8533a; }
+/* not charging: fill follows theme text color (白色 / 浅色模式黑色) */
+.batt .bf { display: block; height: 100%; border-radius: 1px; background: currentColor; }
+.batt.chg .bf { background: #5ec85e; }   /* charging: green (+ sweep glow) */
+.batt.low .bf { background: #e8533a; }   /* low battery: red */
 .batt .glow { position: absolute; top: 1px; bottom: 1px; width: 5px; border-radius: 2px;
               background: #ffffff; opacity: 0.55; }
 .tip { display: inline-block; width: 2px; height: 6px; border-radius: 0 2px 2px 0;
@@ -44,7 +46,7 @@ body.light .spd { color: #3a4048; }
 .bp { font-size: 12px; vertical-align: middle; }
 
 /* ---- cards ---- */
-.card { margin: 7px 8px 0; border-radius: 8px; padding: 8px 10px; }
+.card { margin: 6px 8px 0; border-radius: 8px; padding: 7px 10px; }
 body.dark  .card { background: #23262c; border: 1px solid #323843; }
 body.light .card { background: #ffffff; border: 1px solid #dde1e8; }
 .title { font-size: 15px; font-weight: 700; overflow: hidden; }
@@ -54,7 +56,7 @@ body.light .card { background: #ffffff; border: 1px solid #dde1e8; }
 .sec { color: #8a929d; font-size: 11px; padding: 6px 0 3px; letter-spacing: 1px; }
 
 table { width: 100%; border-collapse: collapse; }
-td { padding: 3px 0; vertical-align: middle; font-size: 13px; }
+td { padding: 2px 0; vertical-align: middle; font-size: 13px; }
 td.kv-l { width: 96px; color: #8a929d; white-space: nowrap; }
 .val { text-align: right; }
 a.rev { text-decoration: none; font-size: 12px; padding: 1px 8px; border-radius: 4px; }
@@ -95,6 +97,27 @@ body.light .ccd { border-top: 1px solid #e6e9ef; }
         vertical-align: middle; }
 
 .big { font-size: 26px; font-weight: 700; }
+.muted { color: #8a929d; font-weight: 400; }
+.val.sm { font-size: 11px; }
+
+/* ---- charts page ---- */
+.ctitle { font-size: 13px; font-weight: 700; overflow: hidden; padding-bottom: 5px; }
+.ctitle .unit { font-size: 11px; font-weight: 400; color: #8a929d; }
+.ctitle .r > span { margin-left: 8px; font-size: 11px; font-weight: 700; }
+.l1d { color: #4f8bff; } .l2d { color: #ff8c42; } .l3d { color: #46c46f; }
+.chart { position: relative; height: 66px; border-radius: 4px; overflow: hidden; }
+.chart.sm { height: 46px; }
+body.dark  .chart { background: #1b1d22; }
+body.light .chart { background: #f1f3f6; }
+.chart i { position: absolute; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 2px; }
+.chart i.l1 { background: #4f8bff; } .chart i.l2 { background: #ff8c42; } .chart i.l3 { background: #46c46f; }
+
+/* ---- connected device list ---- */
+.cli { overflow: hidden; padding: 4px 0; font-size: 13px; }
+body.dark  .cli + .cli { border-top: 1px solid #2d323b; }
+body.light .cli + .cli { border-top: 1px solid #e6e9ef; }
+.cli .cn { font-weight: 700; }
+.cli .cip { float: right; color: #8a929d; font-size: 12px; }
 
 /* ---- toggle switch (settings) ---- */
 .row { overflow: hidden; padding: 6px 0; }

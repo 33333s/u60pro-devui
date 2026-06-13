@@ -25,13 +25,13 @@ int data_refresh(devui_data_t *d)
 
     FILE *fp = fopen(DEVUI_STATE_FILE, "r");
     if (!fp) return 0;
-    static char buf[8192];
+    static char buf[12288];
     size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
     fclose(fp);
     if (n == 0) return 0;
     buf[n] = 0;
 
-    char sec[2048];
+    char sec[4096];
 
     if (json_get(buf, "net", sec, sizeof sec)) {
         getstr(sec, "type", d->net_type, sizeof d->net_type);
@@ -69,12 +69,40 @@ int data_refresh(devui_data_t *d)
         d->clients_total = (int)json_get_int(sec, "total", 0);
         d->clients_wifi  = (int)json_get_int(sec, "wifi", 0);
         d->clients_lan   = (int)json_get_int(sec, "lan", 0);
+        /* list:[{name,ip,mac},...] — walk each {...} object */
+        char list[2048];
+        d->client_n = 0;
+        if (json_get(sec, "list", list, sizeof list)) {
+            for (char *p = list; (p = strchr(p, '{')) && d->client_n < 16; ) {
+                char *end = strchr(p, '}');
+                if (!end) break;
+                char obj[160]; size_t L = (size_t)(end - p) + 1;
+                if (L >= sizeof obj) L = sizeof obj - 1;
+                memcpy(obj, p, L); obj[L] = 0;
+                getstr(obj, "name", d->client[d->client_n].name, sizeof d->client[0].name);
+                getstr(obj, "ip",   d->client[d->client_n].ip,   sizeof d->client[0].ip);
+                getstr(obj, "mac",  d->client[d->client_n].mac,  sizeof d->client[0].mac);
+                d->client_n++;
+                p = end + 1;
+            }
+        }
     }
 
     if (json_get(buf, "wlan", sec, sizeof sec)) {
         getstr(sec, "ssid", d->wifi_ssid, sizeof d->wifi_ssid);
         getstr(sec, "key",  d->wifi_key,  sizeof d->wifi_key);
         getstr(sec, "enc",  d->wifi_enc,  sizeof d->wifi_enc);
+        d->wifi_enabled = (int)json_get_int(sec, "enabled", 1);
+    }
+
+    if (json_get(buf, "nfc", sec, sizeof sec))
+        d->nfc_switch = (int)json_get_int(sec, "switch", 0);
+
+    if (json_get(buf, "dhcp", sec, sizeof sec)) {
+        getstr(sec, "ip",        d->dhcp_ip,        sizeof d->dhcp_ip);
+        getstr(sec, "start",     d->dhcp_start,     sizeof d->dhcp_start);
+        getstr(sec, "limit",     d->dhcp_limit,     sizeof d->dhcp_limit);
+        getstr(sec, "leasetime", d->dhcp_leasetime, sizeof d->dhcp_leasetime);
     }
 
     if (json_get(buf, "traffic", sec, sizeof sec)) {
@@ -95,9 +123,12 @@ int data_refresh(devui_data_t *d)
     if (json_get(buf, "system", sec, sizeof sec)) {
         d->uptime       = json_get_int(sec, "uptime", 0);
         d->cpu_temp     = json_get_int(sec, "cpu_temp", 0);
+        d->cpu_usage    = json_get_int(sec, "cpu_usage", -1);
         d->mem_used_pct = json_get_int(sec, "mem_used_pct", 0);
         getstr(sec, "model", d->model, sizeof d->model);
         getstr(sec, "fw", d->fw, sizeof d->fw);
+        getstr(sec, "sw_version", d->sw_version, sizeof d->sw_version);
+        getstr(sec, "imei", d->imei, sizeof d->imei);
     }
 
     d->valid = 1;

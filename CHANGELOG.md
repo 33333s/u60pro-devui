@@ -2,11 +2,19 @@
 
 ## Unreleased
 
+### 新增
+
+- **新增图表页**（第 3 页，插在 WiFi 与系统之间）：CPU 占用率+温度同图双色折线、内存占用率折线、网速上下行双色折线（单位跟随设置）。UI 端保留 48 秒滚动历史，每秒采样。
+- **WiFi 页**新增：WiFi 开关、NFC 碰一碰开关、已连接设备列表（名称/IP，来自 DHCP 租约）、DHCP 信息（网关/地址池/租期）。
+- **系统页**：删除小区 PCI；CPU/内存改为显示占用率，新增 CPU 温度与电池温度；新增系统版本号（`BD_FLYMODEMMU5250V1.0.0B27`）与 IMEI（默认打码，点击显示）。
+- 后端 `u60-datad` 新增字段：`system.cpu_usage`（/proc/stat 实时占用率）、`system.sw_version`、`system.imei`、`clients.list`（DHCP 租约设备列表）、`wlan.enabled`、`nfc.switch`、`dhcp.*`。
+
 ### 调整
 
 - 充电流光动画裁剪到电池框内（电池框加 `overflow:hidden`），不再越过边框跑到正极图标外。
 - ARFCN/EARFCN 移到信号页每张载波卡的右上角，位于 PCI 正上方。
-- 第三页原 ARFCN 行改为显示 Cell ID（`nr5g_cell_id`），保留默认打码 + 点击显示/隐藏。
+- 原系统页 ARFCN 行改为显示 Cell ID（`nr5g_cell_id`），保留默认打码 + 点击显示/隐藏。
+- 页面从 3 页增加到 5 页：信号 / WiFi / 图表 / 系统（+电源菜单）。
 
 ## v0.2.0 - 2026-06-13
 

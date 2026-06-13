@@ -48,6 +48,7 @@ static int  g_npages, g_cur;
 static int  g_theme;      /* 0 = dark, 1 = light */
 static int  g_show_key;   /* reveal WiFi password (default hidden) */
 static int  g_show_cellid; /* reveal NR Cell ID (default hidden) */
+static int  g_show_imei;   /* reveal IMEI (default hidden) */
 static int  g_speed_bits = 1; /* 1 = Mbps (bit rate), 0 = MB/s (byte rate) */
 static int  g_charging;   /* set from snapshot; drives charge animation cadence */
 static unsigned g_phase;  /* animation tick (battery charge sweep) */
@@ -119,7 +120,7 @@ struct kv { const char *k; const char *v; };
 
 static char *apply_template(const char *tmpl, struct kv *t, int n)
 {
-    static char out[16384];
+    static char out[32768];
     size_t o = 0;
     for (const char *p = tmpl; *p && o < sizeof(out) - 1; ) {
         if (p[0] == '{' && p[1] == '{') {
@@ -203,6 +204,49 @@ static void build_sigbars(char *buf, size_t cap, int rsrp)
     snprintf(buf + o, cap - o, "</span>");
 }
 
+/* ---- rolling history for the charts page (sampled once per second) ---- */
+#define HIST 48
+static int    h_n;
+static int    h_cpu[HIST], h_mem[HIST], h_ct[HIST];
+static long   h_rx[HIST], h_tx[HIST];
+static time_t h_last;
+
+static void hist_push(const devui_data_t *d)
+{
+    if (h_n < HIST) h_n++;
+    else {
+        memmove(h_cpu, h_cpu + 1, (HIST - 1) * sizeof h_cpu[0]);
+        memmove(h_mem, h_mem + 1, (HIST - 1) * sizeof h_mem[0]);
+        memmove(h_ct,  h_ct + 1,  (HIST - 1) * sizeof h_ct[0]);
+        memmove(h_rx,  h_rx + 1,  (HIST - 1) * sizeof h_rx[0]);
+        memmove(h_tx,  h_tx + 1,  (HIST - 1) * sizeof h_tx[0]);
+    }
+    int i = h_n - 1;
+    h_cpu[i] = d->cpu_usage < 0 ? 0 : (int)d->cpu_usage;
+    h_mem[i] = d->mem_used_pct < 0 ? 0 : (int)d->mem_used_pct;
+    h_ct[i]  = (int)d->cpu_temp;
+    h_rx[i]  = d->rx_speed;
+    h_tx[i]  = d->tx_speed;
+}
+
+/* Emit a line series (values normalized to 0..100): interpolate CHARTW closely
+ * spaced points between the samples so the dots merge into a continuous line. */
+#define CHARTW 90
+static int dotline(char *b, int o, int cap, const int *norm, int n, const char *cls)
+{
+    if (n <= 0) return o;
+    for (int j = 0; j < CHARTW; j++) {
+        double t = (n > 1) ? (double)j / (CHARTW - 1) * (n - 1) : 0.0;
+        int i0 = (int)t; double fr = t - i0;
+        double v = (i0 + 1 < n) ? norm[i0] + (norm[i0 + 1] - norm[i0]) * fr : norm[i0];
+        int y = (int)(v + 0.5); if (y < 0) y = 0; if (y > 100) y = 100;
+        int x = j * 100 / (CHARTW - 1);
+        o += snprintf(b + o, cap - o, "<i class='%s' style='left:%d%%;top:%d%%'></i>",
+                      cls, x, 100 - y);
+    }
+    return o;
+}
+
 /* Fill a kv table from the current device state. Buffers are static. */
 static int build_kv(struct kv *t)
 {
@@ -221,6 +265,7 @@ static int build_kv(struct kv *t)
     snprintf(s_np, sizeof s_np, "%d", g_npages);
 
     time_t now = time(NULL); struct tm tmv; localtime_r(&now, &tmv);
+    if (now != h_last) { hist_push(&d); h_last = now; }   /* sample once per second */
     snprintf(s_time, sizeof s_time, "%02d:%02d", tmv.tm_hour, tmv.tm_min);
     snprintf(s_bat, sizeof s_bat, "%d", d.bat_percent);
     snprintf(s_rsrp, sizeof s_rsrp, "%d", d.nr_rsrp);
@@ -343,12 +388,14 @@ static int build_kv(struct kv *t)
 
     /* ---- shared status bar: time | speed | gen-text | sigbars | battery | % ---- */
     {
-        char sp[40], glow[80] = "";
+        char sp[40], glow[80] = "", bcls[20];
         fmt_speed_pair(sp, sizeof sp, d.tx_speed, d.rx_speed, g_speed_bits);
         if (g_charging) {
             int gp = (g_phase % 12) * 9;        /* 0..99 sweep */
             snprintf(glow, sizeof glow, "<span class='glow' style='left:%d%%'></span>", gp);
         }
+        snprintf(bcls, sizeof bcls, "%s%s", g_charging ? "chg " : "",
+                 d.bat_percent <= 20 ? "low" : "");
         snprintf(s_sbar, sizeof s_sbar,
             "<div class='sbar'><span class='clk'>%s</span><span class='r'>"
             "<span class='spd'>%s</span>"
@@ -358,7 +405,7 @@ static int build_kv(struct kv *t)
             "<span class='bp'>%d%%</span>"
             "</span></div>",
             s_time, sp, genc, gen, s_sig,
-            d.bat_percent <= 20 ? "low" : "", clampi(d.bat_percent, 0, 100), glow,
+            bcls, clampi(d.bat_percent, 0, 100), glow,
             d.bat_percent);
     }
 
@@ -369,6 +416,61 @@ static int build_kv(struct kv *t)
             o += snprintf(s_dots + o, sizeof s_dots - o, "<span class='dot%s'></span>", p == g_cur ? " on" : "");
         snprintf(s_dots + o, sizeof s_dots - o, "</div>");
     }
+
+    /* ---- charts (dot-line series over the rolling history) ---- */
+    static char s_chcpu[9000], s_chmem[4600], s_chnet[9000];
+    {
+        int cpu_n[HIST], tmp_n[HIST], mem_n[HIST], rxn[HIST], txn[HIST];
+        long mx = 1;
+        for (int i = 0; i < h_n; i++) { if (h_rx[i] > mx) mx = h_rx[i]; if (h_tx[i] > mx) mx = h_tx[i]; }
+        for (int i = 0; i < h_n; i++) {
+            cpu_n[i] = h_cpu[i];
+            tmp_n[i] = (h_ct[i] - 20) * 2;            /* 20..70 C -> 0..100 */
+            mem_n[i] = h_mem[i];
+            rxn[i] = (int)(h_rx[i] * 100 / mx);
+            txn[i] = (int)(h_tx[i] * 100 / mx);
+        }
+        int o = dotline(s_chcpu, 0, sizeof s_chcpu, cpu_n, h_n, "l1");
+        dotline(s_chcpu, o, sizeof s_chcpu, tmp_n, h_n, "l2");
+        dotline(s_chmem, 0, sizeof s_chmem, mem_n, h_n, "l3");
+        o = dotline(s_chnet, 0, sizeof s_chnet, rxn, h_n, "l1");
+        dotline(s_chnet, o, sizeof s_chnet, txn, h_n, "l2");
+    }
+
+    /* ---- system extras: usage, temps, version, imei ---- */
+    static char s_cusage[8], s_ctemp[8], s_btemp[8], s_swver[80], s_imei[24], s_spu[8];
+    snprintf(s_cusage, sizeof s_cusage, "%ld", d.cpu_usage < 0 ? 0 : d.cpu_usage);
+    snprintf(s_ctemp, sizeof s_ctemp, "%ld", d.cpu_temp);
+    snprintf(s_btemp, sizeof s_btemp, "%d", d.bat_temp);
+    snprintf(s_swver, sizeof s_swver, "%s", d.sw_version[0] ? d.sw_version : "-");
+    if (g_show_imei && d.imei[0]) snprintf(s_imei, sizeof s_imei, "%s", d.imei);
+    else { int n = d.imei[0] ? (int)strlen(d.imei) : 15; if (n > 23) n = 23; memset(s_imei, '*', n); s_imei[n] = 0; }
+    snprintf(s_spu, sizeof s_spu, "%s", g_speed_bits ? "Mbps" : "MB/s");
+
+    /* ---- connected device list (page 2), capped to keep the page in 480px ---- */
+    static char s_clist[1400];
+    {
+        int o = 0, show = d.client_n < 3 ? d.client_n : 2;
+        if (d.client_n == 0)
+            o += snprintf(s_clist + o, sizeof s_clist - o, "<div class='cli muted'>暂无已连接设备</div>");
+        for (int i = 0; i < show; i++)
+            o += snprintf(s_clist + o, sizeof s_clist - o,
+                "<div class='cli'><span class='cn'>%s</span><span class='cip'>%s</span></div>",
+                d.client[i].name, d.client[i].ip);
+        if (d.client_n > show)
+            o += snprintf(s_clist + o, sizeof s_clist - o,
+                "<div class='cli muted'>…另有 %d 台</div>", d.client_n - show);
+    }
+
+    /* ---- dhcp summary (page 2) ---- */
+    static char s_pool[64], s_lease[24];
+    snprintf(s_pool, sizeof s_pool, "%s · 共 %s",
+             d.dhcp_start[0] ? d.dhcp_start : "-", d.dhcp_limit[0] ? d.dhcp_limit : "-");
+    { long lt = atol(d.dhcp_leasetime);
+      if (lt >= 3600)     snprintf(s_lease, sizeof s_lease, "%ld 小时", lt / 3600);
+      else if (lt >= 60)  snprintf(s_lease, sizeof s_lease, "%ld 分钟", lt / 60);
+      else if (lt > 0)    snprintf(s_lease, sizeof s_lease, "%ld 秒", lt);
+      else                strcpy(s_lease, "-"); }
 
     int adb_on = !strcmp(d.usb_mode, "debug");
     int connected = strstr(d.wan_status, "connect") != NULL;
@@ -406,6 +508,22 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "THEMESTATE", g_theme ? "浅色模式" : "深色模式" };
     t[i++] = (struct kv){ "SPUNITCLASS", g_speed_bits ? "on" : "off" };
     t[i++] = (struct kv){ "SPUNITSTATE", g_speed_bits ? "比特率 Mbps" : "字节率 MB/s" };
+    t[i++] = (struct kv){ "SPUNIT", s_spu };
+    /* system page */
+    t[i++] = (struct kv){ "CPUUSAGE", s_cusage };  t[i++] = (struct kv){ "CPUTEMP", s_ctemp };
+    t[i++] = (struct kv){ "BATTEMP", s_btemp };    t[i++] = (struct kv){ "SWVER", s_swver };
+    t[i++] = (struct kv){ "IMEI", s_imei };
+    t[i++] = (struct kv){ "IMEIBTN", g_show_imei ? "隐藏" : "显示" };
+    /* charts page */
+    t[i++] = (struct kv){ "CHART_CPU", s_chcpu };  t[i++] = (struct kv){ "CHART_MEM", s_chmem };
+    t[i++] = (struct kv){ "CHART_NET", s_chnet };
+    /* wifi page */
+    t[i++] = (struct kv){ "NFCCLASS", d.nfc_switch ? "on" : "off" };
+    t[i++] = (struct kv){ "NFCSTATE", d.nfc_switch ? "已开启" : "已关闭" };
+    t[i++] = (struct kv){ "WIFICLASS", d.wifi_enabled ? "on" : "off" };
+    t[i++] = (struct kv){ "WIFISTATE", d.wifi_enabled ? "已开启" : "已关闭" };
+    t[i++] = (struct kv){ "CLIENTLIST", s_clist }; t[i++] = (struct kv){ "DHCP_IP", d.dhcp_ip[0] ? d.dhcp_ip : "-" };
+    t[i++] = (struct kv){ "DHCP_POOL", s_pool };   t[i++] = (struct kv){ "DHCP_LEASE", s_lease };
     return i;
 }
 
@@ -414,7 +532,7 @@ static const char *page_html(const char *path)
 {
     char *tmpl = read_file(path);   /* re-read each time = live reload */
     if (!tmpl) return NULL;
-    struct kv t[64];
+    struct kv t[96];
     int n = build_kv(t);
     char *html = apply_template(tmpl, t, n);
     free(tmpl);
@@ -553,7 +671,25 @@ int main(void)
                         else if (!strcmp(a, "theme"))     { g_theme = !g_theme; need_render = 1; }
                         else if (!strcmp(a, "revealkey")) { g_show_key = !g_show_key; need_render = 1; }
                         else if (!strcmp(a, "revealcell")) { g_show_cellid = !g_show_cellid; need_render = 1; }
+                        else if (!strcmp(a, "revealimei")) { g_show_imei = !g_show_imei; need_render = 1; }
                         else if (!strcmp(a, "spunit"))    { g_speed_bits = !g_speed_bits; need_render = 1; }
+                        else if (!strcmp(a, "nfc")) {
+                            devui_data_t dd; char cmd[120];
+                            int on = (data_refresh(&dd) && dd.nfc_switch) ? 0 : 1;
+                            snprintf(cmd, sizeof cmd,
+                                "ubus call zwrt_nfc zwrt_nfc_wifi_set '{\"switch\":%d,\"flag\":2}'", on);
+                            system(cmd);
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "wifi")) {
+                            devui_data_t dd; int dis = (data_refresh(&dd) && dd.wifi_enabled) ? 1 : 0;
+                            char cmd[256];
+                            snprintf(cmd, sizeof cmd,
+                                "(uci set wireless.main_2g.disabled=%d; uci set wireless.main_5g.disabled=%d; "
+                                "uci commit wireless; wifi reload) >/dev/null 2>&1 &", dis, dis);
+                            system(cmd);
+                            need_render = 1;
+                        }
                         else if (!strcmp(a, "adb")) {
                             devui_data_t dd;
                             const char *mode = "debug";

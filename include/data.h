@@ -33,9 +33,18 @@ typedef struct {
 
     /* clients */
     int  clients_total, clients_wifi, clients_lan;
+    struct { char name[40], ip[24], mac[20]; } client[16];
+    int  client_n;
 
     /* wifi (main SSID) */
     char wifi_ssid[64], wifi_key[64], wifi_enc[24];
+    int  wifi_enabled;
+
+    /* nfc tap-to-share */
+    int  nfc_switch;
+
+    /* dhcp / lan */
+    char dhcp_ip[24], dhcp_start[24], dhcp_limit[8], dhcp_leasetime[12];
 
     /* traffic (bytes, bytes/s) */
     long rx_speed, tx_speed, rx_bytes, tx_bytes;
@@ -46,8 +55,8 @@ typedef struct {
     char   usb_mode[16];       /* "user" = adb off, "debug" = adb on */
 
     /* system */
-    long uptime, cpu_temp, mem_used_pct;
-    char model[64], fw[80];
+    long uptime, cpu_temp, cpu_usage, mem_used_pct;
+    char model[64], fw[80], sw_version[80], imei[24];
 } devui_data_t;
 
 /* Re-read the snapshot. Returns 1 on success (d->valid set), 0 otherwise. */
