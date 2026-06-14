@@ -34,13 +34,15 @@
 ├── 02-wifi.html      # 第 2 页：WiFi / 设备 / DHCP
 ├── 03-lock.html      # 第 3 页：选网 / 锁频
 ├── 04-charts.html    # 第 4 页：CPU / 内存 / 网速 图表
-├── 05-system.html    # 第 5 页：系统信息 / 屏幕 / 开关
+├── 05-system.html    # 第 5 页：系统信息 / 屏幕 / 开关（含锁屏开关）
 ├── menu.html         # 电源键长按弹出的菜单（不算翻页）
+├── lockscreen.html   # 锁屏 PIN 键盘（不算翻页，开启锁屏后覆盖显示）
 └── style.css         # 所有页面共享的样式
 ```
 
 - 文件名 `NN-名字.html` 的数字前缀决定**顺序**。想加一页，丢一个 `04-xxx.html` 进去即可，圆点指示会自动变成 4 个。
 - `menu.html` 是特殊页：电源键长按时覆盖显示，里面放关机/重启/取消。
+- `lockscreen.html` 是特殊页：开启锁屏后，超时/电源键锁屏时全屏显示 PIN 键盘（解锁正确才回到界面）；第五页锁屏开关从关→开时也用它设置新密码。
 - 所有页面用 `<link rel="stylesheet" href="style.css">` 共享同一份样式。
 
 ---
@@ -104,6 +106,9 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `{{CARRIERS}}` | 信号页载波区：表头（组网模式 · L LTE + M NR 载波 · 总X MHz）+ 每载波一张卡片（频段·频宽 / EARFCN / PCI / RSRP / SINR，按质量上色，未激活置灰） |
 | `{{NETSEG}}` | 选网方式分段控件（自动 / 5G SA / 5G NSA / 4G，当前模式高亮，支持点/滑） |
 | `{{TOAST}}` | 居中提示气泡（无提示时为空），如"锁频成功" |
+| `{{PINDOTS}}` | 锁屏键盘的 4 个 PIN 圆点（已输入的高亮，整段） |
+| `{{LOCKMSG}}` | 解锁错误时的居中「密码错误」红色气泡（无错误为空，整段） |
+| `{{LOCKAUX}}` | 锁屏键盘左下角辅助键：设置 PIN 时为「取消」键，解锁时为空 |
 
 > 信号格条已并入 `{{STATUSBAR}}`；锁频的频段芯片由程序在二级弹窗里生成，页面只需用 `{{CURSA}}/{{CURNSA}}/{{CURLTE}}` 显示当前锁定摘要。
 
@@ -133,7 +138,8 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `{{BRIGHT}}` | 屏幕亮度% | `80` |
 | `{{AUTOOFF}}` | 自动息屏预设按钮组(整段，当前项高亮) | |
 | `{{CURSA}}` `{{CURNSA}}` `{{CURLTE}}` | 各制式当前锁定频段摘要 | `已锁 n41 n78` |
-| `{{ADBCLASS}}/{{ADBSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMECLASS}}/{{THEMESTATE}}` `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{DTAPCLASS}}/{{DTAPSTATE}}` | 各开关的类(`on`/`off`) 与状态文字 | `on` / `已开启` |
+| `{{ADBCLASS}}/{{ADBSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{WIFI24CLASS}}/{{WIFI24STATE}}` `{{WIFI5CLASS}}/{{WIFI5STATE}}` `{{PSMCLASS}}/{{PSMSTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMECLASS}}/{{THEMESTATE}}` `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{DTAPCLASS}}/{{DTAPSTATE}}` `{{LOCKCLASS}}/{{LOCKSTATE}}` | 各开关的类(`on`/`off`) 与状态文字 | `on` / `已开启` |
+| `{{LOCKTITLE}}` | 锁屏键盘标题（设置时「设置锁屏密码」/ 解锁时「请输入锁屏密码」） | |
 | `{{PAGE}}` `{{NPAGES}}` | 当前页 / 总页数 | `3` / `5` |
 
 > 安全提示：`{{KEY}}`(WiFi 密码)、`{{CELLID}}`、`{{IMEI}}` **默认打码**(显示 `*`)，点对应"显示"动作才明文。请保留此行为。
@@ -150,7 +156,9 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `act:revealkey` `act:revealcell` `act:revealimei` | 明文/打码 显示 WiFi 密码 / Cell ID / IMEI |
 | `act:spunit` | 网速单位 Mbps(比特率) / MB/s(字节率) |
 | `act:adb` | 切换 ADB 调试(`debug`=开 / `user`=关) |
-| `act:wifi` `act:nfc` | 切换 WiFi 开关 / NFC 碰一碰 |
+| `act:wifi` `act:nfc` | 切换 WiFi 总开关（两个主频段）/ NFC 碰一碰 |
+| `act:wifi24` `act:wifi5` | 切换 2.4G / 5G 主频段（`ifconfig wlan0/wlan2 up/down`） |
+| `act:psm` | 切换 WiFi 节能模式（`iw set power_save`，开=省电 / 关=高性能） |
 | `act:dtap` | 切换"双击点亮"(息屏后双击唤醒) |
 | `act:bright` | 在亮度滑条上点/拖设置亮度（按命中位置算） |
 | `act:autooff:<毫秒>` | 选自动息屏预设（`act:autooff:30000` 等，`0`=关） |
@@ -159,6 +167,10 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `act:bsa:<频段>` `act:bnsa:<n>` `act:blte:<n>` | 在弹窗里勾选/取消某频段（仅本地缓存） |
 | `act:mall` `act:minv` `act:mapply` | 弹窗：全选/全不选 · 反选 · 应用（应用才提交锁频） |
 | `act:resetband` | 解锁所有频段并恢复默认 |
+| `act:locktoggle` | 锁屏开关：关→开进入 PIN 设置键盘；开→关清除密码、关闭锁屏 |
+| `act:pin:<0-9>` | 锁屏键盘按下一位数字（满 4 位自动校验/保存） |
+| `act:pin:del` | 锁屏键盘删除最后一位 |
+| `act:lockcancel` | 放弃 PIN 设置（仅设置键盘左下角） |
 | `act:poweroff` `act:reboot` `act:close` `act:menu` | 关机 / 重启 / 关菜单 / 开菜单（一般只在 `menu.html`） |
 
 例：一个开关按钮
