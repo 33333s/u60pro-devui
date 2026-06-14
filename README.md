@@ -6,9 +6,9 @@
 - 界面用 **HTML/CSS** 描述，**不改程序就能换界面**
 - 编译成单个静态 `aarch64` 二进制，拷到设备上就能运行
 
-> 这是一个基于公开 Linux/OpenWRT 接口的独立重实现，不隶属于 ZTE，也不受其认可。硬件相关说明见 [docs/HARDWARE.md](docs/HARDWARE.md)。
+> 这是一个基于公开 Linux/OpenWRT 接口的独立重实现。硬件相关说明见 [docs/HARDWARE.md](docs/HARDWARE.md)。
 
-> 💬 交流讨论群 **625439164**，欢迎进群讨论。
+> 💬 QQ 交流讨论群 **625439164**，欢迎进群讨论。
 
 ## 核心理念：程序固定，界面是数据
 
