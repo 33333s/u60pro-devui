@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
+<body class="{{THEME}}">
+  {{STATUSBAR}}
+  <div class="lockwrap">
+    <div class="lock-title">{{LOCKTITLE}}</div>
+    <div class="pinbox">
+      {{PINDOTS}}
+      <a href="act:pin:del" class="pin-del">删除</a>
+    </div>
+    {{LOCKMSG}}
+    <div class="keypad">
+      <div class="kprow">
+        <span class="kpcell"><a href="act:pin:1" class="kp">1</a></span>
+        <span class="kpcell"><a href="act:pin:2" class="kp">2</a></span>
+        <span class="kpcell"><a href="act:pin:3" class="kp">3</a></span>
+      </div>
+      <div class="kprow">
+        <span class="kpcell"><a href="act:pin:4" class="kp">4</a></span>
+        <span class="kpcell"><a href="act:pin:5" class="kp">5</a></span>
+        <span class="kpcell"><a href="act:pin:6" class="kp">6</a></span>
+      </div>
+      <div class="kprow">
+        <span class="kpcell"><a href="act:pin:7" class="kp">7</a></span>
+        <span class="kpcell"><a href="act:pin:8" class="kp">8</a></span>
+        <span class="kpcell"><a href="act:pin:9" class="kp">9</a></span>
+      </div>
+      <div class="kprow">
+        <span class="kpcell">{{LOCKAUX}}</span>
+        <span class="kpcell"><a href="act:pin:0" class="kp">0</a></span>
+        <span class="kpcell"></span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

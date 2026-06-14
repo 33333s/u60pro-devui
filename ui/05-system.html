@@ -30,20 +30,24 @@
 
   <div class="card">
     <div class="row">
+      <span class="lab">锁屏<span class="st">{{LOCKSTATE}} · 超时/电源键自动锁屏</span></span>
+      <span class="ctrl"><a href="act:locktoggle" class="sw {{LOCKCLASS}}"><span class="kn"></span></a></span>
+    </div>
+    <div class="row">
       <span class="lab">双击点亮<span class="st">息屏后双击屏幕唤醒</span></span>
-      <a href="act:dtap" class="sw {{DTAPCLASS}}"><span class="kn"></span></a>
+      <span class="ctrl"><a href="act:dtap" class="sw {{DTAPCLASS}}"><span class="kn"></span></a></span>
     </div>
     <div class="row">
       <span class="lab">ADB 调试<span class="st">{{ADBSTATE}}</span></span>
-      <a href="act:adb" class="sw {{ADBCLASS}}"><span class="kn"></span></a>
+      <span class="ctrl"><a href="act:adb" class="sw {{ADBCLASS}}"><span class="kn"></span></a></span>
     </div>
     <div class="row">
       <span class="lab">速率单位<span class="st">{{SPUNITSTATE}}</span></span>
-      <a href="act:spunit" class="sw {{SPUNITCLASS}}"><span class="kn"></span></a>
+      <span class="ctrl"><a href="act:spunit" class="sw {{SPUNITCLASS}}"><span class="kn"></span></a></span>
     </div>
     <div class="row">
       <span class="lab">界面主题<span class="st">{{THEMESTATE}}</span></span>
-      <a href="act:theme" class="sw {{THEMECLASS}}"><span class="kn"></span></a>
+      <span class="ctrl"><a href="act:theme" class="sw {{THEMECLASS}}"><span class="kn"></span></a></span>
     </div>
   </div>
 

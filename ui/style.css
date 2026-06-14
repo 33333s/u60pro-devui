@@ -32,16 +32,14 @@ body.light .spd { color: #3a4048; }
 /* battery icon + charge sweep. battery body + terminal are wrapped in .bw so the
  * inter-item margin applies to the wrapper, not between body and terminal. */
 .bw { display: inline-block; vertical-align: middle; white-space: nowrap; font-size: 0; }
-.batt { display: inline-block; width: 24px; height: 12px; padding: 1px; position: relative;
+.batt { display: inline-block; width: 24px; height: 10px; padding: 1px; position: relative;
         border: 1px solid currentColor; border-radius: 3px; vertical-align: middle;
-        overflow: hidden; }   /* clip the charge sweep to the battery frame */
+        overflow: hidden; }
 /* not charging: fill follows theme text color (白色 / 浅色模式黑色) */
 .batt .bf { display: block; height: 100%; border-radius: 1px; background: currentColor; }
-.batt.chg .bf { background: #5ec85e; }   /* charging: green (+ sweep glow) */
+.batt.chg .bf { background: #5ec85e; }   /* charging: green (host draws a bolt over it) */
 .batt.low .bf { background: #e8533a; }   /* low battery: red */
-.batt .glow { position: absolute; top: 1px; bottom: 1px; width: 5px; border-radius: 2px;
-              background: #ffffff; opacity: 0.55; }
-.tip { display: inline-block; width: 2px; height: 6px; border-radius: 0 2px 2px 0;
+.tip { display: inline-block; width: 2px; height: 5px; border-radius: 0 2px 2px 0;
        background: currentColor; vertical-align: middle; }
 .bp { font-size: 12px; vertical-align: middle; }
 
@@ -207,16 +205,18 @@ body.light .cli + .cli { border-top: 1px solid #e6e9ef; }
 .cli .cip { float: right; color: #8a929d; font-size: 12px; }
 
 /* ---- toggle switch (settings) ---- */
-.row { overflow: hidden; padding: 6px 0; }
+/* table row so the switch vertical-centers against the (two-line) label */
+.row { display: table; width: 100%; padding: 7px 0; }
 body.dark  .row + .row { border-top: 1px solid #2d323b; }
 body.light .row + .row { border-top: 1px solid #e6e9ef; }
-.row .lab { font-size: 14px; }
+.row .lab { display: table-cell; vertical-align: middle; font-size: 14px; }
 .row .lab .st { display: block; font-size: 11px; color: #8a929d; margin-top: 1px; }
-.sw { float: right; display: inline-block; width: 44px; height: 24px; border-radius: 12px;
-      position: relative; text-decoration: none; margin-top: 2px; }
+.row .ctrl { display: table-cell; vertical-align: middle; text-align: right; width: 58px; }
+.sw { display: inline-block; width: 54px; height: 30px; border-radius: 15px;
+      position: relative; text-decoration: none; vertical-align: middle; }
 .sw.off { background: #4a515c; } .sw.on { background: #34b863; }
-.sw .kn { position: absolute; top: 2px; width: 20px; height: 20px; border-radius: 10px; background: #fff; }
-.sw.off .kn { left: 2px; } .sw.on .kn { left: 22px; }
+.sw .kn { position: absolute; top: 3px; width: 24px; height: 24px; border-radius: 12px; background: #fff; }
+.sw.off .kn { left: 3px; } .sw.on .kn { left: 27px; }
 
 /* bottom spacer on long pages so the absolute dots don't cover the last card */
 .pgpad { height: 40px; }
@@ -228,6 +228,42 @@ body.light .row + .row { border-top: 1px solid #e6e9ef; }
 body.light .dots .dot { background: #b7bec9; }
 .dots .dot.on { background: #d0d6de; width: 16px; }
 body.light .dots .dot.on { background: #4a515c; }
+
+/* ---- lock screen (PIN pad) ---- */
+.lockwrap { padding-top: 8px; }
+.lock-title { text-align: center; font-size: 18px; font-weight: 700; padding: 20px 0 16px; }
+/* PIN box: 4 circle slots + 删除, centered together on one line */
+.pinbox { text-align: center; padding: 6px 0 8px; font-size: 0; }
+.pin-slots { display: inline-block; vertical-align: middle; }
+.pin-slots .ps { display: inline-block; width: 16px; height: 30px; margin: 0 9px;
+                 line-height: 30px; text-align: center; vertical-align: middle; }
+/* empty slot: hollow ring (outer circle + page-colored inner hole) */
+.ring { display: inline-block; width: 16px; height: 16px; border-radius: 50%;
+        background: #8a929d; position: relative; vertical-align: middle; }
+.ring .ri { position: absolute; top: 3px; left: 3px; width: 10px; height: 10px; border-radius: 50%; }
+body.dark  .ring .ri { background: #15161a; }
+body.light .ring .ri { background: #eceef1; }
+/* typed slot: solid filled circle */
+.pin-slots .dot { display: inline-block; width: 16px; height: 16px; border-radius: 50%;
+                  background: #2f6fe0; vertical-align: middle; }
+.pin-del { display: inline-block; vertical-align: middle; margin-left: 16px; font-size: 14px;
+           text-decoration: none; padding: 7px 13px; border-radius: 9px; }
+body.dark  .pin-del { background: #2c2f37; color: #cfd4dc; }
+body.light .pin-del { background: #e2e6ec; color: #2a2f38; }
+/* keypad: rounded-rectangle keys, even gaps, filling the lower two-thirds.
+   inline-block cells (not a table) so litehtml clips the rounded background. */
+.keypad { width: 300px; margin: 18px auto 0; }
+.kprow { text-align: center; font-size: 0; margin-bottom: 12px; }
+.kpcell { display: inline-block; width: 98px; vertical-align: middle; }
+a.kp { display: inline-block; width: 84px; height: 60px; line-height: 60px; border-radius: 16px;
+       font-size: 26px; font-weight: 700; text-decoration: none; vertical-align: middle; }
+body.dark  a.kp { background: #2c2f37; color: #e9ebee; }
+body.light a.kp { background: #e2e6ec; color: #1b1d22; }
+a.kp.kpx { font-size: 16px; font-weight: 400; }   /* 取消 key */
+/* wrong-PIN popup, centered on screen */
+.lock-err { position: absolute; left: 48px; right: 48px; top: 210px; text-align: center;
+            font-size: 16px; font-weight: 700; padding: 13px; border-radius: 12px;
+            background: #d2483c; color: #fff; }
 
 /* ---- power menu ---- */
 .menu-title { text-align: center; font-size: 22px; color: #9aa2ad; padding: 30px 0 18px; }

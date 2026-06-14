@@ -12,12 +12,24 @@
       <tr><td class="kv-l">加密</td><td class="val">{{ENC}}</td></tr>
     </table>
     <div class="row">
-      <span class="lab">WiFi 开关<span class="st">{{WIFISTATE}}</span></span>
-      <a href="act:wifi" class="sw {{WIFICLASS}}"><span class="kn"></span></a>
+      <span class="lab">WiFi 总开关<span class="st">{{WIFISTATE}}</span></span>
+      <span class="ctrl"><a href="act:wifi" class="sw {{WIFICLASS}}"><span class="kn"></span></a></span>
+    </div>
+    <div class="row">
+      <span class="lab">2.4G 频段<span class="st">{{WIFI24STATE}}</span></span>
+      <span class="ctrl"><a href="act:wifi24" class="sw {{WIFI24CLASS}}"><span class="kn"></span></a></span>
+    </div>
+    <div class="row">
+      <span class="lab">5G 频段<span class="st">{{WIFI5STATE}}</span></span>
+      <span class="ctrl"><a href="act:wifi5" class="sw {{WIFI5CLASS}}"><span class="kn"></span></a></span>
+    </div>
+    <div class="row">
+      <span class="lab">WiFi 节能模式<span class="st">{{PSMSTATE}}</span></span>
+      <span class="ctrl"><a href="act:psm" class="sw {{PSMCLASS}}"><span class="kn"></span></a></span>
     </div>
     <div class="row">
       <span class="lab">NFC 碰一碰<span class="st">{{NFCSTATE}}</span></span>
-      <a href="act:nfc" class="sw {{NFCCLASS}}"><span class="kn"></span></a>
+      <span class="ctrl"><a href="act:nfc" class="sw {{NFCCLASS}}"><span class="kn"></span></a></span>
     </div>
   </div>
 

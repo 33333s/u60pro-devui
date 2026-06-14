@@ -32,6 +32,7 @@ extern void        html_view_polyline(int x, int y, int w, int h, const int *val
                                       int vmin, int vmax, int r, int g, int b, int thick, int fill_a);
 extern void        html_view_set_scroll(int y);
 extern void        html_view_fill_rect(int x, int y, int w, int h, int r, int g, int b, int a);
+extern void        html_view_fill_poly(const int *xs, const int *ys, int n, int r, int g, int b, int a);
 extern int         html_view_render_tall(uint16_t *buf, const char *html, int bufh);
 extern int         html_view_render_overlay(const char *html);
 
@@ -64,6 +65,22 @@ static int  g_page_h;     /* last rendered page content height */
 static int  g_autooff_ms; /* auto screen-off timeout, 0 = never */
 static int  g_dtap_wake = 1; /* double-tap to wake the screen */
 
+/* ---- page-2 aux state, cached (-1 = unknown). Like the reference plugin,
+ * bands are controlled purely with `ifconfig wlanN up/down` and read back from
+ * operstate (wlan0=main 2.4G, wlan2=main 5G); uci/`wifi reload`/`zwrt_wlan
+ * reload` are NOT used (they don't work / wedge the radios). PSM = `iw
+ * power_save`. The DHCP pool is computed live from uci. Toggles flip
+ * optimistically; a throttle reconciles. */
+static int  g_w24 = -1, g_w5 = -1, g_wpsm = -1;
+static char g_dhcp_pool[48];
+static uint32_t g_wifi_aux_at;
+
+/* ---- screen lock (4-digit PIN) ---- */
+static char g_pin[8];        /* stored PIN ("" = lock disabled) */
+static int  g_lock_state;    /* 0 = normal, 1 = unlock pad, 2 = setup pad */
+static char g_pin_entry[8];  /* digits typed so far */
+static int  g_lock_err;      /* 1 = show "密码错误" on the unlock pad */
+
 static void scan_pages(void)
 {
     g_npages = 0;
@@ -74,7 +91,8 @@ static void scan_pages(void)
     while ((de = readdir(dp)) && n < 24) {
         size_t l = strlen(de->d_name);
         if (l > 5 && strcmp(de->d_name + l - 5, ".html") == 0 &&
-            strcmp(de->d_name, "menu.html") != 0) {
+            strcmp(de->d_name, "menu.html") != 0 &&
+            strcmp(de->d_name, "lockscreen.html") != 0) {
             strncpy(names[n], de->d_name, 63); names[n][63] = 0; n++;
         }
     }
@@ -91,10 +109,6 @@ static void scan_pages(void)
 
 /* ---- value formatting ---- */
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
-static void fmt_speed(char *o, size_t n, long bps) {
-    if (bps >= 1024 * 1024) snprintf(o, n, "%.2f MB/s", bps / 1048576.0);
-    else                    snprintf(o, n, "%.1f KB/s", bps / 1024.0);
-}
 static void fmt_bytes(char *o, size_t n, long b) {
     if (b >= 1024L * 1024 * 1024) snprintf(o, n, "%.2f GB", b / 1073741824.0);
     else                          snprintf(o, n, "%.1f MB", b / 1048576.0);
@@ -119,6 +133,19 @@ static void fmt_one(char *o, size_t n, double v) {
     if (v >= 10) snprintf(o, n, "%.0f", v);
     else         snprintf(o, n, "%.1f", v);
 }
+/* Single speed value with unit, honoring the bit/byte-rate setting (matches the
+ * status-bar units): bits=1 -> Mbps/Kbps/bps, bits=0 -> MB/s/KB/s/B/s. */
+static void fmt_speed_u(char *o, size_t n, long bps, int bits)
+{
+    double v = bps * (bits ? 8.0 : 1.0);
+    const char *unit; double div;
+    if (bits) { if (v >= 1e6) { unit = "Mbps"; div = 1e6; } else if (v >= 1e3) { unit = "Kbps"; div = 1e3; } else { unit = "bps"; div = 1; } }
+    else      { if (v >= 1e6) { unit = "MB/s"; div = 1e6; } else if (v >= 1e3) { unit = "KB/s"; div = 1e3; } else { unit = "B/s"; div = 1; } }
+    double val = v / div;
+    if (val >= 10) snprintf(o, n, "%.0f %s", val, unit);
+    else           snprintf(o, n, "%.1f %s", val, unit);
+}
+
 /* Status-bar speed pair: "↑<tx> ↓<rx> <unit>", shared unit picked from the
  * larger of the two. bits=1 -> Mbps/Kbps/bps; bits=0 -> MB/s/KB/s/B/s. */
 static void fmt_speed_pair(char *buf, size_t cap, long up, long down, int bits) {
@@ -169,6 +196,93 @@ static char *read_file(const char *path)
     if (fread(buf, 1, n, fp) != (size_t)n) { free(buf); fclose(fp); return NULL; }
     buf[n] = 0; fclose(fp);
     return buf;
+}
+
+/* Read page-2 aux state into the cache: band on/off from netdev operstate (the
+ * live truth on this firmware), PSM from `iw power_save`, and the DHCP pool
+ * range computed live from uci (lan ip + start/limit offsets). One shell
+ * round-trip, called on a throttle. */
+static void wifi_aux_refresh(void)
+{
+    FILE *fp = popen(
+        "echo W0=$(cat /sys/class/net/wlan0/operstate 2>/dev/null);"
+        "echo W2=$(cat /sys/class/net/wlan2/operstate 2>/dev/null);"
+        "ps=$(iw dev wlan0 get power_save 2>/dev/null | grep -o 'o[nf]*' | tail -1);"
+        "[ -z \"$ps\" ] && ps=$(iw dev wlan2 get power_save 2>/dev/null | grep -o 'o[nf]*' | tail -1);"
+        "echo PSM=$([ \"$ps\" = on ] && echo 1 || echo 0);"
+        "ip=$(uci -q get network.lan.ipaddr); st=$(uci -q get dhcp.lan.start); lim=$(uci -q get dhcp.lan.limit);"
+        "if [ -n \"$ip\" ] && [ -n \"$st\" ]; then pre=${ip%.*}; end=$((st+lim-1)); [ $end -gt 254 ] && end=254;"
+        "echo \"POOL=$pre.$st - $pre.$end\"; fi", "r");
+    if (!fp) return;
+    char line[80];
+    while (fgets(line, sizeof line, fp)) {
+        if      (!strncmp(line, "W0=", 3))   g_w24 = strstr(line, "=up") != NULL;
+        else if (!strncmp(line, "W2=", 3))   g_w5  = strstr(line, "=up") != NULL;
+        else if (!strncmp(line, "PSM=", 4))  g_wpsm = atoi(line + 4);
+        else if (!strncmp(line, "POOL=", 5)) {
+            char *nl = strchr(line, '\n'); if (nl) *nl = 0;
+            snprintf(g_dhcp_pool, sizeof g_dhcp_pool, "%s", line + 5);
+        }
+    }
+    pclose(fp);
+}
+
+/* ---- screen lock (PIN) persistence. The PIN lives in a dotfile under the UI
+ * dir (which always exists) so it survives reboots and isn't clobbered by
+ * pushing the .html pages. lock_enabled() == "a PIN is set". ---- */
+#define LOCK_PIN_FILE UI_DIR "/.lockpin"
+static int lock_enabled(void) { return g_pin[0] != 0; }
+static void load_pin(void)
+{
+    g_pin[0] = 0;
+    FILE *fp = fopen(LOCK_PIN_FILE, "r");
+    if (!fp) return;
+    char b[16]; int o = 0;
+    if (fgets(b, sizeof b, fp))
+        for (const char *p = b; *p && o < 4; p++)
+            if (*p >= '0' && *p <= '9') g_pin[o++] = *p;
+    g_pin[o] = 0;
+    if (o != 4) g_pin[0] = 0;   /* ignore anything malformed */
+    fclose(fp);
+}
+static void save_pin(const char *pin)
+{
+    snprintf(g_pin, sizeof g_pin, "%s", pin);
+    FILE *fp = fopen(LOCK_PIN_FILE, "w");
+    if (fp) { fprintf(fp, "%s\n", pin); fclose(fp); }
+}
+static void clear_pin(void) { g_pin[0] = 0; remove(LOCK_PIN_FILE); }
+/* Enter the lock pad. setup=1 -> set a new PIN; setup=0 -> unlock prompt. */
+static void enter_lock(int setup)
+{
+    g_lock_state = setup ? 2 : 1;
+    g_pin_entry[0] = 0; g_lock_err = 0; g_scroll = 0;
+}
+
+/* ---- persisted UI settings (theme / speed unit / double-tap / auto-off).
+ * Stored next to the binary in /data/u60pro so they survive reinstalling the
+ * binary and re-pushing UI files (the PIN persists separately in .lockpin). */
+#define CONF_FILE "/data/u60pro/devui.conf"
+static void load_conf(void)
+{
+    FILE *fp = fopen(CONF_FILE, "r");
+    if (!fp) return;
+    char line[64]; int v;
+    while (fgets(line, sizeof line, fp)) {
+        if      (sscanf(line, "theme=%d", &v) == 1)      g_theme = !!v;
+        else if (sscanf(line, "speed_bits=%d", &v) == 1) g_speed_bits = !!v;
+        else if (sscanf(line, "dtap=%d", &v) == 1)       g_dtap_wake = !!v;
+        else if (sscanf(line, "autooff=%d", &v) == 1)    g_autooff_ms = v;
+    }
+    fclose(fp);
+}
+static void save_conf(void)
+{
+    FILE *fp = fopen(CONF_FILE, "w");
+    if (!fp) return;
+    fprintf(fp, "theme=%d\nspeed_bits=%d\ndtap=%d\nautooff=%d\n",
+            g_theme, g_speed_bits, g_dtap_wake, g_autooff_ms);
+    fclose(fp);
 }
 
 /* Append one carrier card (band·bw + PCI, then RSRP/SINR colored by quality).
@@ -286,6 +400,24 @@ static void draw_charts(void)
         html_view_polyline(x, y, w, h, pn, h_n, 0, 100, 0x4f, 0x8b, 0xff, 2, 22); /* 功率 蓝 */
         html_view_polyline(x, y, w, h, tn, h_n, 0, 100, 0xff, 0x8c, 0x42, 2, 0);  /* 温度 橙 */
     }
+}
+
+/* Draw a lightning bolt natively over the battery (#batt) while charging. The
+ * bolt is a bit taller than the battery so it protrudes past the frame but
+ * stays inside the 26px status bar. No-op if not charging / no #batt. */
+static void draw_batt_bolt(void)
+{
+    if (!g_charging) return;
+    int x, y, w, h;
+    if (!html_view_rect("#batt", &x, &y, &w, &h)) return;
+    int bw = w * 11 / 20; if (bw < 9) bw = 9;          /* ~55% of battery width (bolder) */
+    int bx = x + (w - bw) / 2, by = y - 5, bh = h + 10;   /* taller: protrudes ~5px each end */
+    static const int nx[6] = { 58, 14, 46, 42, 86, 54 };
+    static const int ny[6] = {  0, 54, 54, 100, 46, 46 };
+    int xs[6], ys[6];
+    for (int k = 0; k < 6; k++) { xs[k] = bx + nx[k] * bw / 100; ys[k] = by + ny[k] * bh / 100; }
+    int v = g_theme ? 0x00 : 0xff;                     /* light theme -> black, dark -> white */
+    html_view_fill_poly(xs, ys, 6, v, v, v, 255);
 }
 
 /* ---- band lock (锁频): comma-list band sets ---- */
@@ -412,8 +544,8 @@ static int build_kv(struct kv *t)
     snprintf(s_pci, sizeof s_pci, "%d", d.nr_pci);
     snprintf(s_clients, sizeof s_clients, "%d", d.clients_total);
     fmt_uptime(s_up, sizeof s_up, d.uptime);
-    fmt_speed(s_rxs, sizeof s_rxs, d.rx_speed);
-    fmt_speed(s_txs, sizeof s_txs, d.tx_speed);
+    fmt_speed_u(s_rxs, sizeof s_rxs, d.rx_speed, g_speed_bits);
+    fmt_speed_u(s_txs, sizeof s_txs, d.tx_speed, g_speed_bits);
     fmt_bytes(s_rxb, sizeof s_rxb, d.rx_bytes);
     fmt_bytes(s_txb, sizeof s_txb, d.tx_bytes);
     snprintf(s_cpu, sizeof s_cpu, "%ld", d.cpu_temp);
@@ -542,24 +674,22 @@ static int build_kv(struct kv *t)
 
     /* ---- shared status bar: time | speed | gen-text | sigbars | battery | % ---- */
     {
-        char sp[40], glow[80] = "", bcls[20];
+        char sp[40], bcls[20];
         fmt_speed_pair(sp, sizeof sp, d.tx_speed, d.rx_speed, g_speed_bits);
-        if (g_charging) {
-            int gp = (g_phase % 12) * 9;        /* 0..99 sweep */
-            snprintf(glow, sizeof glow, "<span class='glow' style='left:%d%%'></span>", gp);
-        }
         snprintf(bcls, sizeof bcls, "%s%s", g_charging ? "chg " : "",
                  d.bat_percent <= 20 ? "low" : "");
+        /* battery: bf = level fill; when charging the host draws a lightning
+         * bolt natively over #batt (CSS/font can't draw one reliably). */
         snprintf(s_sbar, sizeof s_sbar,
             "<div class='sbar'><span class='clk'>%s</span><span class='r'>"
             "<span class='spd'>%s</span>"
             "<span class='gt %s'>%s</span>"
             "%s"
-            "<span class='bw'><span class='batt %s'><span class='bf' style='width:%d%%'></span>%s</span><span class='tip'></span></span>"
+            "<span class='bw'><span id='batt' class='batt %s'><span class='bf' style='width:%d%%'></span></span><span class='tip'></span></span>"
             "<span class='bp'>%d%%</span>"
             "</span></div>",
             s_time, sp, genc, gen, s_sig,
-            bcls, clampi(d.bat_percent, 0, 100), glow,
+            bcls, clampi(d.bat_percent, 0, 100),
             d.bat_percent);
     }
 
@@ -613,7 +743,8 @@ static int build_kv(struct kv *t)
     snprintf(s_chgv, sizeof s_chgv, "%.2f", d.chg_uv / 1e6);
     snprintf(s_chgi, sizeof s_chgi, "%ld", d.chg_ua / 1000);
     snprintf(s_batv, sizeof s_batv, "%.2f", d.bat_uv / 1e6);
-    snprintf(s_bati, sizeof s_bati, "%ld", labs(d.bat_ua) / 1000);
+    /* signed: + while charging, - while discharging (matches PWRLBL) */
+    snprintf(s_bati, sizeof s_bati, "%s%ld", d.charger_connect ? "+" : "-", labs(d.bat_ua) / 1000);
     { double pw = d.charger_connect ? (d.chg_uv / 1e6) * (d.chg_ua / 1e6)
                                     : (d.bat_uv / 1e6) * (labs(d.bat_ua) / 1e6);
       snprintf(s_pwr, sizeof s_pwr, "%.1f", pw); }
@@ -716,10 +847,40 @@ static int build_kv(struct kv *t)
     /* wifi page */
     t[i++] = (struct kv){ "NFCCLASS", d.nfc_switch ? "on" : "off" };
     t[i++] = (struct kv){ "NFCSTATE", d.nfc_switch ? "已开启" : "已关闭" };
-    t[i++] = (struct kv){ "WIFICLASS", d.wifi_enabled ? "on" : "off" };
-    t[i++] = (struct kv){ "WIFISTATE", d.wifi_enabled ? "已开启" : "已关闭" };
+    int wifi_master = (g_w24 == 1 || g_w5 == 1);   /* on if either main band is up */
+    t[i++] = (struct kv){ "WIFICLASS", wifi_master ? "on" : "off" };
+    t[i++] = (struct kv){ "WIFISTATE", (g_w24 < 0 && g_w5 < 0) ? "—" : wifi_master ? "已开启" : "已关闭" };
+    t[i++] = (struct kv){ "WIFI24CLASS", g_w24 == 1 ? "on" : "off" };
+    t[i++] = (struct kv){ "WIFI24STATE", g_w24 < 0 ? "—" : g_w24 ? "已开启" : "已关闭" };
+    t[i++] = (struct kv){ "WIFI5CLASS", g_w5 == 1 ? "on" : "off" };
+    t[i++] = (struct kv){ "WIFI5STATE", g_w5 < 0 ? "—" : g_w5 ? "已开启" : "已关闭" };
+    t[i++] = (struct kv){ "PSMCLASS", g_wpsm == 1 ? "on" : "off" };
+    t[i++] = (struct kv){ "PSMSTATE", g_wpsm < 0 ? "—" : g_wpsm ? "已开启（省电）" : "已关闭（高性能）" };
     t[i++] = (struct kv){ "CLIENTLIST", s_clist }; t[i++] = (struct kv){ "DHCP_IP", d.dhcp_ip[0] ? d.dhcp_ip : "-" };
-    t[i++] = (struct kv){ "DHCP_POOL", s_pool };   t[i++] = (struct kv){ "DHCP_LEASE", s_lease };
+    t[i++] = (struct kv){ "DHCP_POOL", g_dhcp_pool[0] ? g_dhcp_pool : s_pool };
+    t[i++] = (struct kv){ "DHCP_LEASE", s_lease };
+
+    /* ---- lock screen (PIN pad): dots reflect typed digits; aux = 取消 in setup ---- */
+    static char s_pindots[512], s_lockaux[140];   /* ring markup is verbose; keep roomy */
+    {
+        int filled = (int)strlen(g_pin_entry);
+        int o = snprintf(s_pindots, sizeof s_pindots, "<div class='pin-slots'>");
+        for (int k = 0; k < 4; k++)            /* typed = solid dot, empty = hollow ring */
+            o += (k < filled)
+               ? snprintf(s_pindots + o, sizeof s_pindots - o, "<span class='ps'><span class='dot'></span></span>")
+               : snprintf(s_pindots + o, sizeof s_pindots - o,
+                          "<span class='ps'><span class='ring'><span class='ri'></span></span></span>");
+        snprintf(s_pindots + o, sizeof s_pindots - o, "</div>");
+    }
+    if (g_lock_state == 2)
+        snprintf(s_lockaux, sizeof s_lockaux, "<a href='act:lockcancel' class='kp kpx'>取消</a>");
+    else s_lockaux[0] = 0;
+    t[i++] = (struct kv){ "PINDOTS", s_pindots };
+    t[i++] = (struct kv){ "LOCKAUX", s_lockaux };
+    t[i++] = (struct kv){ "LOCKTITLE", g_lock_state == 2 ? "设置锁屏密码" : "请输入锁屏密码" };
+    t[i++] = (struct kv){ "LOCKMSG", g_lock_err ? "<div class='lock-err'>密码错误</div>" : "" };
+    t[i++] = (struct kv){ "LOCKCLASS", lock_enabled() ? "on" : "off" };
+    t[i++] = (struct kv){ "LOCKSTATE", lock_enabled() ? "已开启" : "已关闭" };
     return i;
 }
 
@@ -728,7 +889,7 @@ static const char *page_html(const char *path)
 {
     char *tmpl = read_file(path);   /* re-read each time = live reload */
     if (!tmpl) return NULL;
-    struct kv t[96];
+    struct kv t[120];
     int n = build_kv(t);
     char *html = apply_template(tmpl, t, n);
     free(tmpl);
@@ -743,7 +904,8 @@ static void render(drm_disp_t *disp, const char *path)
     if (!html) return;
     html_view_set_scroll(g_scroll);
     g_page_h = html_view_render_html(html);
-    draw_charts();   /* native polylines into any #chart-* placeholders */
+    draw_charts();      /* native polylines into any #chart-* placeholders */
+    draw_batt_bolt();   /* native lightning over the battery while charging */
     int H = disp->height, maxs = g_page_h - H;
     (void)maxs;
     if (g_modal) {                                    /* dim page + second-level dialog */
@@ -759,6 +921,12 @@ static void render(drm_disp_t *disp, const char *path)
  * window column x shows [left|right][x+o], o in 0..W). */
 static uint16_t g_bufA[320 * 480], g_bufB[320 * 480];
 
+/* Status bar stays pinned during a swipe (only the content below slides), so
+ * the native bolt — drawn at a fixed spot — lines up with it. g_sbar_src points
+ * at the page buffer rendered at scroll 0 (its top rows hold the status bar). */
+#define SBAR_H 26   /* matches .sbar height in style.css */
+static const uint16_t *g_sbar_src;
+
 static void compose_frame(drm_disp_t *d, int o)
 {
     const int W = d->width, H = d->height, pp = d->pitch_px;
@@ -766,11 +934,17 @@ static void compose_frame(drm_disp_t *d, int o)
     for (int y = 0; y < H; y++) {
         uint16_t *dp = d->fb + (size_t)(H - 1 - y) * pp + (W - 1);
         const uint16_t *lr = g_bufA + (size_t)y * W, *rr = g_bufB + (size_t)y * W;
-        for (int x = 0; x < W; x++) {
-            int idx = x + o;
-            *dp-- = (idx < W) ? lr[idx] : rr[idx - W];
+        if (y < SBAR_H && g_sbar_src) {                 /* pinned status bar */
+            const uint16_t *sb = g_sbar_src + (size_t)y * W;
+            for (int x = 0; x < W; x++) *dp-- = sb[x];
+        } else {                                        /* sliding page content */
+            for (int x = 0; x < W; x++) {
+                int idx = x + o;
+                *dp-- = (idx < W) ? lr[idx] : rr[idx - W];
+            }
         }
     }
+    draw_batt_bolt();   /* native bolt over the pinned battery (buffers lack it) */
     drm_disp_dirty(d, 0, 0, W - 1, H - 1);
 }
 
@@ -782,9 +956,11 @@ static void prep_pair(int target, int dir)
     if (dir > 0) {   /* next: left=current, right=target */
         html_view_set_scroll(g_scroll); h = page_html(g_pages[g_cur]);  if (h) html_view_render_to(g_bufA, h);
         html_view_set_scroll(0);        h = page_html(g_pages[target]); if (h) html_view_render_to(g_bufB, h);
+        g_sbar_src = g_bufB;   /* target (scroll 0) holds the status bar at top */
     } else {         /* prev: left=target, right=current */
         html_view_set_scroll(0);        h = page_html(g_pages[target]); if (h) html_view_render_to(g_bufA, h);
         html_view_set_scroll(g_scroll); h = page_html(g_pages[g_cur]);  if (h) html_view_render_to(g_bufB, h);
+        g_sbar_src = g_bufA;
     }
     html_view_set_scroll(g_scroll);
 }
@@ -886,18 +1062,24 @@ int main(void)
     key_input_t key;     key_input_init(&key);
     backlight_init();
 
-    int menu = 0, prev_press = 0, down_x = 0, down_y = 0;
+    int menu = 0, prev_press = 0, prev_lock = 0, down_x = 0, down_y = 0;
     int dragging = 0, drag_dir = 0, drag_target = 0;
     int scroll_dir = 0, scroll_start = 0;
     int sliding = 0, bar_x = 0, bar_w = 0;   /* brightness slider drag */
     int segging = 0, seg_x = 0, seg_y = 0, seg_w = 0, seg_h = 0;   /* segmented control drag */
     int seg_which = 0, seg_n = 4;   /* 1 = net mode (4 cells), 2 = auto-off (6) */
     const int W = disp.width, H = disp.height;
-    char menu_path[300];
+    char menu_path[300], lock_path[300];
     snprintf(menu_path, sizeof menu_path, "%s/menu.html", UI_DIR);
+    snprintf(lock_path, sizeof lock_path, "%s/lockscreen.html", UI_DIR);
 
-    #define CUR_PATH (menu ? menu_path : g_pages[g_cur])
+    /* lock pad takes priority over the power menu and the normal pages */
+    #define CUR_PATH (g_lock_state ? lock_path : menu ? menu_path : g_pages[g_cur])
 
+    load_conf();                          /* restore persisted UI settings */
+    load_pin();
+    wifi_aux_refresh();                   /* prime page-2 switch states */
+    if (lock_enabled()) enter_lock(0);   /* boot straight into the unlock pad */
     render(&disp, CUR_PATH);
     uint32_t last_data = millis(), last_act = millis(), last_wake_tap = 0;
 
@@ -909,12 +1091,20 @@ int main(void)
         int ev = key_input_poll(&key, now);
         if (ev == KEY_EV_SHORT || ev == KEY_EV_LONG) last_act = now;
         if (ev == KEY_EV_SHORT) {
-            if (backlight_is_on()) screen_off(&disp);
-            else                   screen_on(&disp, CUR_PATH);
+            if (backlight_is_on()) {
+                screen_off(&disp);
+                if (lock_enabled()) enter_lock(0);   /* power key locks the screen */
+            } else {
+                screen_on(&disp, CUR_PATH);
+            }
         } else if (ev == KEY_EV_LONG) {
-            menu = !menu;
-            if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
-            else need_render = 1;
+            if (g_lock_state) {                       /* no power menu while locked */
+                if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
+            } else {
+                menu = !menu;
+                if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
+                else need_render = 1;
+            }
         }
 
         /* touch: follow-finger swipe (pages) / drag (scroll) + tap actions */
@@ -927,6 +1117,39 @@ int main(void)
             if (pressed && !prev_press) {
                 if (g_dtap_wake && now - last_wake_tap < 400) screen_on(&disp, CUR_PATH);
                 last_wake_tap = now;
+            }
+        } else if (g_lock_state) {
+            /* PIN pad (unlock or setup): tap only, no confirm key — a 4th digit
+             * auto-submits. Drain the tap queue so a fast burst of taps all land
+             * (the per-digit re-render would otherwise let polls miss presses). */
+            int tx, ty;
+            while (g_lock_state && touch_input_take_tap(&touch, &tx, &ty)) {
+                const char *act = html_view_click((float)tx, (float)ty);
+                if (strncmp(act, "act:", 4)) continue;
+                const char *a = act + 4;
+                if (!strncmp(a, "pin:", 4)) {
+                    const char *k = a + 4;
+                    int len = (int)strlen(g_pin_entry);
+                    if (!strcmp(k, "del")) {
+                        if (len > 0) g_pin_entry[len - 1] = 0;
+                        g_lock_err = 0;
+                    } else if (k[0] >= '0' && k[0] <= '9' && !k[1]) {
+                        if (len < 4) { g_pin_entry[len] = k[0]; g_pin_entry[len + 1] = 0; len++; g_lock_err = 0; }
+                        if (len == 4) {                       /* auto-submit */
+                            if (g_lock_state == 2) {          /* setup: store + enable */
+                                save_pin(g_pin_entry);
+                                g_pin_entry[0] = 0; g_lock_state = 0;
+                            } else if (!strcmp(g_pin_entry, g_pin)) {   /* unlock ok */
+                                g_pin_entry[0] = 0; g_lock_err = 0; g_lock_state = 0;
+                            } else {                          /* wrong: keep pad, show error */
+                                g_pin_entry[0] = 0; g_lock_err = 1;
+                            }
+                        }
+                    }
+                    need_render = 1;
+                } else if (!strcmp(a, "lockcancel")) {        /* abort PIN setup */
+                    g_pin_entry[0] = 0; g_lock_err = 0; g_lock_state = 0; need_render = 1;
+                }
             }
         } else if (g_modal) {
             /* second-level band-lock dialog: tap only (level-1 is disabled) */
@@ -1026,7 +1249,7 @@ int main(void)
                         system(cmd);
                         snprintf(g_net_pending, sizeof g_net_pending, "%s", g_netmodes[c].v);
                     } else {
-                        g_autooff_ms = g_autooffs[c].ms; last_act = now;
+                        g_autooff_ms = g_autooffs[c].ms; last_act = now; save_conf();
                     }
                     g_segdrag = 0; need_render = 1;
                 }
@@ -1048,11 +1271,11 @@ int main(void)
                         else if (!strcmp(a, "reboot"))   system("reboot");
                         else if (!strcmp(a, "close"))     { menu = 0; need_render = 1; }
                         else if (!strcmp(a, "menu"))      { backlight_on(); menu = 1; need_render = 1; }
-                        else if (!strcmp(a, "theme"))     { g_theme = !g_theme; need_render = 1; }
+                        else if (!strcmp(a, "theme"))     { g_theme = !g_theme; save_conf(); need_render = 1; }
                         else if (!strcmp(a, "revealkey")) { g_show_key = !g_show_key; need_render = 1; }
                         else if (!strcmp(a, "revealcell")) { g_show_cellid = !g_show_cellid; need_render = 1; }
                         else if (!strcmp(a, "revealimei")) { g_show_imei = !g_show_imei; need_render = 1; }
-                        else if (!strcmp(a, "spunit"))    { g_speed_bits = !g_speed_bits; need_render = 1; }
+                        else if (!strcmp(a, "spunit"))    { g_speed_bits = !g_speed_bits; save_conf(); need_render = 1; }
                         else if (!strcmp(a, "nfc")) {
                             devui_data_t dd; char cmd[120];
                             int on = (data_refresh(&dd) && dd.nfc_switch) ? 0 : 1;
@@ -1061,13 +1284,43 @@ int main(void)
                             system(cmd);
                             need_render = 1;
                         }
-                        else if (!strcmp(a, "wifi")) {
-                            devui_data_t dd; int dis = (data_refresh(&dd) && dd.wifi_enabled) ? 1 : 0;
-                            char cmd[256];
+                        else if (!strcmp(a, "wifi")) {   /* master: both main bands (wlan0+wlan2) */
+                            int on = (g_w24 == 1 || g_w5 == 1);
+                            const char *ic = on ? "down" : "up";
+                            char cmd[160];
                             snprintf(cmd, sizeof cmd,
-                                "(uci set wireless.main_2g.disabled=%d; uci set wireless.main_5g.disabled=%d; "
-                                "uci commit wireless; wifi reload) >/dev/null 2>&1 &", dis, dis);
+                                "(ifconfig wlan0 %s; ifconfig wlan2 %s) >/dev/null 2>&1 &", ic, ic);
                             system(cmd);
+                            g_w24 = g_w5 = !on;
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "wifi24") || !strcmp(a, "wifi5")) {
+                            int is24 = !strcmp(a, "wifi24");
+                            int on = (is24 ? g_w24 : g_w5) == 1;
+                            char cmd[120];
+                            snprintf(cmd, sizeof cmd, "ifconfig %s %s >/dev/null 2>&1 &",
+                                     is24 ? "wlan0" : "wlan2", on ? "down" : "up");
+                            system(cmd);
+                            if (is24) g_w24 = !on; else g_w5 = !on;
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "psm")) {
+                            int turn_on = g_wpsm == 1 ? 0 : 1;   /* 节能 on = power_save on */
+                            if (turn_on)
+                                system("(rm -f /etc/hotplug.d/iface/psm; "
+                                       "for w in wlan0 wlan1 wlan2 wlan3; do iw dev $w set power_save on 2>/dev/null; done) "
+                                       ">/dev/null 2>&1 &");
+                            else   /* 高性能: install hotplug script that keeps power_save off on ifup */
+                                system("(mkdir -p /etc/hotplug.d/iface; "
+                                       "{ echo '#!/bin/sh'; echo '[ \"$ACTION\" = ifup ] && {'; "
+                                       "echo '  iw dev wlan0 set power_save off 2>/dev/null'; "
+                                       "echo '  iw dev wlan1 set power_save off 2>/dev/null'; "
+                                       "echo '  iw dev wlan2 set power_save off 2>/dev/null'; "
+                                       "echo '  iw dev wlan3 set power_save off 2>/dev/null'; echo '}'; } "
+                                       "> /etc/hotplug.d/iface/psm; chmod +x /etc/hotplug.d/iface/psm; "
+                                       "for w in wlan0 wlan1 wlan2 wlan3; do iw dev $w set power_save off 2>/dev/null; done) "
+                                       ">/dev/null 2>&1 &");
+                            g_wpsm = turn_on;
                             need_render = 1;
                         }
                         else if (!strcmp(a, "adb")) {
@@ -1090,9 +1343,14 @@ int main(void)
                             need_render = 1;
                         }
                         else if (!strncmp(a, "autooff:", 8)) {   /* preset select */
-                            g_autooff_ms = atoi(a + 8); last_act = now; need_render = 1;
+                            g_autooff_ms = atoi(a + 8); last_act = now; save_conf(); need_render = 1;
                         }
-                        else if (!strcmp(a, "dtap")) { g_dtap_wake = !g_dtap_wake; need_render = 1; }
+                        else if (!strcmp(a, "dtap")) { g_dtap_wake = !g_dtap_wake; save_conf(); need_render = 1; }
+                        else if (!strcmp(a, "locktoggle")) {   /* on->off clears PIN; off->on opens setup pad */
+                            if (lock_enabled()) clear_pin();
+                            else                enter_lock(1);
+                            need_render = 1;
+                        }
                         else if (!strncmp(a, "net:", 4)) {   /* segmented control tap fallback */
                             char cmd[160];
                             snprintf(cmd, sizeof cmd,
@@ -1118,17 +1376,25 @@ int main(void)
         }
         prev_press = pressed;
 
+        /* when the lock pad first appears, drop taps that were queued before it
+         * (e.g. the toggle tap that opened it) so they don't phantom-press keys */
+        if (g_lock_state && !prev_lock) touch_input_clear_taps(&touch);
+        prev_lock = g_lock_state;
+
         /* dismiss the toast after its timeout */
         if (g_toast[0] && now >= g_toast_until) { g_toast[0] = 0; need_render = 1; }
 
-        /* auto screen-off after the configured idle timeout */
-        if (g_autooff_ms > 0 && backlight_is_on() && now - last_act >= (uint32_t)g_autooff_ms)
+        /* auto screen-off after the configured idle timeout (locks if enabled) */
+        if (g_autooff_ms > 0 && backlight_is_on() && now - last_act >= (uint32_t)g_autooff_ms) {
             screen_off(&disp);
+            if (lock_enabled()) enter_lock(0);
+        }
 
-        /* periodic data refresh (not mid-drag). While charging, refresh faster so
-         * the battery charge sweep animates. */
-        uint32_t refresh_ms = g_charging ? 220 : 1000;
-        if (!dragging && now - last_data >= refresh_ms) { need_render = 1; last_data = now; }
+        /* periodic data refresh (not mid-drag), once per second */
+        if (!dragging && now - last_data >= 1000) { need_render = 1; last_data = now; }
+
+        /* reconcile page-2 WiFi switch states from uci/iw on a slow throttle */
+        if (!dragging && now - g_wifi_aux_at >= 4000) { g_wifi_aux_at = now; wifi_aux_refresh(); }
 
         if (need_render && backlight_is_on()) render(&disp, CUR_PATH);
         if (!animating) usleep(30000);
