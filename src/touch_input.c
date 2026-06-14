@@ -193,9 +193,24 @@ void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed)
             int sx = scale(t->raw_cur_x, t->raw_min_x, t->raw_max_x, t->screen_w - 1);
             int sy = scale(t->raw_cur_y, t->raw_min_y, t->raw_max_y, t->screen_h - 1);
             apply_transform(t, &sx, &sy);
+            int was = t->pressed;
             t->cur_x = sx;
             t->cur_y = sy;
             t->pressed = new_press;
+            if (!was && new_press) {              /* press down: remember origin */
+                t->press_x = sx; t->press_y = sy; t->in_tap = 1;
+            } else if (was && !new_press && t->in_tap) {   /* release: latch a tap if it barely moved */
+                int dx = sx - t->press_x, dy = sy - t->press_y;
+                if (dx * dx + dy * dy <= 14 * 14) {
+                    int nx = (t->tapq_tail + 1) % 8;
+                    if (nx != t->tapq_head) {      /* enqueue (drop if full) */
+                        t->tapq_x[t->tapq_tail] = t->press_x;
+                        t->tapq_y[t->tapq_tail] = t->press_y;
+                        t->tapq_tail = nx;
+                    }
+                }
+                t->in_tap = 0;
+            }
             s_report_count++;
         }
     }
@@ -204,6 +219,17 @@ void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed)
     *y = t->cur_y;
     *pressed = t->pressed;
 }
+
+int touch_input_take_tap(touch_input_t *t, int *x, int *y)
+{
+    if (t->tapq_head == t->tapq_tail) return 0;   /* empty */
+    *x = t->tapq_x[t->tapq_head];
+    *y = t->tapq_y[t->tapq_head];
+    t->tapq_head = (t->tapq_head + 1) % 8;
+    return 1;
+}
+
+void touch_input_clear_taps(touch_input_t *t) { t->tapq_head = t->tapq_tail = 0; t->in_tap = 0; }
 
 unsigned long touch_input_report_count(void) { return s_report_count; }
 
