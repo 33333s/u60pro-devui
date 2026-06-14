@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "devui": {
+    "version": "0.3.3",
+    "asset": "u60pro-devui-aarch64",
+    "notes": "锁屏 / 圆角渲染 / 充电闪电 / 设置持久化"
+  },
+  "ui": {
+    "version": "0.3.3",
+    "asset": "ui.tar.gz",
+    "notes": "锁屏键盘、圆角、WiFi 频段开关页"
+  }
+}
