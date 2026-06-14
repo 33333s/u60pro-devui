@@ -67,6 +67,23 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 
 开机自启：把二进制和后端放到持久化的 `/data/u60pro/`，用 `scripts/install-autostart.sh` 在 `/etc/rc.local` 挂钩 `start.sh`。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
+## 版本清单与更新
+
+每个 release 附一个 `version.json`，声明各组件版本，供配套的「U60 DevUI 管理插件」检测更新。组件分三块、可各自独立升级：**后端 datad**、**渲染器 devui**（二进制）、**ui**（界面）。
+
+- 本仓库 release 的 `version.json` 含 `devui` 与 `ui` 两项；后端 [zwrt-datad](https://github.com/33333s/zwrt-datad) 的 release 里有它自己的 `version.json`（只含 `datad`）。
+
+```jsonc
+// 本仓库 version.json
+{ "schema": 1,
+  "devui": { "version": "0.3.3", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.3.3", "asset": "ui.tar.gz" } }
+```
+
+插件读各项目 **latest release** 的 `version.json`，与本地记录比对，支持**单独更新** datad / devui / ui 或一键更新全部；更新源可选 **GitHub 直连** 或 **网盘镜像**（镜像须保留相同文件名 `u60pro-devui-aarch64` / `ui.tar.gz` / `version.json`）。
+
+**发版**：改 `version.json` 里对应组件的版本号（ui 改动只升 `ui`，二进制改动只升 `devui`）→ 把 `version.json`、二进制、`ui.tar.gz` 一起传到 GitHub release（用网盘镜像的话同步一份）。
+
 ## 文档
 
 - [docs/UI-GUIDE.md](docs/UI-GUIDE.md) — **自定义界面教程**（令牌、动作、限制、示例）

@@ -261,6 +261,38 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 - 「未激活」标签：改 `inline-block` + `line-height` 让文字在边框内垂直居中，并加大 `margin-left` 不与频宽挤在一起。
 - 未激活载波**只把信号值（RSRP/SINR）置灰**，频段/频宽/PCI 仍按正常格式显示。
 
+## 版本清单与更新机制（`version.json`）
+
+配套的「U60 DevUI 管理插件」（运行在原厂 Web 后台，不在本仓库）负责在设备上下载/安装/更新这套开源 UI。更新检测不靠 git tag，而靠每个 release 附带的 `version.json`，把整套拆成**三个可独立升级的组件**：
+
+- **datad** — 后端二进制（仓库 [zwrt-datad](https://github.com/33333s/zwrt-datad)，资产 `u60-datad-aarch64`）。
+- **devui** — 渲染器二进制（本仓库，资产 `u60pro-devui-aarch64`）。
+- **ui** — 界面模板（本仓库，资产 `ui.tar.gz`，装到 `/data/ui`）。
+
+`version.json` **按仓库分散**：本仓库的含 `devui` + `ui` 两项，datad 仓库的只含 `datad`。
+
+```jsonc
+// 本仓库 release 的 version.json
+{ "schema": 1,
+  "devui": { "version": "0.3.3", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.3.3", "asset": "ui.tar.gz" } }
+// zwrt-datad release 的 version.json
+{ "schema": 1, "datad": { "version": "0.3.1", "asset": "u60-datad-aarch64" } }
+```
+
+- 仓库根目录留了一份 `version.json` 作为**源头**（发版时改它），但插件实际读的是 **release 资产**（`…/releases/latest/download/version.json`），所以**每次发版都要把 `version.json` 连同二进制/`ui.tar.gz` 一起传到 release**。
+- 插件把远端各组件版本与本地记录（localStorage）比对，标“可更新”；可单独更新某个组件，也可一键更新全部。二进制更新先下到 `*.new` 再 `mv` 覆盖（避开运行中可执行文件的 `ETXTBSY`），devui 更新后校验失败自动回退原厂。
+- **彻底卸载**清 `/data/u60pro`（二进制）、`/data/ui`（界面）、`/etc/rc.local` 自启行，并恢复原厂。
+
+### 更新源：GitHub 直连 / 网盘镜像
+
+插件可切换两种源，文件名必须一致：
+
+- **GitHub 直连**：`https://github.com/<repo>/releases/latest/download/<file>`，基址 + 文件名拼接。
+- **网盘镜像**：直接克隆 release 的同名文件。本项目网盘用 AList，**每个文件带独立 `?sign=` 直链**（末尾 `:0` = 永不过期），无法用基址拼接，所以插件里维护一张 `NETDISK_FILES` 全直链表（key 形如 `devui/ui.tar.gz`）。换网盘或重传导致 sign 变化时，只改这张表。两个 `version.json` 不能同目录（撞名），故 devui、datad 各一个目录。
+
+**发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`）→ 传 `version.json` + 资产到 GitHub release →（如启用网盘）同步一份到网盘并确认 5 个直链可达。
+
 ## 仓库约定
 
 - 不提交父目录里的 vendor blobs 或分析产物。
