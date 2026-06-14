@@ -41,6 +41,21 @@ static inline void put_px(int x, int y, int r, int g, int b, int a)
     *p = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
+/* Is (x,y) inside a rounded rectangle? Used by both rounded fill and rounded
+ * border stroking (litehtml hands us radii but leaves the drawing to us). */
+static bool pt_in_round(int x, int y, int fx, int fy, int fw, int fh,
+                        int rtl, int rtr, int rbr, int rbl)
+{
+    if (x < fx || y < fy || x >= fx + fw || y >= fy + fh) return false;
+    int r = 0, cx = 0, cy = 0;
+    if      (x < fx + rtl       && y < fy + rtl)       { r = rtl; cx = fx + rtl;          cy = fy + rtl; }
+    else if (x >= fx + fw - rtr && y < fy + rtr)       { r = rtr; cx = fx + fw - 1 - rtr; cy = fy + rtr; }
+    else if (x >= fx + fw - rbr && y >= fy + fh - rbr) { r = rbr; cx = fx + fw - 1 - rbr; cy = fy + fh - 1 - rbr; }
+    else if (x < fx + rbl       && y >= fy + fh - rbl) { r = rbl; cx = fx + rbl;          cy = fy + fh - 1 - rbl; }
+    if (r > 0) { int dx = x - cx, dy = y - cy; if (dx * dx + dy * dy > r * r) return false; }
+    return true;
+}
+
 /* ---- FreeType ---- */
 static FT_Library g_ft;
 static FT_Face    g_face;
@@ -82,6 +97,51 @@ class fb_container : public document_container {
         for (int y = y1; y < y2; y++)
             for (int x = x1; x < x2; x++)
                 put_px(x, y, c.red, c.green, c.blue, c.alpha);
+    }
+    /* Filled rectangle with rounded corners. litehtml only hands us the radii;
+     * it's up to the container to honor them, so a pixel inside one of the four
+     * corner squares but outside its quarter-circle arc is skipped. */
+    void fill_rounded(int fx, int fy, int fw, int fh, int rtl, int rtr, int rbr, int rbl, web_color c) {
+        if (c.alpha == 0 || fw <= 0 || fh <= 0) return;
+        int hw = fw / 2, hh = fh / 2;
+        if (rtl > hw) rtl = hw; if (rtl > hh) rtl = hh;
+        if (rtr > hw) rtr = hw; if (rtr > hh) rtr = hh;
+        if (rbr > hw) rbr = hw; if (rbr > hh) rbr = hh;
+        if (rbl > hw) rbl = hw; if (rbl > hh) rbl = hh;
+        position cl = eff_clip();
+        int x1 = std::max(fx, (int)cl.left()),  y1 = std::max(fy, (int)cl.top());
+        int x2 = std::min(fx + fw, (int)cl.right()), y2 = std::min(fy + fh, (int)cl.bottom());
+        for (int y = y1; y < y2; y++) {
+            for (int x = x1; x < x2; x++) {
+                int r = 0, cx = 0, cy = 0;
+                if      (x < fx + rtl       && y < fy + rtl)       { r = rtl; cx = fx + rtl;          cy = fy + rtl; }
+                else if (x >= fx + fw - rtr && y < fy + rtr)       { r = rtr; cx = fx + fw - 1 - rtr; cy = fy + rtr; }
+                else if (x >= fx + fw - rbr && y >= fy + fh - rbr) { r = rbr; cx = fx + fw - 1 - rbr; cy = fy + fh - 1 - rbr; }
+                else if (x < fx + rbl       && y >= fy + fh - rbl) { r = rbl; cx = fx + rbl;          cy = fy + fh - 1 - rbl; }
+                if (r > 0) { int dx = x - cx, dy = y - cy; if (dx * dx + dy * dy > r * r) continue; }
+                put_px(x, y, c.red, c.green, c.blue, c.alpha);
+            }
+        }
+    }
+    /* Stroke a rounded-rect outline of uniform thickness t: a pixel inside the
+     * outer rounded rect but outside the inner one (inset by t). */
+    void stroke_rounded(int fx, int fy, int fw, int fh, int rtl, int rtr, int rbr, int rbl, int t, web_color c) {
+        if (c.alpha == 0 || t <= 0 || fw <= 0 || fh <= 0) return;
+        int hw = fw / 2, hh = fh / 2;
+        if (rtl > hw) rtl = hw; if (rtl > hh) rtl = hh;
+        if (rtr > hw) rtr = hw; if (rtr > hh) rtr = hh;
+        if (rbr > hw) rbr = hw; if (rbr > hh) rbr = hh;
+        if (rbl > hw) rbl = hw; if (rbl > hh) rbl = hh;
+        int itl = rtl - t > 0 ? rtl - t : 0, itr = rtr - t > 0 ? rtr - t : 0;
+        int ibr = rbr - t > 0 ? rbr - t : 0, ibl = rbl - t > 0 ? rbl - t : 0;
+        position cl = eff_clip();
+        int x1 = std::max(fx, (int)cl.left()),  y1 = std::max(fy, (int)cl.top());
+        int x2 = std::min(fx + fw, (int)cl.right()), y2 = std::min(fy + fh, (int)cl.bottom());
+        for (int y = y1; y < y2; y++)
+            for (int x = x1; x < x2; x++)
+                if (pt_in_round(x, y, fx, fy, fw, fh, rtl, rtr, rbr, rbl) &&
+                    !pt_in_round(x, y, fx + t, fy + t, fw - 2 * t, fh - 2 * t, itl, itr, ibr, ibl))
+                    put_px(x, y, c.red, c.green, c.blue, c.alpha);
     }
 
 public:
@@ -147,7 +207,12 @@ public:
 
     void draw_solid_fill(uint_ptr, const background_layer &layer, const web_color &color) override {
         const position &b = layer.border_box;
-        fill(b.x, b.y, b.width, b.height, color);
+        const border_radiuses &br = layer.border_radius;
+        if (br.top_left_x > 0 || br.top_right_x > 0 || br.bottom_right_x > 0 || br.bottom_left_x > 0)
+            fill_rounded(b.x, b.y, b.width, b.height,
+                         (int)br.top_left_x, (int)br.top_right_x, (int)br.bottom_right_x, (int)br.bottom_left_x, color);
+        else
+            fill(b.x, b.y, b.width, b.height, color);
     }
     /* Approximate gradients with a representative flat dark color. */
     void draw_linear_gradient(uint_ptr, const background_layer &l, const background_layer::linear_gradient &) override {
@@ -161,6 +226,21 @@ public:
     }
 
     void draw_borders(uint_ptr, const borders &b, const position &p, bool) override {
+        /* Rounded outline for the common case: all four sides equal width, same
+         * color, with a corner radius (cards, the battery frame, ...). */
+        int rtl = (int)b.radius.top_left_x, rtr = (int)b.radius.top_right_x;
+        int rbr = (int)b.radius.bottom_right_x, rbl = (int)b.radius.bottom_left_x;
+        const web_color &tc = b.top.color;
+        bool same_w = b.top.width == b.left.width && b.top.width == b.right.width && b.top.width == b.bottom.width;
+        bool same_c = tc.red == b.left.color.red && tc.green == b.left.color.green && tc.blue == b.left.color.blue && tc.alpha == b.left.color.alpha
+                   && tc.red == b.right.color.red && tc.green == b.right.color.green && tc.blue == b.right.color.blue && tc.alpha == b.right.color.alpha
+                   && tc.red == b.bottom.color.red && tc.green == b.bottom.color.green && tc.blue == b.bottom.color.blue && tc.alpha == b.bottom.color.alpha;
+        bool all_solid = b.top.style != border_style_none && b.left.style != border_style_none
+                      && b.right.style != border_style_none && b.bottom.style != border_style_none;
+        if ((rtl || rtr || rbr || rbl) && same_w && same_c && all_solid && b.top.width > 0) {
+            stroke_rounded(p.x, p.y, p.width, p.height, rtl, rtr, rbr, rbl, b.top.width, tc);
+            return;
+        }
         if (b.top.width > 0    && b.top.style    != border_style_none) fill(p.x, p.y, p.width, b.top.width, b.top.color);
         if (b.bottom.width > 0 && b.bottom.style != border_style_none) fill(p.x, p.bottom() - b.bottom.width, p.width, b.bottom.width, b.bottom.color);
         if (b.left.width > 0   && b.left.style   != border_style_none) fill(p.x, p.y, b.left.width, p.height, b.left.color);
@@ -275,6 +355,31 @@ extern "C" void html_view_fill_rect(int x, int y, int w, int h, int r, int g, in
     for (int yy = y; yy < y + h; yy++)
         for (int xx = x; xx < x + w; xx++)
             put_px(xx, yy, r, g, b, a);
+}
+
+/* Fill an arbitrary (possibly concave) polygon via scanline parity. Used by the
+ * host to draw shapes litehtml/CSS can't — e.g. the battery charging bolt. */
+extern "C" void html_view_fill_poly(const int *xs, const int *ys, int n, int r, int g, int b, int a)
+{
+    if (n < 3) return;
+    int ymin = ys[0], ymax = ys[0];
+    for (int i = 1; i < n; i++) { if (ys[i] < ymin) ymin = ys[i]; if (ys[i] > ymax) ymax = ys[i]; }
+    for (int y = ymin; y <= ymax; y++) {
+        int xi[16], cnt = 0;
+        for (int i = 0; i < n && cnt < 16; i++) {
+            int j = (i + 1) % n;
+            int y0 = ys[i], y1 = ys[j], x0 = xs[i], x1 = xs[j];
+            if (y0 == y1) continue;
+            if ((y >= y0 && y < y1) || (y >= y1 && y < y0))
+                xi[cnt++] = x0 + (int)((long)(y - y0) * (x1 - x0) / (y1 - y0));
+        }
+        for (int i = 0; i < cnt; i++)            /* sort intersections ascending */
+            for (int k = i + 1; k < cnt; k++)
+                if (xi[k] < xi[i]) { int t = xi[i]; xi[i] = xi[k]; xi[k] = t; }
+        for (int i = 0; i + 1 < cnt; i += 2)
+            for (int x = xi[i]; x <= xi[i + 1]; x++)
+                put_px(x, y, r, g, b, a);
+    }
 }
 
 /* Hit-test a tap; returns the clicked anchor href ("" if none). */
