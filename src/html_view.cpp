@@ -382,6 +382,16 @@ extern "C" void html_view_fill_poly(const int *xs, const int *ys, int n, int r, 
     }
 }
 
+/* Filled rounded rectangle directly (host overlays like the lock icon). */
+extern "C" void html_view_fill_round_rect(int x, int y, int w, int h, int rad, int r, int g, int b, int a)
+{
+    if (w <= 0 || h <= 0) return;
+    for (int yy = y; yy < y + h; yy++)
+        for (int xx = x; xx < x + w; xx++)
+            if (pt_in_round(xx, yy, x, y, w, h, rad, rad, rad, rad))
+                put_px(xx, yy, r, g, b, a);
+}
+
 /* Hit-test a tap; returns the clicked anchor href ("" if none). */
 extern "C" const char *html_view_click(float x, float y)
 {
