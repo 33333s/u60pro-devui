@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "devui": {
-    "version": "0.3.3",
+    "version": "0.3.4",
     "asset": "u60pro-devui-aarch64",
-    "notes": "锁屏 / 圆角渲染 / 充电闪电 / 设置持久化"
+    "notes": "电源直供电 / 锁屏改版 / 熄屏触摸安全修复 / 电源菜单二次确认"
   },
   "ui": {
-    "version": "0.3.3",
+    "version": "0.3.4",
     "asset": "ui.tar.gz",
-    "notes": "锁屏键盘、圆角、WiFi 频段开关页"
+    "notes": "电源直供电开关、锁屏锁图标、电源菜单二次确认、设备列表在线过滤"
   }
 }
