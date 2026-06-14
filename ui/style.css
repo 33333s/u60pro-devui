@@ -172,11 +172,15 @@ body.mo { background: transparent; }
 .mtitle { font-size: 17px; font-weight: 700; text-align: center; padding-bottom: 10px; }
 .mbands { text-align: center; }
 /* 4-per-row aligned grid of band chips (fixed width + symmetric margin = centered) */
+/* (scoped to .modal — the dialog body is class "mo", not "dark/light") */
 .bchip, .bchip-on { display: inline-block; width: 56px; vertical-align: top; text-align: center;
-        font-size: 15px; padding: 9px 0; margin: 5px 4px 0; border-radius: 8px; text-decoration: none; }
-body.dark  .bchip { background: #2c2f37; color: #cfd4dc; }
-body.light .bchip { background: #e2e6ec; color: #2a2f38; }
-.bchip-on { background: #2f6fe0; color: #fff; font-weight: 700; }
+        font-size: 15px; padding: 9px 0; margin: 5px 4px 0; border-radius: 8px; text-decoration: none;
+        border: 1px solid transparent; }
+/* unselected: outline only, text stays theme color (black/white) so it's legible */
+.modal.dark  .bchip { background: transparent; border-color: #3a4150; color: #e9ebee; }
+.modal.light .bchip { background: transparent; border-color: #c4cad3; color: #1b1d22; }
+/* selected: filled blue */
+.bchip-on { background: #2f6fe0; border-color: #2f6fe0; color: #fff; font-weight: 700; }
 .mbtns { position: absolute; left: 14px; right: 14px; bottom: 14px; overflow: hidden; }
 .mbtn2 { display: inline-block; width: 31%; text-align: center; font-size: 14px; padding: 11px 0;
          border-radius: 8px; text-decoration: none; margin-right: 2%;
@@ -268,5 +272,7 @@ a.kp.kpx { font-size: 16px; font-weight: 400; }   /* 取消 key */
 /* ---- power menu ---- */
 .menu-title { text-align: center; font-size: 22px; color: #9aa2ad; padding: 30px 0 18px; }
 a.mbtn { display: block; text-decoration: none; color: #fff; text-align: center; font-size: 19px;
-         padding: 16px; margin: 0 26px 16px; border-radius: 10px; }
+         padding: 16px; margin: 0 26px 16px; border-radius: 10px; border: 2px solid transparent; }
 .mb-off { background: #d2483c; } .mb-reboot { background: #e0892a; } .mb-cancel { background: #4a515c; }
+/* armed = waiting for the confirming second tap (white ring + bolder label) */
+a.mbtn.armed { border-color: #fff; font-weight: 700; }

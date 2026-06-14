@@ -14,6 +14,7 @@
 #include "backlight.h"
 
 #include <dirent.h>
+#include <math.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -33,6 +34,7 @@ extern void        html_view_polyline(int x, int y, int w, int h, const int *val
 extern void        html_view_set_scroll(int y);
 extern void        html_view_fill_rect(int x, int y, int w, int h, int r, int g, int b, int a);
 extern void        html_view_fill_poly(const int *xs, const int *ys, int n, int r, int g, int b, int a);
+extern void        html_view_fill_round_rect(int x, int y, int w, int h, int rad, int r, int g, int b, int a);
 extern int         html_view_render_tall(uint16_t *buf, const char *html, int bufh);
 extern int         html_view_render_overlay(const char *html);
 
@@ -63,7 +65,7 @@ static unsigned g_phase;  /* animation tick (battery charge sweep) */
 static int  g_scroll;     /* current page vertical scroll offset */
 static int  g_page_h;     /* last rendered page content height */
 static int  g_autooff_ms; /* auto screen-off timeout, 0 = never */
-static int  g_dtap_wake = 1; /* double-tap to wake the screen */
+static int  g_saved_bright = -1; /* persisted backlight level, -1 = none yet */
 
 /* ---- page-2 aux state, cached (-1 = unknown). Like the reference plugin,
  * bands are controlled purely with `ifconfig wlanN up/down` and read back from
@@ -72,8 +74,25 @@ static int  g_dtap_wake = 1; /* double-tap to wake the screen */
  * power_save`. The DHCP pool is computed live from uci. Toggles flip
  * optimistically; a throttle reconciles. */
 static int  g_w24 = -1, g_w5 = -1, g_wpsm = -1;
+static int  g_dps = -1;   /* power direct-supply mode (zwrt_bsp.charger), -1 unknown */
 static char g_dhcp_pool[48];
+/* currently WiFi-associated client MACs (lowercased, comma-joined). DHCP leases
+ * linger after a device leaves, so the device list filters against this (live
+ * station dump) to match the vendor's "only connected" behavior. */
+static char g_assoc_macs[640];
 static uint32_t g_wifi_aux_at;
+
+/* Is this MAC currently associated to a radio? (case-insensitive substring) */
+static int mac_assoc(const char *mac)
+{
+    if (!g_assoc_macs[0] || !mac || !mac[0]) return 1;   /* unknown -> don't hide */
+    char lc[24]; int j = 0;
+    for (const char *p = mac; *p && j < 23; p++) {
+        char c = *p; if (c >= 'A' && c <= 'Z') c += 32; lc[j++] = c;
+    }
+    lc[j] = 0;
+    return strstr(g_assoc_macs, lc) != NULL;
+}
 
 /* ---- screen lock (4-digit PIN) ---- */
 static char g_pin[8];        /* stored PIN ("" = lock disabled) */
@@ -212,9 +231,14 @@ static void wifi_aux_refresh(void)
         "echo PSM=$([ \"$ps\" = on ] && echo 1 || echo 0);"
         "ip=$(uci -q get network.lan.ipaddr); st=$(uci -q get dhcp.lan.start); lim=$(uci -q get dhcp.lan.limit);"
         "if [ -n \"$ip\" ] && [ -n \"$st\" ]; then pre=${ip%.*}; end=$((st+lim-1)); [ $end -gt 254 ] && end=254;"
-        "echo \"POOL=$pre.$st - $pre.$end\"; fi", "r");
+        "echo \"POOL=$pre.$st - $pre.$end\"; fi;"
+        /* "connected now" = WiFi-associated stations ∪ ARP-complete entries
+         * (ARP covers LAN/USB clients too; leases alone linger 24h). */
+        "echo MACS=$({ for w in wlan0 wlan1 wlan2 wlan3; do iw dev $w station dump 2>/dev/null | awk '/Station/{print $2}'; done;"
+        " awk 'NR>1 && $3!=\"0x0\"{print $4}' /proc/net/arp 2>/dev/null; } | tr 'A-Z\\n' 'a-z,');"
+        "echo DPS=$(ubus call zwrt_bsp.charger list 2>/dev/null | grep direct_power_supply_mode | grep -o 'enable\\|disable')", "r");
     if (!fp) return;
-    char line[80];
+    char line[768];
     while (fgets(line, sizeof line, fp)) {
         if      (!strncmp(line, "W0=", 3))   g_w24 = strstr(line, "=up") != NULL;
         else if (!strncmp(line, "W2=", 3))   g_w5  = strstr(line, "=up") != NULL;
@@ -222,6 +246,14 @@ static void wifi_aux_refresh(void)
         else if (!strncmp(line, "POOL=", 5)) {
             char *nl = strchr(line, '\n'); if (nl) *nl = 0;
             snprintf(g_dhcp_pool, sizeof g_dhcp_pool, "%s", line + 5);
+        }
+        else if (!strncmp(line, "MACS=", 5)) {
+            char *nl = strchr(line, '\n'); if (nl) *nl = 0;
+            snprintf(g_assoc_macs, sizeof g_assoc_macs, "%s", line + 5);
+        }
+        else if (!strncmp(line, "DPS=", 4)) {
+            if (strstr(line, "disable")) g_dps = 0;
+            else if (strstr(line, "enable")) g_dps = 1;
         }
     }
     pclose(fp);
@@ -271,8 +303,8 @@ static void load_conf(void)
     while (fgets(line, sizeof line, fp)) {
         if      (sscanf(line, "theme=%d", &v) == 1)      g_theme = !!v;
         else if (sscanf(line, "speed_bits=%d", &v) == 1) g_speed_bits = !!v;
-        else if (sscanf(line, "dtap=%d", &v) == 1)       g_dtap_wake = !!v;
         else if (sscanf(line, "autooff=%d", &v) == 1)    g_autooff_ms = v;
+        else if (sscanf(line, "bright=%d", &v) == 1)     g_saved_bright = v;
     }
     fclose(fp);
 }
@@ -280,8 +312,8 @@ static void save_conf(void)
 {
     FILE *fp = fopen(CONF_FILE, "w");
     if (!fp) return;
-    fprintf(fp, "theme=%d\nspeed_bits=%d\ndtap=%d\nautooff=%d\n",
-            g_theme, g_speed_bits, g_dtap_wake, g_autooff_ms);
+    fprintf(fp, "theme=%d\nspeed_bits=%d\nautooff=%d\nbright=%d\n",
+            g_theme, g_speed_bits, g_autooff_ms, backlight_get());
     fclose(fp);
 }
 
@@ -420,11 +452,38 @@ static void draw_batt_bolt(void)
     html_view_fill_poly(xs, ys, 6, v, v, v, 255);
 }
 
+/* Padlock glyph centered in the lower screen, shown on the locked preview
+ * (state 1). Drawn natively (shape, not a glyph) like the battery bolt. */
+static void draw_lock_icon(void)
+{
+    const int cx = 160, cy = 406;          /* icon center, lower-middle */
+    int dark = !g_theme;
+    int lv = dark ? 0xff : 0x00;           /* lock color: white(dark) / black(light) */
+    /* shackle: arch ring (semicircle + short legs); legs end inside the body */
+    {
+        int xs[40], ys[40], n = 0;
+        const int ro = 7, ri = 5, arc_cy = cy - 2, leg = cy + 3;
+        xs[n] = cx - ro; ys[n] = leg; n++;
+        for (int aa = 180; aa >= 0; aa -= 30) { double r = aa * 3.14159265 / 180; xs[n] = cx + (int)(ro * cos(r)); ys[n] = arc_cy - (int)(ro * sin(r)); n++; }
+        xs[n] = cx + ro; ys[n] = leg; n++;
+        xs[n] = cx + ri; ys[n] = leg; n++;
+        for (int aa = 0; aa <= 180; aa += 30) { double r = aa * 3.14159265 / 180; xs[n] = cx + (int)(ri * cos(r)); ys[n] = arc_cy - (int)(ri * sin(r)); n++; }
+        xs[n] = cx - ri; ys[n] = leg; n++;
+        html_view_fill_poly(xs, ys, n, lv, lv, lv, 255);
+    }
+    /* body + keyhole (keyhole in page bg tone to look punched through) */
+    html_view_fill_round_rect(cx - 10, cy + 1, 20, 15, 4, lv, lv, lv, 255);
+    html_view_fill_round_rect(cx - 2, cy + 6, 4, 4, 2,
+                              dark ? 0x15 : 0xec, dark ? 0x16 : 0xee, dark ? 0x1a : 0xf1, 255);
+}
+
 /* ---- band lock (锁频): comma-list band sets ---- */
 static int  g_modal;           /* 0 none, 1 SA, 2 NSA, 3 LTE (second-level dialog) */
 static int  g_segdrag;         /* dragging the segmented control (suppress cell highlight) */
 static char g_toast[48];       /* toast message ("" = hidden) */
 static uint32_t g_toast_until; /* millis the toast hides at */
+static int  g_pwr_confirm;     /* power menu: 0 none, 1 poweroff armed, 2 reboot armed */
+static uint32_t g_pwr_until;   /* millis the armed state auto-resets at */
 static char g_net_pending[16]; /* optimistic net mode until net_select catches up */
 static char g_uni_sa[256], g_uni_nsa[256], g_uni_lte[256];   /* available bands (max seen) */
 static char g_sel_sa[256], g_sel_nsa[256], g_sel_lte[256];   /* selected (to lock) */
@@ -768,19 +827,22 @@ static int build_kv(struct kv *t)
     else { int n = d.imei[0] ? (int)strlen(d.imei) : 15; if (n > 23) n = 23; memset(s_imei, '*', n); s_imei[n] = 0; }
     snprintf(s_spu, sizeof s_spu, "%s", g_speed_bits ? "Mbps" : "MB/s");
 
-    /* ---- connected device list (page 2), capped to keep the page in 480px ---- */
-    static char s_clist[1400];
+    /* ---- connected device list (page 2): all of them, filtered to currently
+     * WiFi-associated MACs (leases linger after a device leaves) ---- */
+    static char s_clist[2600];
     {
-        int o = 0, show = d.client_n < 3 ? d.client_n : 2;
-        if (d.client_n == 0)
-            o += snprintf(s_clist + o, sizeof s_clist - o, "<div class='cli muted'>暂无已连接设备</div>");
-        for (int i = 0; i < show; i++)
+        int o = 0, shown = 0;
+        for (int i = 0; i < d.client_n; i++) {
+            if (!mac_assoc(d.client[i].mac)) continue;
             o += snprintf(s_clist + o, sizeof s_clist - o,
                 "<div class='cli'><span class='cn'>%s</span><span class='cip'>%s</span></div>",
                 d.client[i].name, d.client[i].ip);
-        if (d.client_n > show)
-            o += snprintf(s_clist + o, sizeof s_clist - o,
-                "<div class='cli muted'>…另有 %d 台</div>", d.client_n - show);
+            shown++;
+        }
+        if (shown == 0)
+            snprintf(s_clist, sizeof s_clist, "<div class='cli muted'>暂无已连接设备</div>");
+        /* keep the header count consistent with the filtered list */
+        if (g_assoc_macs[0]) snprintf(s_clients, sizeof s_clients, "%d", shown);
     }
 
     /* ---- dhcp summary (page 2) ---- */
@@ -838,10 +900,13 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "CHGV", s_chgv };  t[i++] = (struct kv){ "CHGI", s_chgi };
     t[i++] = (struct kv){ "BATV", s_batv };  t[i++] = (struct kv){ "BATI", s_bati };
     t[i++] = (struct kv){ "PWR", s_pwr };    t[i++] = (struct kv){ "PWRLBL", d.charger_connect ? "充电" : "放电" };
-    t[i++] = (struct kv){ "DTAPCLASS", g_dtap_wake ? "on" : "off" };
-    t[i++] = (struct kv){ "DTAPSTATE", g_dtap_wake ? "开启" : "关闭" };
     /* lock page */
     t[i++] = (struct kv){ "NETSEG", s_netseg };  t[i++] = (struct kv){ "TOAST", s_toast };
+    /* power menu: armed button shows a confirm label + highlight */
+    t[i++] = (struct kv){ "PWROFFLBL",  g_pwr_confirm == 1 ? "再按一次关机" : "关机" };
+    t[i++] = (struct kv){ "PWROFFCLS",  g_pwr_confirm == 1 ? "armed" : "" };
+    t[i++] = (struct kv){ "PWRREBLBL",  g_pwr_confirm == 2 ? "再按一次重启" : "重启" };
+    t[i++] = (struct kv){ "PWRREBCLS",  g_pwr_confirm == 2 ? "armed" : "" };
     t[i++] = (struct kv){ "CURSA", s_cursa };    t[i++] = (struct kv){ "CURNSA", s_curnsa };
     t[i++] = (struct kv){ "CURLTE", s_curlte };
     /* wifi page */
@@ -854,6 +919,8 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "WIFI24STATE", g_w24 < 0 ? "—" : g_w24 ? "已开启" : "已关闭" };
     t[i++] = (struct kv){ "WIFI5CLASS", g_w5 == 1 ? "on" : "off" };
     t[i++] = (struct kv){ "WIFI5STATE", g_w5 < 0 ? "—" : g_w5 ? "已开启" : "已关闭" };
+    t[i++] = (struct kv){ "DPSCLASS", g_dps == 1 ? "on" : "off" };
+    t[i++] = (struct kv){ "DPSSTATE", g_dps < 0 ? "—" : g_dps ? "已开启" : "已关闭" };
     t[i++] = (struct kv){ "PSMCLASS", g_wpsm == 1 ? "on" : "off" };
     t[i++] = (struct kv){ "PSMSTATE", g_wpsm < 0 ? "—" : g_wpsm ? "已开启（省电）" : "已关闭（高性能）" };
     t[i++] = (struct kv){ "CLIENTLIST", s_clist }; t[i++] = (struct kv){ "DHCP_IP", d.dhcp_ip[0] ? d.dhcp_ip : "-" };
@@ -906,6 +973,7 @@ static void render(drm_disp_t *disp, const char *path)
     g_page_h = html_view_render_html(html);
     draw_charts();      /* native polylines into any #chart-* placeholders */
     draw_batt_bolt();   /* native lightning over the battery while charging */
+    if (g_lock_state == 1) draw_lock_icon();   /* locked preview: lock glyph */
     int H = disp->height, maxs = g_page_h - H;
     (void)maxs;
     if (g_modal) {                                    /* dim page + second-level dialog */
@@ -1062,7 +1130,7 @@ int main(void)
     key_input_t key;     key_input_init(&key);
     backlight_init();
 
-    int menu = 0, prev_press = 0, prev_lock = 0, down_x = 0, down_y = 0;
+    int menu = 0, prev_press = 0, prev_lock = 0, was_on = 1, down_x = 0, down_y = 0;
     int dragging = 0, drag_dir = 0, drag_target = 0;
     int scroll_dir = 0, scroll_start = 0;
     int sliding = 0, bar_x = 0, bar_w = 0;   /* brightness slider drag */
@@ -1074,14 +1142,16 @@ int main(void)
     snprintf(lock_path, sizeof lock_path, "%s/lockscreen.html", UI_DIR);
 
     /* lock pad takes priority over the power menu and the normal pages */
-    #define CUR_PATH (g_lock_state ? lock_path : menu ? menu_path : g_pages[g_cur])
+    /* lock states: 1=preview (page 1), 2=setup pad, 3=unlock pad */
+    #define CUR_PATH (g_lock_state == 1 ? g_pages[0] : g_lock_state ? lock_path : menu ? menu_path : g_pages[g_cur])
 
     load_conf();                          /* restore persisted UI settings */
+    if (g_saved_bright >= 0) backlight_set(g_saved_bright);   /* restore brightness */
     load_pin();
     wifi_aux_refresh();                   /* prime page-2 switch states */
     if (lock_enabled()) enter_lock(0);   /* boot straight into the unlock pad */
     render(&disp, CUR_PATH);
-    uint32_t last_data = millis(), last_act = millis(), last_wake_tap = 0;
+    uint32_t last_data = millis(), last_act = millis();
 
     while (g_run) {
         uint32_t now = millis();
@@ -1101,7 +1171,7 @@ int main(void)
             if (g_lock_state) {                       /* no power menu while locked */
                 if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
             } else {
-                menu = !menu;
+                menu = !menu; g_pwr_confirm = 0;
                 if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
                 else need_render = 1;
             }
@@ -1110,16 +1180,33 @@ int main(void)
         /* touch: follow-finger swipe (pages) / drag (scroll) + tap actions */
         int x, y, pressed;
         touch_input_read(&touch, &x, &y, &pressed);
-        if (pressed) last_act = now;
 
-        if (!backlight_is_on()) {
-            /* double-tap wakes the screen (if enabled); gesture is consumed */
-            if (pressed && !prev_press) {
-                if (g_dtap_wake && now - last_wake_tap < 400) screen_on(&disp, CUR_PATH);
-                last_wake_tap = now;
+        int on_now = backlight_is_on();
+        if (on_now && !was_on) {          /* first frame after waking: drop the wake touch */
+            touch_input_clear_taps(&touch);
+            pressed = 0;
+        }
+        if (pressed && on_now) last_act = now;
+
+        if (!on_now) {
+            /* screen off: ignore touch entirely and discard any taps the panel
+             * reported while dark, so they can't replay on wake. Power key is the
+             * only way to wake (double-tap-to-wake removed). */
+            touch_input_clear_taps(&touch);
+            pressed = 0;
+        } else if (g_lock_state == 1) {
+            /* locked preview: page 1 with live data, no actions. A swipe in any
+             * direction opens the PIN pad. */
+            if (pressed && !prev_press) { down_x = x; down_y = y; }
+            else if (pressed && prev_press) {
+                int dx = x - down_x, dy = y - down_y;
+                if (dx * dx + dy * dy > 22 * 22) {
+                    g_lock_state = 3; g_pin_entry[0] = 0; g_lock_err = 0; g_scroll = 0;
+                    need_render = 1;
+                }
             }
         } else if (g_lock_state) {
-            /* PIN pad (unlock or setup): tap only, no confirm key — a 4th digit
+            /* PIN pad (3=unlock / 2=setup): tap only, no confirm key — a 4th digit
              * auto-submits. Drain the tap queue so a fast burst of taps all land
              * (the per-digit re-render would otherwise let polls miss presses). */
             int tx, ty;
@@ -1239,7 +1326,7 @@ int main(void)
             }
             else if (!pressed && prev_press) {
                 int dx = x - down_x;
-                if (sliding) { /* brightness drag finished */ }
+                if (sliding) { save_conf(); /* persist brightness after drag */ }
                 else if (segging) {   /* snap to nearest cell + apply */
                     int c = clampi((x - seg_x) * seg_n / (seg_w > 0 ? seg_w : 1), 0, seg_n - 1);
                     if (seg_which == 1) {
@@ -1267,10 +1354,17 @@ int main(void)
                     const char *act = html_view_click((float)x, (float)y);
                     if (!strncmp(act, "act:", 4)) {
                         const char *a = act + 4;
-                        if      (!strcmp(a, "poweroff")) system("poweroff");
-                        else if (!strcmp(a, "reboot"))   system("reboot");
-                        else if (!strcmp(a, "close"))     { menu = 0; need_render = 1; }
-                        else if (!strcmp(a, "menu"))      { backlight_on(); menu = 1; need_render = 1; }
+                        if (!strcmp(a, "poweroff")) {
+                            if (g_pwr_confirm == 1) {        /* confirmed: blank first (instant feedback), then power off */
+                                screen_off(&disp); system("poweroff");
+                            } else { g_pwr_confirm = 1; g_pwr_until = now + 4000; need_render = 1; }
+                        }
+                        else if (!strcmp(a, "reboot")) {
+                            if (g_pwr_confirm == 2) { screen_off(&disp); system("reboot"); }
+                            else { g_pwr_confirm = 2; g_pwr_until = now + 4000; need_render = 1; }
+                        }
+                        else if (!strcmp(a, "close"))     { menu = 0; g_pwr_confirm = 0; need_render = 1; }
+                        else if (!strcmp(a, "menu"))      { backlight_on(); menu = 1; g_pwr_confirm = 0; need_render = 1; }
                         else if (!strcmp(a, "theme"))     { g_theme = !g_theme; save_conf(); need_render = 1; }
                         else if (!strcmp(a, "revealkey")) { g_show_key = !g_show_key; need_render = 1; }
                         else if (!strcmp(a, "revealcell")) { g_show_cellid = !g_show_cellid; need_render = 1; }
@@ -1302,6 +1396,16 @@ int main(void)
                                      is24 ? "wlan0" : "wlan2", on ? "down" : "up");
                             system(cmd);
                             if (is24) g_w24 = !on; else g_w5 = !on;
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "dps")) {   /* power direct-supply mode */
+                            int on = (g_dps == 1);
+                            char cmd[160];
+                            snprintf(cmd, sizeof cmd,
+                                "ubus call zwrt_bsp.charger set '{\"direct_power_supply_mode\":\"%s\"}' >/dev/null 2>&1 &",
+                                on ? "disable" : "enable");
+                            system(cmd);
+                            g_dps = !on;
                             need_render = 1;
                         }
                         else if (!strcmp(a, "psm")) {
@@ -1339,13 +1443,13 @@ int main(void)
                                 if (frac < 3) frac = 3; if (frac > 100) frac = 100;
                                 int bmax = backlight_max(); if (bmax <= 0) bmax = 255;
                                 backlight_set(frac * bmax / 100);
+                                save_conf();   /* persist brightness */
                             }
                             need_render = 1;
                         }
                         else if (!strncmp(a, "autooff:", 8)) {   /* preset select */
                             g_autooff_ms = atoi(a + 8); last_act = now; save_conf(); need_render = 1;
                         }
-                        else if (!strcmp(a, "dtap")) { g_dtap_wake = !g_dtap_wake; save_conf(); need_render = 1; }
                         else if (!strcmp(a, "locktoggle")) {   /* on->off clears PIN; off->on opens setup pad */
                             if (lock_enabled()) clear_pin();
                             else                enter_lock(1);
@@ -1378,11 +1482,14 @@ int main(void)
 
         /* when the lock pad first appears, drop taps that were queued before it
          * (e.g. the toggle tap that opened it) so they don't phantom-press keys */
-        if (g_lock_state && !prev_lock) touch_input_clear_taps(&touch);
+        if (g_lock_state != prev_lock) touch_input_clear_taps(&touch);
         prev_lock = g_lock_state;
 
         /* dismiss the toast after its timeout */
         if (g_toast[0] && now >= g_toast_until) { g_toast[0] = 0; need_render = 1; }
+
+        /* power-menu armed state auto-reverts if the second tap doesn't come */
+        if (g_pwr_confirm && now >= g_pwr_until) { g_pwr_confirm = 0; if (menu) need_render = 1; }
 
         /* auto screen-off after the configured idle timeout (locks if enabled) */
         if (g_autooff_ms > 0 && backlight_is_on() && now - last_act >= (uint32_t)g_autooff_ms) {
@@ -1397,6 +1504,7 @@ int main(void)
         if (!dragging && now - g_wifi_aux_at >= 4000) { g_wifi_aux_at = now; wifi_aux_refresh(); }
 
         if (need_render && backlight_is_on()) render(&disp, CUR_PATH);
+        was_on = backlight_is_on();   /* track for next frame's wake-touch discard */
         if (!animating) usleep(30000);
     }
 
