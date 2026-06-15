@@ -477,6 +477,28 @@ static void draw_lock_icon(void)
                               dark ? 0x15 : 0xec, dark ? 0x16 : 0xee, dark ? 0x1a : 0xf1, 255);
 }
 
+/* SMS detail dialog + status-bar envelope state. */
+static int  g_sms_open = -1;   /* index of the opened SMS detail dialog (-1 = none) */
+static int  g_sms_unread_now;  /* unread SMS present -> draw the status-bar envelope */
+static char g_sms_num[40], g_sms_date[16], g_sms_text[700];   /* opened message */
+
+/* Draw a small envelope in the status bar (over the #smsico spacer) when there
+ * are unread messages. Native shape — the font has no envelope glyph. */
+static void draw_sms_icon(void)
+{
+    if (!g_sms_unread_now) return;
+    int x, y, w, h;
+    if (!html_view_rect("#smsico", &x, &y, &w, &h)) return;
+    const int ew = 16, eh = 11;
+    int ex = x + (w - ew) / 2, ey = y + (h - eh) / 2;
+    /* body: blue rounded rectangle */
+    html_view_fill_round_rect(ex, ey, ew, eh, 2, 0x2f, 0x6f, 0xe0, 255);
+    /* flap: white inverted-V from the two top corners down to center */
+    int xs[3] = { ex + 1, ex + ew - 1, ex + ew / 2 };
+    int ys[3] = { ey + 1, ey + 1,      ey + eh / 2 + 1 };
+    html_view_fill_poly(xs, ys, 3, 0xff, 0xff, 0xff, 255);
+}
+
 /* ---- band lock (锁频): comma-list band sets ---- */
 static int  g_modal;           /* 0 none, 1 SA, 2 NSA, 3 LTE (second-level dialog) */
 static int  g_segdrag;         /* dragging the segmented control (suppress cell highlight) */
@@ -549,6 +571,54 @@ static const struct { const char *v, *lab; } g_netmodes[4] = {
 static const struct { int ms; const char *lab; } g_autooffs[6] = {
     { 0, "关" }, { 30000, "30秒" }, { 60000, "1分" },
     { 120000, "2分" }, { 300000, "5分" }, { 600000, "10分" } };
+
+/* escape &,<,> for safe litehtml parsing of arbitrary SMS text */
+static void html_esc(char *dst, size_t cap, const char *src)
+{
+    size_t o = 0;
+    for (const char *s = src; *s && o + 7 < cap; s++) {
+        const char *r = NULL;
+        if      (*s == '&') r = "&amp;";
+        else if (*s == '<') r = "&lt;";
+        else if (*s == '>') r = "&gt;";
+        if (r) { size_t L = strlen(r); memcpy(dst + o, r, L); o += L; }
+        else dst[o++] = *s;
+    }
+    dst[o] = 0;
+}
+
+/* Copy at most maxb bytes of UTF-8 without splitting a multibyte char; stop at
+ * a newline. Sets *cut if the source was longer (so the caller can add "…"). */
+static void utf8_trunc(char *dst, size_t cap, const char *src, int maxb, int *cut)
+{
+    int o = 0; *cut = 0;
+    const unsigned char *s = (const unsigned char *)src;
+    while (*s) {
+        if (*s == '\n' || *s == '\r') { *cut = 1; break; }
+        int len = (*s >= 0xF0) ? 4 : (*s >= 0xE0) ? 3 : (*s >= 0xC0) ? 2 : 1;
+        if (o + len > maxb || (size_t)(o + len) >= cap) { *cut = 1; break; }
+        for (int k = 0; k < len && *s; k++) dst[o++] = (char)*s++;
+    }
+    dst[o] = 0;
+}
+
+/* Second-level SMS detail dialog (number + date + full text), overlaid dimmed. */
+static const char *sms_modal_html(void)
+{
+    static char out[5200];
+    static char esc[3600];
+    html_esc(esc, sizeof esc, g_sms_text);
+    snprintf(out, sizeof out,
+        "<!DOCTYPE html><html><head><meta charset='UTF-8'><link rel='stylesheet' href='style.css'></head>"
+        "<body class='mo'><div class='modal %s'>"
+        "<div class='mtitle'>%s</div>"
+        "<div class='smsmdate'>%s</div>"
+        "<div class='smsmbody'>%s</div>"
+        "<div class='mbtns'><a href='act:smsclose' class='mbtn2 prim mfull'>关闭</a></div>"
+        "</div></body></html>",
+        g_theme ? "light" : "dark", g_sms_num, g_sms_date, esc);
+    return out;
+}
 
 /* Build the second-level band-lock dialog (overlaid on the dimmed page). */
 static const char *modal_html(void)
@@ -739,15 +809,17 @@ static int build_kv(struct kv *t)
                  d.bat_percent <= 20 ? "low" : "");
         /* battery: bf = level fill; when charging the host draws a lightning
          * bolt natively over #batt (CSS/font can't draw one reliably). */
+        g_sms_unread_now = d.sms_unread > 0;
+        const char *smsb = g_sms_unread_now ? "<span id='smsico' class='smsico'></span>" : "";
         snprintf(s_sbar, sizeof s_sbar,
-            "<div class='sbar'><span class='clk'>%s</span><span class='r'>"
+            "<div class='sbar'><span class='clk'>%s</span>%s<span class='r'>"
             "<span class='spd'>%s</span>"
             "<span class='gt %s'>%s</span>"
             "%s"
             "<span class='bw'><span id='batt' class='batt %s'><span class='bf' style='width:%d%%'></span></span><span class='tip'></span></span>"
             "<span class='bp'>%d%%</span>"
             "</span></div>",
-            s_time, sp, genc, gen, s_sig,
+            s_time, smsb, sp, genc, gen, s_sig,
             bcls, clampi(d.bat_percent, 0, 100),
             d.bat_percent);
     }
@@ -845,6 +917,27 @@ static int build_kv(struct kv *t)
         if (g_assoc_macs[0]) snprintf(s_clients, sizeof s_clients, "%d", shown);
     }
 
+    /* ---- sms list (read-only page): collapsed cards, newest first. Each card is
+     * a tap target (act:sms:N) that opens the full message in a dialog. ---- */
+    static char s_smslist[4000];
+    {
+        int o = 0;
+        for (int i = 0; i < d.sms_n; i++) {
+            char prev[80]; int cut;
+            utf8_trunc(prev, sizeof prev, d.sms[i].text, 40, &cut);
+            char esc[200];
+            html_esc(esc, sizeof esc, prev);
+            o += snprintf(s_smslist + o, sizeof s_smslist - o,
+                "<a href='act:sms:%d' class='sms%s'>"
+                "<div class='smsh'><span class='smsn'>%s</span><span class='smsd'>%s</span></div>"
+                "<div class='smsp'>%s%s</div></a>",
+                i, d.sms[i].unread ? " un" : "", d.sms[i].num, d.sms[i].date,
+                esc, cut ? "…" : "");
+        }
+        if (d.sms_n == 0)
+            snprintf(s_smslist, sizeof s_smslist, "<div class='sms muted'>暂无短信</div>");
+    }
+
     /* ---- dhcp summary (page 2) ---- */
     static char s_pool[64], s_lease[24];
     snprintf(s_pool, sizeof s_pool, "%s · 共 %s",
@@ -924,6 +1017,7 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "PSMCLASS", g_wpsm == 1 ? "on" : "off" };
     t[i++] = (struct kv){ "PSMSTATE", g_wpsm < 0 ? "—" : g_wpsm ? "已开启（省电）" : "已关闭（高性能）" };
     t[i++] = (struct kv){ "CLIENTLIST", s_clist }; t[i++] = (struct kv){ "DHCP_IP", d.dhcp_ip[0] ? d.dhcp_ip : "-" };
+    t[i++] = (struct kv){ "SMSLIST", s_smslist };
     t[i++] = (struct kv){ "DHCP_POOL", g_dhcp_pool[0] ? g_dhcp_pool : s_pool };
     t[i++] = (struct kv){ "DHCP_LEASE", s_lease };
 
@@ -973,6 +1067,7 @@ static void render(drm_disp_t *disp, const char *path)
     g_page_h = html_view_render_html(html);
     draw_charts();      /* native polylines into any #chart-* placeholders */
     draw_batt_bolt();   /* native lightning over the battery while charging */
+    draw_sms_icon();    /* native envelope in the status bar when unread SMS */
     if (g_lock_state == 1) draw_lock_icon();   /* locked preview: lock glyph */
     int H = disp->height, maxs = g_page_h - H;
     (void)maxs;
@@ -980,6 +1075,10 @@ static void render(drm_disp_t *disp, const char *path)
         html_view_fill_rect(0, 28, disp->width, H - 28, 0, 0, 0, 150);
         capture_fb(disp);                             /* snapshot page+dim for fast modal refresh */
         html_view_render_overlay(modal_html());
+    } else if (g_sms_open >= 0) {                     /* dim page + SMS detail dialog */
+        html_view_fill_rect(0, 28, disp->width, H - 28, 0, 0, 0, 150);
+        capture_fb(disp);
+        html_view_render_overlay(sms_modal_html());
     }
     drm_disp_dirty(disp, 0, 0, disp->width - 1, disp->height - 1);
 }
@@ -1013,6 +1112,7 @@ static void compose_frame(drm_disp_t *d, int o)
         }
     }
     draw_batt_bolt();   /* native bolt over the pinned battery (buffers lack it) */
+    draw_sms_icon();    /* native envelope over the pinned status bar */
     drm_disp_dirty(d, 0, 0, W - 1, H - 1);
 }
 
@@ -1238,6 +1338,9 @@ int main(void)
                     g_pin_entry[0] = 0; g_lock_err = 0; g_lock_state = 0; need_render = 1;
                 }
             }
+        } else if (g_sms_open >= 0) {
+            /* SMS detail dialog: any tap (close button or outside) dismisses */
+            if (!pressed && prev_press) { g_sms_open = -1; need_render = 1; }
         } else if (g_modal) {
             /* second-level band-lock dialog: tap only (level-1 is disabled) */
             if (!pressed && prev_press) {
@@ -1467,6 +1570,24 @@ int main(void)
                             const char *r = a + 10;
                             g_modal = !strcmp(r, "sa") ? 1 : !strcmp(r, "nsa") ? 2 : 3;
                             need_render = 1;
+                        }
+                        else if (!strncmp(a, "sms:", 4)) {   /* open SMS detail + mark read */
+                            int idx = atoi(a + 4);
+                            devui_data_t sd;
+                            if (data_refresh(&sd) && idx >= 0 && idx < sd.sms_n) {
+                                snprintf(g_sms_num,  sizeof g_sms_num,  "%s", sd.sms[idx].num);
+                                snprintf(g_sms_date, sizeof g_sms_date, "%s", sd.sms[idx].date);
+                                snprintf(g_sms_text, sizeof g_sms_text, "%s", sd.sms[idx].text);
+                                g_sms_open = idx;
+                                if (sd.sms[idx].unread && sd.sms[idx].id > 0) {
+                                    char cmd[128];
+                                    snprintf(cmd, sizeof cmd,
+                                        "ubus call zwrt_wms zwrt_wms_modify_tag '{\"id\":\"%ld;\",\"tag\":0}' >/dev/null 2>&1 &",
+                                        sd.sms[idx].id);
+                                    system(cmd);
+                                }
+                                need_render = 1;
+                            }
                         }
                         else if (!strcmp(a, "resetband")) {
                             system("ubus call zte_nwinfo_api nwinfo_reset_band_cell_setting '{}' >/dev/null 2>&1 &");

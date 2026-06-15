@@ -39,6 +39,11 @@ typedef struct {
     struct { char name[40], ip[24], mac[20]; } client[16];
     int  client_n;
 
+    /* sms (read-only) */
+    int  sms_unread;
+    struct { long id; char num[40], date[16], text[700]; int unread; } sms[6];
+    int  sms_n;
+
     /* wifi (main SSID) */
     char wifi_ssid[64], wifi_key[64], wifi_enc[24];
     int  wifi_enabled;

@@ -173,8 +173,8 @@ body.mo { background: transparent; }
 .mbands { text-align: center; }
 /* 4-per-row aligned grid of band chips (fixed width + symmetric margin = centered) */
 /* (scoped to .modal — the dialog body is class "mo", not "dark/light") */
-.bchip, .bchip-on { display: inline-block; width: 56px; vertical-align: top; text-align: center;
-        font-size: 15px; padding: 9px 0; margin: 5px 4px 0; border-radius: 8px; text-decoration: none;
+.bchip, .bchip-on { display: inline-block; width: 52px; vertical-align: top; text-align: center;
+        font-size: 14px; padding: 9px 0; margin: 5px 3px 0; border-radius: 8px; text-decoration: none;
         border: 1px solid transparent; }
 /* unselected: outline only, text stays theme color (black/white) so it's legible */
 .modal.dark  .bchip { background: transparent; border-color: #3a4150; color: #e9ebee; }
@@ -207,6 +207,27 @@ body.dark  .cli + .cli { border-top: 1px solid #2d323b; }
 body.light .cli + .cli { border-top: 1px solid #e6e9ef; }
 .cli .cn { font-weight: 700; }
 .cli .cip { float: right; color: #8a929d; font-size: 12px; }
+
+/* status-bar envelope spacer (right of the clock) — the envelope itself is
+ * drawn natively over this box when there are unread messages. */
+.sbar .smsico { display: inline-block; width: 18px; height: 13px; margin-left: 7px;
+                vertical-align: middle; }
+
+/* sms list (read-only page): collapsed tap-to-open cards, one preview line */
+.sms { display: block; padding: 9px 0; text-decoration: none; color: inherit; }
+body.dark  .sms + .sms { border-top: 1px solid #2d323b; }
+body.light .sms + .sms { border-top: 1px solid #e6e9ef; }
+.smsh { overflow: hidden; font-size: 12px; }
+.smsn { font-weight: 700; font-size: 14px; }
+.sms.un .smsn { color: #2f6fe0; }
+.sms.un .smsn:before { content: "● "; color: #e0483d; font-size: 10px; }
+.smsd { float: right; color: #8a929d; }
+.smsp { margin-top: 3px; font-size: 13px; color: #8a929d; overflow: hidden; white-space: nowrap; }
+
+/* sms detail dialog (second level) */
+.smsmdate { color: #8a929d; font-size: 12px; text-align: center; padding-bottom: 10px; }
+.smsmbody { font-size: 15px; line-height: 1.5; }
+.mfull { width: 100%; margin-right: 0; }
 
 /* ---- toggle switch (settings) ---- */
 /* table row so the switch vertical-centers against the (two-line) label */
