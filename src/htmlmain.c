@@ -71,7 +71,9 @@ static int  g_saved_bright = -1; /* persisted backlight level, -1 = none yet */
  * bands are controlled purely with `ifconfig wlanN up/down` and read back from
  * operstate (wlan0=main 2.4G, wlan2=main 5G); uci/`wifi reload`/`zwrt_wlan
  * reload` are NOT used (they don't work / wedge the radios). PSM = `iw
- * power_save`. The DHCP pool is computed live from uci. Toggles flip
+ * power_save`, persisted via a self-written /etc/hotplug.d/iface/99-disable-powersave
+ * script that re-applies the chosen mode on every ifup (so 节能=on actually sticks
+ * across reconnect/reboot). The DHCP pool is computed live from uci. Toggles flip
  * optimistically; a throttle reconciles. */
 static int  g_w24 = -1, g_w5 = -1, g_wpsm = -1;
 static int  g_dps = -1;   /* power direct-supply mode (zwrt_bsp.charger), -1 unknown */
@@ -996,9 +998,9 @@ static int build_kv(struct kv *t)
     /* lock page */
     t[i++] = (struct kv){ "NETSEG", s_netseg };  t[i++] = (struct kv){ "TOAST", s_toast };
     /* power menu: armed button shows a confirm label + highlight */
-    t[i++] = (struct kv){ "PWROFFLBL",  g_pwr_confirm == 1 ? "再按一次关机" : "关机" };
+    t[i++] = (struct kv){ "PWROFFLBL",  g_pwr_confirm == 1 ? "再按一次" : "关机" };
     t[i++] = (struct kv){ "PWROFFCLS",  g_pwr_confirm == 1 ? "armed" : "" };
-    t[i++] = (struct kv){ "PWRREBLBL",  g_pwr_confirm == 2 ? "再按一次重启" : "重启" };
+    t[i++] = (struct kv){ "PWRREBLBL",  g_pwr_confirm == 2 ? "再按一次" : "重启" };
     t[i++] = (struct kv){ "PWRREBCLS",  g_pwr_confirm == 2 ? "armed" : "" };
     t[i++] = (struct kv){ "CURSA", s_cursa };    t[i++] = (struct kv){ "CURNSA", s_curnsa };
     t[i++] = (struct kv){ "CURLTE", s_curlte };
@@ -1057,6 +1059,82 @@ static const char *page_html(const char *path)
     return html;
 }
 
+/* ---- power menu: three large round buttons with native-drawn glyphs
+ * (litehtml can't render a power symbol / circular arrow / X reliably). The
+ * HTML provides the circle placeholders (#pmc-*) + labels + tap targets; we
+ * fill the disc and draw the glyph centered over each. ---- */
+#define PM_PI 3.14159265358979
+
+static void pm_disc(int cx, int cy, int rad, int r, int g, int b, int a)
+{
+    html_view_fill_round_rect(cx - rad, cy - rad, rad * 2, rad * 2, rad, r, g, b, a);
+}
+
+/* thick line segment (a-b) as a filled quad */
+static void pm_line(double x1, double y1, double x2, double y2, double th, int r, int g, int b)
+{
+    double dx = x2 - x1, dy = y2 - y1, len = sqrt(dx * dx + dy * dy);
+    if (len < 0.001) return;
+    double nx = -dy / len * th / 2.0, ny = dx / len * th / 2.0;
+    int xs[4] = { (int)(x1 + nx + 0.5), (int)(x2 + nx + 0.5), (int)(x2 - nx + 0.5), (int)(x1 - nx + 0.5) };
+    int ys[4] = { (int)(y1 + ny + 0.5), (int)(y2 + ny + 0.5), (int)(y2 - ny + 0.5), (int)(y1 - ny + 0.5) };
+    html_view_fill_poly(xs, ys, 4, r, g, b, 255);
+}
+
+/* annular sector (ring band) from a0..a1 degrees (math angles; screen y down) */
+static void pm_arc(int cx, int cy, double ro, double ri, int a0, int a1, int r, int g, int b)
+{
+    int xs[160], ys[160], N = 0;
+    for (int a = a0; a <= a1 && N < 158; a += 8) {
+        double t = a * PM_PI / 180.0;
+        xs[N] = cx + (int)(ro * cos(t) + 0.5); ys[N] = cy - (int)(ro * sin(t) + 0.5); N++;
+    }
+    for (int a = a1; a >= a0 && N < 160; a -= 8) {
+        double t = a * PM_PI / 180.0;
+        xs[N] = cx + (int)(ri * cos(t) + 0.5); ys[N] = cy - (int)(ri * sin(t) + 0.5); N++;
+    }
+    html_view_fill_poly(xs, ys, N, r, g, b, 255);
+}
+
+/* kind: 0=power(关机) 1=reboot(重启) 2=cancel(取消) */
+static void pm_glyph(const char *sel, int kind, int cr, int cg, int cb)
+{
+    int x, y, w, h;
+    if (!html_view_rect(sel, &x, &y, &w, &h)) return;
+    int rad = (w < h ? w : h) / 2;
+    int cx = x + w / 2, cy = y + h / 2;
+    int armed = (kind == 0 && g_pwr_confirm == 1) || (kind == 1 && g_pwr_confirm == 2);
+    if (armed) pm_disc(cx, cy, rad + 4, 0xff, 0xff, 0xff, 255);   /* white halo when armed */
+    pm_disc(cx, cy, rad, cr, cg, cb, 255);
+    const int W = 0xff;
+    double ro = rad * 0.54, ri = ro - rad * 0.15, th = rad * 0.15;
+    if (kind == 0) {                         /* power: ring with a gap at top + vertical bar */
+        pm_arc(cx, cy, ro, ri, 110, 430, W, W, W);
+        pm_line(cx, cy - rad * 0.06, cx, cy - rad * 0.60, th, W, W, W);
+    } else if (kind == 1) {                  /* reboot: ~290° ring + arrowhead at one end */
+        int a0 = 120, a1 = 410;
+        pm_arc(cx, cy, ro, ri, a0, a1, W, W, W);
+        double te = a1 * PM_PI / 180.0, rm = (ro + ri) / 2.0;
+        double pex = cx + rm * cos(te), pey = cy - rm * sin(te);
+        double tx = -sin(te), ty = -cos(te), rxx = cos(te), ryy = -sin(te);
+        double L = (ro - ri) * 1.9, hw = (ro - ri) * 1.25;
+        int ax[3] = { (int)(pex + tx * L + 0.5), (int)(pex + rxx * hw + 0.5), (int)(pex - rxx * hw + 0.5) };
+        int ay[3] = { (int)(pey + ty * L + 0.5), (int)(pey + ryy * hw + 0.5), (int)(pey - ryy * hw + 0.5) };
+        html_view_fill_poly(ax, ay, 3, W, W, W, 255);
+    } else {                                 /* cancel: X */
+        double d = rad * 0.40;
+        pm_line(cx - d, cy - d, cx + d, cy + d, th, W, W, W);
+        pm_line(cx - d, cy + d, cx + d, cy - d, th, W, W, W);
+    }
+}
+
+static void draw_power_menu(void)
+{
+    pm_glyph("#pmc-off",    0, 0xd2, 0x48, 0x3c);   /* red */
+    pm_glyph("#pmc-reboot", 1, 0xe0, 0x89, 0x2a);   /* orange */
+    pm_glyph("#pmc-cancel", 2, 0x4a, 0x51, 0x5c);   /* gray */
+}
+
 static void capture_fb(drm_disp_t *d);   /* fwd: fb snapshot for modal overlay */
 
 static void render(drm_disp_t *disp, const char *path)
@@ -1068,6 +1146,7 @@ static void render(drm_disp_t *disp, const char *path)
     draw_charts();      /* native polylines into any #chart-* placeholders */
     draw_batt_bolt();   /* native lightning over the battery while charging */
     draw_sms_icon();    /* native envelope in the status bar when unread SMS */
+    if (strstr(path, "menu.html")) draw_power_menu();   /* round power buttons */
     if (g_lock_state == 1) draw_lock_icon();   /* locked preview: lock glyph */
     int H = disp->height, maxs = g_page_h - H;
     (void)maxs;
@@ -1513,20 +1592,26 @@ int main(void)
                         }
                         else if (!strcmp(a, "psm")) {
                             int turn_on = g_wpsm == 1 ? 0 : 1;   /* 节能 on = power_save on */
-                            if (turn_on)
-                                system("(rm -f /etc/hotplug.d/iface/psm; "
-                                       "for w in wlan0 wlan1 wlan2 wlan3; do iw dev $w set power_save on 2>/dev/null; done) "
-                                       ">/dev/null 2>&1 &");
-                            else   /* 高性能: install hotplug script that keeps power_save off on ifup */
-                                system("(mkdir -p /etc/hotplug.d/iface; "
-                                       "{ echo '#!/bin/sh'; echo '[ \"$ACTION\" = ifup ] && {'; "
-                                       "echo '  iw dev wlan0 set power_save off 2>/dev/null'; "
-                                       "echo '  iw dev wlan1 set power_save off 2>/dev/null'; "
-                                       "echo '  iw dev wlan2 set power_save off 2>/dev/null'; "
-                                       "echo '  iw dev wlan3 set power_save off 2>/dev/null'; echo '}'; } "
-                                       "> /etc/hotplug.d/iface/psm; chmod +x /etc/hotplug.d/iface/psm; "
-                                       "for w in wlan0 wlan1 wlan2 wlan3; do iw dev $w set power_save off 2>/dev/null; done) "
-                                       ">/dev/null 2>&1 &");
+                            const char *m = turn_on ? "on" : "off";
+                            /* The switch owns /etc/hotplug.d/iface/99-disable-powersave: it writes
+                             * the script itself (re-applying the chosen mode on every ifup) and
+                             * applies it now, so the feature is self-contained — nothing needs to be
+                             * pre-installed. (Also drop the legacy "psm" file from older builds, which
+                             * sorts later and would otherwise override this one.) */
+                            char cmd[700];
+                            snprintf(cmd, sizeof cmd,
+                                "(mkdir -p /etc/hotplug.d/iface; rm -f /etc/hotplug.d/iface/psm; "
+                                "{ echo '#!/bin/sh'; echo '[ \"$ACTION\" = ifup ] && {'; "
+                                "echo '  iw dev wlan0 set power_save %s 2>/dev/null'; "
+                                "echo '  iw dev wlan1 set power_save %s 2>/dev/null'; "
+                                "echo '  iw dev wlan2 set power_save %s 2>/dev/null'; "
+                                "echo '  iw dev wlan3 set power_save %s 2>/dev/null'; echo '}'; } "
+                                "> /etc/hotplug.d/iface/99-disable-powersave; "
+                                "chmod +x /etc/hotplug.d/iface/99-disable-powersave; "
+                                "for w in wlan0 wlan1 wlan2 wlan3; do iw dev $w set power_save %s 2>/dev/null; done) "
+                                ">/dev/null 2>&1 &",
+                                m, m, m, m, m);
+                            system(cmd);
                             g_wpsm = turn_on;
                             need_render = 1;
                         }

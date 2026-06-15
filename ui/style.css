@@ -290,10 +290,12 @@ a.kp.kpx { font-size: 16px; font-weight: 400; }   /* 取消 key */
             font-size: 16px; font-weight: 700; padding: 13px; border-radius: 12px;
             background: #d2483c; color: #fff; }
 
-/* ---- power menu ---- */
-.menu-title { text-align: center; font-size: 22px; color: #9aa2ad; padding: 30px 0 18px; }
-a.mbtn { display: block; text-decoration: none; color: #fff; text-align: center; font-size: 19px;
-         padding: 16px; margin: 0 26px 16px; border-radius: 10px; border: 2px solid transparent; }
-.mb-off { background: #d2483c; } .mb-reboot { background: #e0892a; } .mb-cancel { background: #4a515c; }
-/* armed = waiting for the confirming second tap (white ring + bolder label) */
-a.mbtn.armed { border-color: #fff; font-weight: 700; }
+/* ---- power menu: three big round buttons stacked vertically
+ * (disc + glyph drawn natively) ---- */
+.pm-title { text-align: center; font-size: 23px; color: #9aa2ad; padding: 26px 0 0; }
+.pm-row { text-align: center; margin-top: 14px; }
+.pmbtn { display: block; width: 100%; margin-bottom: 16px; text-decoration: none; color: inherit; }
+/* circle placeholder: the colored disc + icon are painted natively over this box */
+.pmc { display: block; width: 84px; height: 84px; margin: 0 auto; }
+.pmlab { display: block; text-align: center; font-size: 15px; margin-top: 8px; }
+.pmbtn.armed .pmlab { font-weight: 700; }

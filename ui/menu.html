@@ -2,9 +2,11 @@
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
 <body class="{{THEME}}">
-  <div class="menu-title">电源</div>
-  <a class="mbtn mb-off {{PWROFFCLS}}"    href="act:poweroff">{{PWROFFLBL}}</a>
-  <a class="mbtn mb-reboot {{PWRREBCLS}}" href="act:reboot">{{PWRREBLBL}}</a>
-  <a class="mbtn mb-cancel" href="act:close">取消</a>
+  <div class="pm-title">电源</div>
+  <div class="pm-row">
+    <a class="pmbtn {{PWROFFCLS}}" href="act:poweroff"><span class="pmc" id="pmc-off"></span><span class="pmlab">{{PWROFFLBL}}</span></a>
+    <a class="pmbtn {{PWRREBCLS}}" href="act:reboot"><span class="pmc" id="pmc-reboot"></span><span class="pmlab">{{PWRREBLBL}}</span></a>
+    <a class="pmbtn" href="act:close"><span class="pmc" id="pmc-cancel"></span><span class="pmlab">取消</span></a>
+  </div>
 </body>
 </html>
