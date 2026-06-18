@@ -84,17 +84,6 @@ static char g_dhcp_pool[48];
 static char g_assoc_macs[640];
 static uint32_t g_wifi_aux_at;
 
-/* USB-C role prompt. The vendor UI has a Type-C role selector backed by
- * zwrt_bsp.typec (PR_Swap/DR_Swap) plus zwrt_bsp.powerbank. We keep the logic
- * explicit here: power direction (sink/source) x USB network on/off. */
-static int  g_usb_prompt;
-static int  g_usb_manual_prompt;
-static int  g_usb_proto_menu;
-static int  g_usb_chosen_for_attach;
-static char g_usb_choice[16];
-static char g_usb_proto[16] = "auto";
-static uint32_t g_usb_aux_at;
-
 /* Is this MAC currently associated to a radio? (case-insensitive substring) */
 static int mac_assoc(const char *mac)
 {
@@ -272,142 +261,6 @@ static void wifi_aux_refresh(void)
     pclose(fp);
 }
 
-static int parse_first_int(const char *s, int def)
-{
-    while (*s && (*s < '0' || *s > '9')) s++;
-    return *s ? atoi(s) : def;
-}
-
-static void usb_aux_refresh(void)
-{
-    FILE *fp = popen(
-        "ubus call zwrt_bsp.typec list 2>/dev/null;"
-        "ubus call zwrt_bsp.charger list 2>/dev/null", "r");
-    if (!fp) return;
-    int attached = 0;
-    char line[256];
-    while (fgets(line, sizeof line, fp)) {
-        if (strstr(line, "cc_attch_state") || strstr(line, "cc_attach_state")) {
-            if (parse_first_int(strchr(line, ':') ? strchr(line, ':') : line, 0) > 0)
-                attached = 1;
-        } else if (strstr(line, "charger_connect")) {
-            if (parse_first_int(strchr(line, ':') ? strchr(line, ':') : line, 0) > 0)
-                attached = 1;
-        }
-    }
-    pclose(fp);
-
-    if (!attached && !g_usb_manual_prompt) {
-        g_usb_prompt = 0;
-        g_usb_proto_menu = 0;
-        g_usb_chosen_for_attach = 0;
-        g_usb_choice[0] = 0;
-    } else if (attached && !g_usb_chosen_for_attach) {
-        g_usb_prompt = 1;
-    }
-}
-
-static const char *usb_effective_proto(const char *mode)
-{
-    if (!strcmp(g_usb_proto, "rndis")) return "rndis";
-    if (!strcmp(g_usb_proto, "ecm")) return "ecm";
-    if (!strcmp(g_usb_proto, "ncm")) return "ncm";
-    return (mode && strstr(mode, "dev")) ? "ecm" : "rndis";
-}
-
-static const char *usb_proto_label(const char *mode)
-{
-    const char *p = usb_effective_proto(mode);
-    if (!strcmp(g_usb_proto, "auto"))
-        return !strcmp(p, "ecm") ? "自动：CDC-ECM" : "自动：RNDIS";
-    if (!strcmp(p, "ecm")) return "CDC-ECM";
-    if (!strcmp(p, "ncm")) return "CDC-NCM";
-    return "RNDIS";
-}
-
-static const char *usb_switch_funcs(const char *proto)
-{
-    if (!strcmp(proto, "autoecm")) return "rndis_gsi,diag,serial,modem,mass_storage,ffs,dpl,qdss";
-    if (!strcmp(proto, "ecm")) return "ecm,diag,serial,modem,mass_storage,ffs,dpl,qdss";
-    if (!strcmp(proto, "ncm")) return "ncm,diag,serial,modem,mass_storage,ffs,dpl,qdss";
-    return "rndis_gsi,diag,serial,modem,mass_storage,ffs,dpl,qdss";
-}
-
-static void usb_network_set(int on, const char *mode)
-{
-    if (on) {
-        const char *proto = usb_effective_proto(mode);
-        const char *funcs = usb_switch_funcs(proto);
-        int ecm = (!strcmp(proto, "ecm"));
-        char cmd[4096];
-        snprintf(cmd, sizeof cmd,
-               "(SER=$(cat /sys/kernel/config/usb_gadget/g1/strings/0x409/serialnumber 2>/dev/null); "
-               "for m in /sys/bus/platform/devices/a600000.ssusb/mode /sys/bus/platform/devices/a600000.dwc3/mode; do "
-               "[ -e $m ] && echo peripheral > $m 2>/dev/null; done; "
-               "sleep 1; "
-               "if [ %d -eq 1 ] && ls -l /sys/kernel/config/usb_gadget/g1/configs/c.1/f1 2>/dev/null | grep -q 'gsi.ecm'; then "
-               "/sbin/usb/compositions/usb_switch START_PERIPHERAL 2>/dev/null; "
-               "elif [ '%s' = ncm ]; then "
-               "cd /sys/kernel/config/usb_gadget/g1 2>/dev/null && { "
-               "echo start > /tmp/usb_bind_in_progress; U=$(cat UDC 2>/dev/null); echo none > UDC 2>/dev/null; "
-               "rm os_desc/c* 2>/dev/null; rm configs/c*/f* 2>/dev/null; rm -rf configs/c.2 configs/c.3 2>/dev/null; "
-               "echo 0x19d2 > idVendor; echo 0x1404 > idProduct; "
-               "echo \"${SER:-MU5120ZTED0000000}\" > strings/0x409/serialnumber; "
-               "echo 'ZTE Mobile Broadband' > strings/0x409/product; echo 'ZTE,Incorporated' > strings/0x409/manufacturer; "
-               "echo 1 > os_desc/use; echo 0x04 > os_desc/b_vendor_code; echo MSFT100 > os_desc/qw_sign; "
-               "i=1; for e in ncm.0 ffs.diag cser.nmea.1 cser.dun.0 mass_storage.0 ffs.adb gsi.dpl qdss.qdss_mdm; do "
-               "[ -d functions/$e ] && ln -s functions/$e configs/c.1/f$i 2>/dev/null && i=$((i+1)); done; "
-               "/etc/launch_adbd start 2>/dev/null; sleep 1; [ -n \"$U\" ] || U=$(ls -1 /sys/class/udc 2>/dev/null | head -n 1); "
-               "[ -n \"$U\" ] && echo $U > UDC 2>/dev/null; rm -f /tmp/usb_bind_in_progress; }; "
-               "elif [ '%s' = rndis ] && ls -l /sys/kernel/config/usb_gadget/g1/configs/c.1/f1 2>/dev/null | grep -q 'gsi.rndis'; then "
-               "/sbin/usb/compositions/usb_switch START_PERIPHERAL 2>/dev/null; "
-               "elif [ '%s' = ecm ] && ls -l /sys/kernel/config/usb_gadget/g1/configs/c.1/f1 2>/dev/null | grep -q 'gsi.ecm'; then "
-               "/sbin/usb/compositions/usb_switch START_PERIPHERAL 2>/dev/null; "
-               "else /sbin/usb/compositions/usb_switch 0x19d2 0x1404 %s ${SER:-MU5120ZTED0000000} 2>/dev/null; fi; "
-               "/etc/init.d/adbd.init restart 2>/dev/null || /etc/launch_adbd start 2>/dev/null; "
-               "sleep 3; "
-               "for i in rndis0 ecm0 ncm0 usb0; do "
-               "[ -d /sys/class/net/$i ] || continue; "
-               "ip link set $i up 2>/dev/null; "
-               "brctl show br-lan 2>/dev/null | grep -q \"[[:space:]]$i$\" || brctl addif br-lan $i 2>/dev/null; "
-               "done; "
-               "ubus call network.interface.rndis up 2>/dev/null; "
-               "ubus call network.interface.ecm up 2>/dev/null; "
-               "/etc/init.d/dnsmasq reload 2>/dev/null) >/dev/null 2>&1 &",
-               ecm, proto, proto, proto, funcs);
-        system(cmd);
-    } else {
-        system("(for i in rndis0 ecm0 ncm0 usb0; do "
-               "[ -d /sys/class/net/$i ] || continue; "
-               "brctl delif br-lan $i 2>/dev/null; ip link set $i down 2>/dev/null; "
-               "done; "
-               "ifdown rndis 2>/dev/null; ifdown ecm 2>/dev/null; "
-               "ubus call network.interface.rndis down 2>/dev/null; "
-               "ubus call network.interface.ecm down 2>/dev/null) >/dev/null 2>&1 &");
-    }
-}
-
-static void usb_power_set(int source)
-{
-    if (source) {
-        system("(ubus call zwrt_bsp.powerbank set '{\"state\":1}' 2>/dev/null; "
-               "ubus call zwrt_bsp.typec set '{\"PR_Swap\":\"source\"}' 2>/dev/null) "
-               ">/dev/null 2>&1");
-    } else {
-        system("(ubus call zwrt_bsp.powerbank set '{\"state\":0}' 2>/dev/null; "
-               "ubus call zwrt_bsp.typec set '{\"PR_Swap\":\"sink\"}' 2>/dev/null) "
-               ">/dev/null 2>&1");
-    }
-}
-
-static void usb_apply_mode(const char *mode)
-{
-    int source = strstr(mode, "dev") != NULL;   /* device = connected phone/PAD gets power */
-    int net    = strstr(mode, "net") != NULL;
-    usb_power_set(source);
-    usb_network_set(net, mode);
-}
-
 /* ---- screen lock (PIN) persistence. The PIN lives in a dotfile under the UI
  * dir (which always exists) so it survives reboots and isn't clobbered by
  * pushing the .html pages. lock_enabled() == "a PIN is set". ---- */
@@ -454,13 +307,6 @@ static void load_conf(void)
         else if (sscanf(line, "speed_bits=%d", &v) == 1) g_speed_bits = !!v;
         else if (sscanf(line, "autooff=%d", &v) == 1)    g_autooff_ms = v;
         else if (sscanf(line, "bright=%d", &v) == 1)     g_saved_bright = v;
-        else if (!strncmp(line, "usb_proto=", 10)) {
-            char p[16] = {0};
-            if (sscanf(line + 10, "%15s", p) == 1 &&
-                (!strcmp(p, "auto") || !strcmp(p, "rndis") ||
-                 !strcmp(p, "ecm") || !strcmp(p, "ncm")))
-                snprintf(g_usb_proto, sizeof g_usb_proto, "%s", p);
-        }
     }
     fclose(fp);
 }
@@ -468,8 +314,8 @@ static void save_conf(void)
 {
     FILE *fp = fopen(CONF_FILE, "w");
     if (!fp) return;
-    fprintf(fp, "theme=%d\nspeed_bits=%d\nautooff=%d\nbright=%d\nusb_proto=%s\n",
-            g_theme, g_speed_bits, g_autooff_ms, backlight_get(), g_usb_proto);
+    fprintf(fp, "theme=%d\nspeed_bits=%d\nautooff=%d\nbright=%d\n",
+            g_theme, g_speed_bits, g_autooff_ms, backlight_get());
     fclose(fp);
 }
 
@@ -666,11 +512,7 @@ static char g_net_pending[16]; /* optimistic net mode until net_select catches u
 static char g_uni_sa[256], g_uni_nsa[256], g_uni_lte[256];   /* available bands (max seen) */
 static char g_sel_sa[256], g_sel_nsa[256], g_sel_lte[256];   /* selected (to lock) */
 
-/* Fallback universes for cold-start-after-lock. The modem reports a narrowed
- * list after locking (e.g. only 41,79), so "largest seen" is not enough if the
- * UI starts while already locked. Runtime values are still merged in below. */
-#define DEFAULT_NR_BANDS  "1,2,3,5,7,8,18,20,26,28,29,38,40,41,48,66,71,75,77,78,79"
-#define DEFAULT_LTE_BANDS "1,2,3,4,5,7,8,18,19,20,26,28,29,32,34,38,39,40,41,42,43,48,66,71"
+static int band_count(const char *s) { if (!s[0]) return 0; int n = 1; for (; *s; s++) if (*s == ',') n++; return n; }
 
 static int band_in(const char *list, const char *b)
 {
@@ -682,19 +524,6 @@ static int band_in(const char *list, const char *b)
     }
     return 0;
 }
-
-static void band_merge(char *dst, size_t cap, const char *src)
-{
-    char s[256]; snprintf(s, sizeof s, "%s", src ? src : "");
-    for (char *tk = strtok(s, ","); tk; tk = strtok(NULL, ",")) {
-        while (*tk == ' ') tk++;
-        if (!*tk || band_in(dst, tk)) continue;
-        size_t l = strlen(dst), bl = strlen(tk);
-        if (l + bl + 2 >= cap) return;
-        snprintf(dst + l, cap - l, "%s%s", l ? "," : "", tk);
-    }
-}
-
 static void band_toggle(char *list, size_t cap, const char *b)
 {
     if (band_in(list, b)) {
@@ -773,56 +602,6 @@ static void utf8_trunc(char *dst, size_t cap, const char *src, int maxb, int *cu
         for (int k = 0; k < len && *s; k++) dst[o++] = (char)*s++;
     }
     dst[o] = 0;
-}
-
-static const char *usb_sel_cls(const char *mode)
-{
-    return !strcmp(g_usb_choice, mode) ? "usbopt sel" : "usbopt";
-}
-
-static const char *usb_proto_cls(const char *proto)
-{
-    return !strcmp(g_usb_proto, proto) ? "usbopt sel" : "usbopt";
-}
-
-static const char *usb_modal_html(void)
-{
-    static char out[6400];
-    if (g_usb_proto_menu) {
-        snprintf(out, sizeof out,
-            "<!DOCTYPE html><html><head><meta charset='UTF-8'><link rel='stylesheet' href='style.css'></head>"
-            "<body class='mo'><div class='modal usbmodal %s'>"
-            "<div class='mtitle'>网络共享模式</div>"
-            "<div class='usbhint'>选择 USB 有线共享使用的协议</div>"
-            "<a href='act:usbproto:auto' class='%s'><b>自动</b><span>使用原厂共存组合：RNDIS + ADB</span></a>"
-            "<a href='act:usbproto:rndis' class='%s'><b>RNDIS</b><span>Windows 电脑兼容性更好</span></a>"
-            "<a href='act:usbproto:ecm' class='%s'><b>CDC-ECM</b><span>手机、平板通常更适合；Windows 可能需要驱动</span></a>"
-            "<a href='act:usbproto:ncm' class='%s'><b>CDC-NCM</b><span>设备内核支持 NCM，适合支持该协议的主机</span></a>"
-            "<div class='mbtns'><a href='act:usbback' class='mbtn2 prim mfull'>返回</a></div>"
-            "</div></body></html>",
-            g_theme ? "light" : "dark",
-            usb_proto_cls("auto"), usb_proto_cls("rndis"),
-            usb_proto_cls("ecm"), usb_proto_cls("ncm"));
-        return out;
-    }
-
-    snprintf(out, sizeof out,
-        "<!DOCTYPE html><html><head><meta charset='UTF-8'><link rel='stylesheet' href='style.css'></head>"
-        "<body class='mo'><div class='modal usbmodal %s'>"
-        "<div class='mtitle'>数据线已接入</div>"
-        "<div class='usbhint'>选择供电方向和 USB 有线网络模式</div>"
-        "<a href='act:usbsel:u60net' class='%s'><b>给 U60 充电 + U60 共享网络</b><span>U60 从外部取电，同时通过 USB 给对端上网</span></a>"
-        "<a href='act:usbsel:devnet' class='%s'><b>U60 给设备充电 + 共享网络</b><span>开启反向供电，并通过 USB 给手机/PAD 上网</span></a>"
-        "<a href='act:usbsel:u60charge' class='%s'><b>仅给 U60 充电</b><span>关闭 USB 网络，只作为受电设备</span></a>"
-        "<a href='act:usbsel:devcharge' class='%s'><b>仅给设备充电</b><span>开启充电宝模式，不提供 USB 网络</span></a>"
-        "<a href='act:usbprotoui' class='usbproto'><b>网络共享模式</b><span>%s</span></a>"
-        "<div class='mbtns'><a href='act:usbapply' class='mbtn2 prim mhalf'>确认</a><a href='act:usbclose' class='mbtn2 mhalf mr0'>稍后</a></div>"
-        "</div></body></html>",
-        g_theme ? "light" : "dark",
-        usb_sel_cls("u60net"), usb_sel_cls("devnet"),
-        usb_sel_cls("u60charge"), usb_sel_cls("devcharge"),
-        usb_proto_label(g_usb_choice));
-    return out;
 }
 
 /* Second-level SMS detail dialog (number + date + full text), overlaid dimmed. */
@@ -1057,15 +836,12 @@ static int build_kv(struct kv *t)
 
     /* charts are drawn natively after render (see draw_charts), not via tokens. */
 
-    /* ---- band lock: universe is default support set + anything observed at
-     * runtime; selection mirrors the live lock unless the user is editing. ---- */
+    /* ---- band lock: universe grows to the largest set seen; selection mirrors
+     * the live lock unless the user is editing in the modal ---- */
     static char s_netseg[640], s_cursa[300], s_curnsa[300], s_curlte[300], s_toast[120];
-    if (!g_uni_sa[0])  snprintf(g_uni_sa,  sizeof g_uni_sa,  "%s", DEFAULT_NR_BANDS);
-    if (!g_uni_nsa[0]) snprintf(g_uni_nsa, sizeof g_uni_nsa, "%s", DEFAULT_NR_BANDS);
-    if (!g_uni_lte[0]) snprintf(g_uni_lte, sizeof g_uni_lte, "%s", DEFAULT_LTE_BANDS);
-    band_merge(g_uni_sa,  sizeof g_uni_sa,  d.sa_bands);
-    band_merge(g_uni_nsa, sizeof g_uni_nsa, d.nsa_bands);
-    band_merge(g_uni_lte, sizeof g_uni_lte, d.lte_bands);
+    if (band_count(d.sa_bands)  >= band_count(g_uni_sa))  snprintf(g_uni_sa,  sizeof g_uni_sa,  "%s", d.sa_bands);
+    if (band_count(d.nsa_bands) >= band_count(g_uni_nsa)) snprintf(g_uni_nsa, sizeof g_uni_nsa, "%s", d.nsa_bands);
+    if (band_count(d.lte_bands) >= band_count(g_uni_lte)) snprintf(g_uni_lte, sizeof g_uni_lte, "%s", d.lte_bands);
     if (!g_modal) {
         if (d.sa_bands[0])  snprintf(g_sel_sa,  sizeof g_sel_sa,  "%s", d.sa_bands);
         if (d.nsa_bands[0]) snprintf(g_sel_nsa, sizeof g_sel_nsa, "%s", d.nsa_bands);
@@ -1374,20 +1150,13 @@ static void render(drm_disp_t *disp, const char *path)
     if (g_lock_state == 1) draw_lock_icon();   /* locked preview: lock glyph */
     int H = disp->height, maxs = g_page_h - H;
     (void)maxs;
-    if (g_usb_prompt) {                               /* USB-C role selection */
-        html_view_fill_rect(0, 28, disp->width, H - 28, 0, 0, 0, 150);
-        capture_fb(disp);
-        html_view_set_scroll(0);
-        html_view_render_overlay(usb_modal_html());
-    } else if (g_modal) {                             /* dim page + second-level dialog */
+    if (g_modal) {                                    /* dim page + second-level dialog */
         html_view_fill_rect(0, 28, disp->width, H - 28, 0, 0, 0, 150);
         capture_fb(disp);                             /* snapshot page+dim for fast modal refresh */
-        html_view_set_scroll(0);
         html_view_render_overlay(modal_html());
     } else if (g_sms_open >= 0) {                     /* dim page + SMS detail dialog */
         html_view_fill_rect(0, 28, disp->width, H - 28, 0, 0, 0, 150);
         capture_fb(disp);
-        html_view_set_scroll(0);
         html_view_render_overlay(sms_modal_html());
     }
     drm_disp_dirty(disp, 0, 0, disp->width - 1, disp->height - 1);
@@ -1559,7 +1328,6 @@ int main(void)
     if (g_saved_bright >= 0) backlight_set(g_saved_bright);   /* restore brightness */
     load_pin();
     wifi_aux_refresh();                   /* prime page-2 switch states */
-    usb_aux_refresh();                    /* prime Type-C attach state */
     if (lock_enabled()) enter_lock(0);   /* boot straight into the unlock pad */
     render(&disp, CUR_PATH);
     uint32_t last_data = millis(), last_act = millis();
@@ -1605,49 +1373,6 @@ int main(void)
              * only way to wake (double-tap-to-wake removed). */
             touch_input_clear_taps(&touch);
             pressed = 0;
-        } else if (g_usb_prompt) {
-            if (!pressed && prev_press) {
-                const char *act = html_view_click((float)x, (float)y);
-                if (!strncmp(act, "act:usbsel:", 11)) {
-                    snprintf(g_usb_choice, sizeof g_usb_choice, "%s", act + 11);
-                    g_usb_proto_menu = 0;
-                    need_render = 1;
-                } else if (!strncmp(act, "act:usbproto:", 13)) {
-                    const char *p = act + 13;
-                    if (!strcmp(p, "auto") || !strcmp(p, "rndis") ||
-                        !strcmp(p, "ecm") || !strcmp(p, "ncm")) {
-                        snprintf(g_usb_proto, sizeof g_usb_proto, "%s", p);
-                        save_conf();
-                        g_usb_proto_menu = 0;
-                        need_render = 1;
-                    }
-                } else if (!strcmp(act, "act:usbprotoui")) {
-                    g_usb_proto_menu = 1;
-                    need_render = 1;
-                } else if (!strcmp(act, "act:usbback")) {
-                    g_usb_proto_menu = 0;
-                    need_render = 1;
-                } else if (!strcmp(act, "act:usbapply")) {
-                    if (g_usb_choice[0]) {
-                        usb_apply_mode(g_usb_choice);
-                        snprintf(g_toast, sizeof g_toast, "USB 模式已切换");
-                        g_usb_prompt = 0;
-                        g_usb_manual_prompt = 0;
-                        g_usb_proto_menu = 0;
-                        g_usb_chosen_for_attach = 1;
-                    } else {
-                        snprintf(g_toast, sizeof g_toast, "请选择 USB 模式");
-                    }
-                    g_toast_until = now + 1600;
-                    need_render = 1;
-                } else if (!strcmp(act, "act:usbclose")) {
-                    g_usb_prompt = 0;
-                    g_usb_manual_prompt = 0;
-                    g_usb_proto_menu = 0;
-                    g_usb_chosen_for_attach = 1;
-                    need_render = 1;
-                }
-            }
         } else if (g_lock_state == 1) {
             /* locked preview: page 1 with live data, no actions. A swipe in any
              * direction opens the PIN pad. */
@@ -1865,12 +1590,6 @@ int main(void)
                             g_dps = !on;
                             need_render = 1;
                         }
-                        else if (!strcmp(a, "usbmode")) {
-                            g_usb_prompt = 1;
-                            g_usb_manual_prompt = 1;
-                            g_usb_proto_menu = 0;
-                            need_render = 1;
-                        }
                         else if (!strcmp(a, "psm")) {
                             int turn_on = g_wpsm == 1 ? 0 : 1;   /* 节能 on = power_save on */
                             const char *m = turn_on ? "on" : "off";
@@ -1989,18 +1708,6 @@ int main(void)
 
         /* reconcile page-2 WiFi switch states from uci/iw on a slow throttle */
         if (!dragging && now - g_wifi_aux_at >= 4000) { g_wifi_aux_at = now; wifi_aux_refresh(); }
-
-        /* Type-C attach is separate from charger_connect when reverse power is
-         * involved, so poll the role service and pop the selector on a new plug. */
-        if (!dragging && now - g_usb_aux_at >= 1000) {
-            int was_prompt = g_usb_prompt;
-            g_usb_aux_at = now;
-            usb_aux_refresh();
-            if (g_usb_prompt && !was_prompt) {
-                if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
-                need_render = 1;
-            }
-        }
 
         if (need_render && backlight_is_on()) render(&disp, CUR_PATH);
         was_on = backlight_is_on();   /* track for next frame's wake-touch discard */

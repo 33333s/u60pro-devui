@@ -13,14 +13,14 @@ body.light { background: #eceef1; color: #1b1d22; }
 .sbar { height: 26px; line-height: 26px; padding: 0 10px; overflow: hidden; font-size: 13px; }
 body.dark  .sbar { background: #1d2733; }
 body.light .sbar { background: #d8e2f0; }
-.sbar .clk { font-size: 14px; font-weight: 700; }
+.sbar .clk { font-weight: 700; }
 .sbar .r { float: right; }
 .sbar .r > span { display: inline-block; margin-left: 6px; vertical-align: middle; }
-.spd { display: inline-block; position: relative; top: -1px; height: 26px; line-height: 26px; font-size: 11px; color: #c2c8d0; }
+.spd { font-size: 11px; color: #c2c8d0; }
 body.light .spd { color: #3a4048; }
 
 /* generation as plain text, unified white (inherits bar text color) */
-.gt { display: inline-block; position: relative; top: 0; height: 26px; line-height: 26px; font-size: 14px; font-weight: 700; }
+.gt { font-size: 12px; font-weight: 700; }
 
 /* generation badge (unused in status bar now; kept for other pages). Backgrounds
  * are scoped to .gen so the .gt text spans don't pick up a colored box. */
@@ -41,7 +41,7 @@ body.light .spd { color: #3a4048; }
 .batt.low .bf { background: #e8533a; }   /* low battery: red */
 .tip { display: inline-block; width: 2px; height: 5px; border-radius: 0 2px 2px 0;
        background: currentColor; vertical-align: middle; }
-.bp { display: inline-block; position: relative; top: -1px; height: 26px; line-height: 26px; font-size: 12px; vertical-align: top; }
+.bp { font-size: 12px; vertical-align: middle; }
 
 /* ---- cards ---- */
 .card { margin: 6px 8px 0; border-radius: 8px; padding: 7px 10px; }
@@ -60,7 +60,6 @@ td.kv-l { width: 96px; color: #8a929d; white-space: nowrap; }
 a.rev { text-decoration: none; font-size: 12px; padding: 1px 8px; border-radius: 4px; }
 body.dark  a.rev { background: #2c2f37; color: #cfd4dc; }
 body.light a.rev { background: #d3d9e2; color: #2a2f38; }
-a.rev.usbchoose { font-size: 13px; padding: 7px 13px; border-radius: 7px; font-weight: 700; }
 
 /* ---- signal meter (status bar): strength = number of filled cells ---- */
 .sig { display: inline-block; height: 17px; vertical-align: middle; line-height: 17px; }
@@ -229,24 +228,6 @@ body.light .sms + .sms { border-top: 1px solid #e6e9ef; }
 .smsmdate { color: #8a929d; font-size: 12px; text-align: center; padding-bottom: 10px; }
 .smsmbody { font-size: 15px; line-height: 1.5; }
 .mfull { width: 100%; margin-right: 0; }
-.mhalf { width: 47%; }
-.mr0 { margin-right: 0; }
-
-/* ---- USB-C role dialog ---- */
-.usbmodal { top: 28px; bottom: 12px; }
-.usbhint { text-align: center; color: #8a929d; font-size: 12px; padding-bottom: 8px; }
-.usbopt { display: block; text-decoration: none; border-radius: 8px; padding: 7px 10px; margin-bottom: 6px; }
-.usbopt b { display: block; font-size: 14px; }
-.usbopt span { display: block; font-size: 11px; color: #8a929d; margin-top: 2px; line-height: 1.35; }
-.usbproto { display: block; text-decoration: none; border-radius: 8px; padding: 7px 10px; margin-top: 2px; margin-bottom: 6px; }
-.usbproto b { display: inline-block; font-size: 13px; }
-.usbproto span { float: right; font-size: 12px; font-weight: 700; }
-.modal.dark  .usbopt, .modal.dark .usbproto { background: #2c2f37; color: #e9ebee; border: 1px solid #3a4150; }
-.modal.light .usbopt, .modal.light .usbproto { background: #f1f3f6; color: #1b1d22; border: 1px solid #d7dde6; }
-.modal.dark  .usbopt.sel { background: #163b63; border-color: #47a5ff; }
-.modal.light .usbopt.sel { background: #dceeff; border-color: #1685e8; }
-.usbopt.sel b { color: #fff; }
-.modal.light .usbopt.sel b { color: #0a2b4a; }
 
 /* ---- toggle switch (settings) ---- */
 /* table row so the switch vertical-centers against the (two-line) label */
@@ -256,7 +237,6 @@ body.light .row + .row { border-top: 1px solid #e6e9ef; }
 .row .lab { display: table-cell; vertical-align: middle; font-size: 14px; }
 .row .lab .st { display: block; font-size: 11px; color: #8a929d; margin-top: 1px; }
 .row .ctrl { display: table-cell; vertical-align: middle; text-align: right; width: 58px; }
-.row .ctrl.usbctrl { width: 76px; }
 .sw { display: inline-block; width: 54px; height: 30px; border-radius: 15px;
       position: relative; text-decoration: none; vertical-align: middle; }
 .sw.off { background: #4a515c; } .sw.on { background: #34b863; }

@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "devui": {
-    "version": "0.3.7",
+    "version": "0.3.6",
     "asset": "u60pro-devui-aarch64",
-    "notes": "新增 USB-C 数据线模式选择，修复锁频已锁定后可选频段丢失"
+    "notes": "电源菜单改大圆形按键（原生图标）、修复 WiFi 节能模式开关 ifup 后被弹回"
   },
   "ui": {
-    "version": "0.3.7",
+    "version": "0.3.6",
     "asset": "ui.tar.gz",
-    "notes": "系统页新增 USB 模式入口，状态栏文字垂直对齐微调"
+    "notes": "电源菜单改为三个竖排大圆形按键 + 文字标签"
   }
 }

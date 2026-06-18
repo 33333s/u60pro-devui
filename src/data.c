@@ -46,7 +46,7 @@ int data_refresh(devui_data_t *d)
     if (n == 0) return 0;
     buf[n] = 0;
 
-    char sec[8192];
+    char sec[4096];
 
     if (json_get(buf, "net", sec, sizeof sec)) {
         getstr(sec, "type", d->net_type, sizeof d->net_type);

@@ -140,7 +140,7 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `{{BRIGHT}}` | 屏幕亮度% | `80` |
 | `{{AUTOOFF}}` | 自动息屏预设按钮组(整段，当前项高亮) | |
 | `{{CURSA}}` `{{CURNSA}}` `{{CURLTE}}` | 各制式当前锁定频段摘要 | `已锁 n41 n78` |
-| `{{ADBCLASS}}/{{ADBSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{WIFI24CLASS}}/{{WIFI24STATE}}` `{{WIFI5CLASS}}/{{WIFI5STATE}}` `{{PSMCLASS}}/{{PSMSTATE}}` `{{DPSCLASS}}/{{DPSSTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMECLASS}}/{{THEMESTATE}}` `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{LOCKCLASS}}/{{LOCKSTATE}}` | 各开关的类(`on`/`off`) 与状态文字；USB 模式入口是固定动作 `act:usbmode`，不需要状态令牌 | `on` / `已开启` |
+| `{{ADBCLASS}}/{{ADBSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{WIFI24CLASS}}/{{WIFI24STATE}}` `{{WIFI5CLASS}}/{{WIFI5STATE}}` `{{PSMCLASS}}/{{PSMSTATE}}` `{{DPSCLASS}}/{{DPSSTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMECLASS}}/{{THEMESTATE}}` `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{LOCKCLASS}}/{{LOCKSTATE}}` | 各开关的类(`on`/`off`) 与状态文字 | `on` / `已开启` |
 | `{{LOCKTITLE}}` | 锁屏键盘标题（设置时「设置锁屏密码」/ 解锁时「请输入锁屏密码」） | |
 | `{{PAGE}}` `{{NPAGES}}` | 当前页 / 总页数 | `3` / `5` |
 
@@ -158,7 +158,6 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `act:revealkey` `act:revealcell` `act:revealimei` | 明文/打码 显示 WiFi 密码 / Cell ID / IMEI |
 | `act:spunit` | 网速单位 Mbps(比特率) / MB/s(字节率) |
 | `act:adb` | 切换 ADB 调试(`debug`=开 / `user`=关) |
-| `act:usbmode` | 打开 USB-C 数据线模式选择弹窗（供电方向、有线共享、RNDIS/ECM/NCM 协议） |
 | `act:wifi` `act:nfc` | 切换 WiFi 总开关（两个主频段）/ NFC 碰一碰 |
 | `act:wifi24` `act:wifi5` | 切换 2.4G / 5G 主频段（`ifconfig wlan0/wlan2 up/down`） |
 | `act:psm` | 切换 WiFi 节能模式（`iw set power_save`，开=省电 / 关=高性能） |
