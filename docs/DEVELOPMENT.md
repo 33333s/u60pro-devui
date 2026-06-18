@@ -40,7 +40,7 @@ ubus 服务 ──▶ u60-datad ──▶ /tmp/u60-datad/state.json ──▶ u6
 - **03-wifi.html — WiFi**：SSID、密码（默认打码）、加密；WiFi 总开关 / 2.4G / 5G / 节能(PSM) / NFC 开关；已连接设备列表（在线过滤）；DHCP 信息（地址池实时由 uci 算）。
 - **04-lock.html — 锁频**：选网方式分段控件 + 5G SA / 5G NSA / 4G 三张锁频卡（点开二级弹窗，频段芯片一行四个）+ 恢复默认。
 - **05-charts.html — 图表**：CPU 占用+温度 / 内存 / 网速 / 电池(功率+温度) 四张原生折线图。
-- **06-system.html — 系统/设置**：CPU/内存占用、温度、充电器/电池电压电流、版本号、IMEI(打码)；屏幕亮度滑条、自动息屏分段控件、锁屏 / 电源直供电(DPS) / ADB / 速率单位 / 主题 开关。可竖向滚动。
+- **06-system.html — 系统/设置**：CPU/内存占用、温度、充电器/电池电压电流、版本号、IMEI(打码)；屏幕亮度滑条、自动息屏分段控件、锁屏 / 电源直供电(DPS) / USB 模式 / ADB / 速率单位 / 主题 开关。可竖向滚动。
 - **lockscreen.html — 锁屏键盘**：特殊页（同 `menu.html`，不计入翻页）。开启锁屏后由宿主在 `g_lock_state` 非 0 时全屏显示，4 位 PIN 数字键盘 + 删除键。状态栏（含未读短信信封图标）一并显示。详见下方「屏幕锁（PIN）」。
 - **menu.html — 电源菜单**：电源键长按弹出。三个竖排大圆形按键（关机/重启/取消），圆盘和图标原生绘制，下方文字标签，二次确认。详见下方「电源菜单（原生圆形按键）」。
 
@@ -280,8 +280,17 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 
 `menu.html` 三个竖排大圆按键。litehtml 画不了电源符号/圆箭头/X，所以 HTML 只给圆的占位框（`#pmc-off`/`#pmc-reboot`/`#pmc-cancel`）+ 文字标签 + 点击区，圆盘和图标全部由 `draw_power_menu()` 原生绘制（`render()` 里在 `path` 含 `menu.html` 时调用）：`pm_disc` 用 `fill_round_rect`(rad=半径)画实心圆，`pm_arc` 画环带（环形扇区多边形→`fill_poly`），`pm_line` 画粗线段（四边形）。关机=带顶部缺口的环+竖线（电源符号），重启=约 290° 环+箭头三角，取消=两条对角线 X。二次确认沿用 `g_pwr_confirm`：armed 时画白色光环 + 标签变「再按一次」。
 
-### 其它版本要点（v0.3.1 – v0.3.6）
+### USB-C 数据线模式（v0.3.7）
 
+插线检测走 `zwrt_bsp.typec list`（`cc_attch_state/cc_attach_state`）并兼容 `zwrt_bsp.charger list` 的 `charger_connect`。首次检测到新接入时弹出 USB 模式选择，断开后清空本次选择状态；系统页 `act:usbmode` 可手动再次打开。弹窗不是点选即应用，而是先把 `g_usb_choice` 高亮，点「确认」后才调用 `usb_apply_mode()`。
+
+四个模式按“供电方向 × USB 网络”组合：给 U60 充电时切 `PR_Swap=sink` 并关闭 powerbank；U60 给外设充电时切 `PR_Swap=source` 并打开 `zwrt_bsp.powerbank`。有线网络开启后会按所选协议切 USB gadget composition，拉起 ADB，并把 `rndis0/ecm0/ncm0/usb0` 中存在的接口加入 `br-lan`，让 USB 主机从同一 LAN/DHCP 出网。
+
+协议选择 `g_usb_proto` 持久化到 `/data/u60pro/devui.conf`，可选 `auto/rndis/ecm/ncm`。自动模式目前按场景选择：反向供电给手机/PAD时倾向 ECM，普通电脑侧共享倾向 RNDIS；手动 NCM 会直接重配 configfs 的 `ncm.0 + ffs.adb` 等函数组合。
+
+### 其它版本要点（v0.3.1 – v0.3.7）
+
+- **v0.3.7 锁频频段全集兜底**：已锁定后底层有时只回当前锁定频段，UI 冷启动会误以为其它频段“不存在”。现在 `DEFAULT_NR_BANDS` / `DEFAULT_LTE_BANDS` 作为初始全集，再合并运行时观测值；同时扩大 `data.c` 分段缓冲，减少状态截断。
 - **v0.3.4 电源直供电（DPS）**：第六页开关，插电时直供、减电池损耗。走 `ubus zwrt_bsp.charger set '{"direct_power_supply_mode":"enable/disable"}'`，状态读 `list`。同版还做了锁屏改版（锁定先显示首页预览 + 原生锁图标，滑动才进 PIN 键盘）、电源菜单二次确认、设备列表「在线过滤」（WiFi 关联 ∪ ARP 在线，去掉租约残留）、亮度持久化，并**移除双击点亮**（熄屏完全忽略触摸更安全）。
 - **v0.3.5 锁频芯片一行四个**：弹窗内宽 ~264px，原 56px 芯片四个顶满会换行，缩到 52px + 边距 3px + 字号 14px 才稳定四列。
 - 背光淡入淡出（v0.3.2）见上「电源键与息屏」。
