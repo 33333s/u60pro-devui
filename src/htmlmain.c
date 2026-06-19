@@ -692,15 +692,14 @@ static int  g_sms_open = -1;   /* index of the opened SMS detail dialog (-1 = no
 static int  g_sms_unread_now;  /* unread SMS present -> draw the status-bar envelope */
 static char g_sms_num[40], g_sms_date[16], g_sms_text[700];   /* opened message */
 
-/* Draw a small envelope in the status bar (over the #smsico spacer) when there
- * are unread messages. Native shape; the font has no envelope glyph. */
+/* Draw a small envelope in the fixed status bar, just right of the clock, when
+ * there are unread messages. Native shape; the font has no envelope glyph. */
 static void draw_sms_icon(void)
 {
     if (!g_sms_unread_now) return;
-    int x, y, w, h;
-    if (!html_view_rect("#smsico", &x, &y, &w, &h)) return;
     const int ew = 16, eh = 11;
-    int ex = x + (w - ew) / 2, ey = y + (h - eh) / 2;
+    int ex = 8 + html_view_text_width_px(g_stat_time, 16) + 7;
+    int ey = (26 - eh) / 2;
     /* body: blue rounded rectangle */
     html_view_fill_round_rect(ex, ey, ew, eh, 2, 0x2f, 0x6f, 0xe0, 255);
     /* flap: white inverted-V from the two top corners down to center */
@@ -1088,7 +1087,7 @@ static int build_kv(struct kv *t)
         g_stat_bat = clampi(d.bat_percent, 0, 100);
         g_stat_lowbat = d.bat_percent <= 20;
         g_sms_unread_now = d.sms_unread > 0;
-        snprintf(s_sbar, sizeof s_sbar, "<div class='sbar'><span id='smsico' class='smsico'></span></div>");
+        snprintf(s_sbar, sizeof s_sbar, "<div class='sbar'></div>");
     }
 
     /* ---- bottom page dots ---- */
@@ -1186,7 +1185,7 @@ static int build_kv(struct kv *t)
 
     /* ---- sms list (read-only page): collapsed cards, newest first. Each card is
      * a tap target (act:sms:N) that opens the full message in a dialog. ---- */
-    static char s_smslist[4000];
+    static char s_smslist[10000];
     {
         int o = 0;
         for (int si = 0; si < d.sms_n; si++) {
@@ -1442,7 +1441,8 @@ static void render(drm_disp_t *disp, const char *path)
 {
     const char *html = page_html(path);
     if (!html) return;
-    html_view_set_scroll(g_scroll);
+    int special_page = strstr(path, "menu.html") || strstr(path, "lockscreen.html");
+    html_view_set_scroll(special_page ? 0 : g_scroll);
     g_page_h = html_view_render_html(html);
     draw_charts();      /* native polylines into any #chart-* placeholders */
     draw_native_statusbar();
@@ -1473,6 +1473,10 @@ static uint16_t g_bufA[320 * 480], g_bufB[320 * 480];
  * the native status bar, drawn at a fixed spot, lines up with it. g_sbar_src points
  * at the page buffer rendered at scroll 0 (its top rows hold the status bar). */
 #define SBAR_H 26   /* matches .sbar height in style.css */
+#define DRAG_START_PX 10
+#define DRAG_CANCEL_PX 22
+#define IDLE_SLEEP_ON_US 8000
+#define IDLE_SLEEP_OFF_US 30000
 static const uint16_t *g_sbar_src;
 
 static void compose_frame(drm_disp_t *d, int o)
@@ -1525,22 +1529,23 @@ static void anim_o(drm_disp_t *d, int o0, int o1)
 /* Smooth vertical scrolling: the full page is pre-rendered once into g_scrollbuf
  * (logical, unrotated); each drag frame just blits the visible window + scrollbar
  * without re-parsing/re-layout, so it keeps up like the horizontal swipe. */
-#define SCROLLMAX 1280
+#define SCROLLMAX 2048
 static uint16_t g_scrollbuf[320 * SCROLLMAX];
 static int g_scroll_h;
 
 static void scroll_blit(drm_disp_t *d, int scroll)
 {
     const int W = d->width, Hh = d->height, pp = d->pitch_px;
-    for (int y = 0; y < Hh; y++) {
+    for (int y = SBAR_H; y < Hh; y++) {
         int sy = y + scroll;
         const uint16_t *src = (sy >= 0 && sy < g_scroll_h) ? &g_scrollbuf[(size_t)sy * W] : NULL;
         uint16_t *dp = d->fb + (size_t)(Hh - 1 - y) * pp + (W - 1);
         for (int x = 0; x < W; x++) *dp-- = src ? src[x] : 0;
     }
-    draw_native_statusbar();
-    draw_sms_icon();
-    drm_disp_dirty(d, 0, 0, W - 1, Hh - 1);
+    /* The native status bar is pinned; dragging only changes the content below it.
+     * With the framebuffer rotated 180 degrees, that content maps to the top
+     * framebuffer rows, so the dirty rectangle intentionally excludes the tail. */
+    drm_disp_dirty(d, 0, 0, W - 1, Hh - SBAR_H - 1);
 }
 
 /* fb snapshot for fast overlay refresh (modal toggles, segmented-control drag):
@@ -1791,16 +1796,18 @@ int main(void)
                 int dx = x - down_x, dy = y - down_y;
                 int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
                 if (drag_dir == 0 && scroll_dir == 0) {
-                    if (g_npages > 1 && adx > 14 && adx > ady) {
+                    if (g_npages > 1 && adx > DRAG_START_PX && adx > ady) {
                         drag_dir = dx < 0 ? 1 : -1;
                         drag_target = (g_cur + (drag_dir > 0 ? 1 : g_npages - 1)) % g_npages;
                         prep_pair(drag_target, drag_dir);
-                    } else if (ady > 14 && ady >= adx && maxs > 0) {
+                    } else if (ady > DRAG_START_PX && ady >= adx && maxs > 0) {
                         scroll_dir = 1; scroll_start = g_scroll;
                         int bufh = g_page_h > SCROLLMAX ? SCROLLMAX : g_page_h;  /* prerender once */
                         const char *hp = page_html(CUR_PATH);
-                        g_scroll_h = hp ? html_view_render_tall(g_scrollbuf, hp, bufh) : g_page_h;
-                    } else if (ady > 24) dragging = 0;
+                        int rh = hp ? html_view_render_tall(g_scrollbuf, hp, bufh) : g_page_h;
+                        g_scroll_h = rh > bufh ? bufh : rh;
+                        maxs = g_scroll_h > H ? g_scroll_h - H : 0;
+                    } else if (ady > DRAG_CANCEL_PX) dragging = 0;
                 }
                 if (drag_dir != 0) {
                     compose_frame(&disp, drag_dir > 0 ? -dx : (W - dx));
@@ -2087,7 +2094,7 @@ action_done:
 
         if (need_render && backlight_is_on()) render(&disp, CUR_PATH);
         was_on = backlight_is_on();   /* track for next frame's wake-touch discard */
-        if (!animating) usleep(30000);
+        if (!animating) usleep(backlight_is_on() ? IDLE_SLEEP_ON_US : IDLE_SLEEP_OFF_US);
     }
 
     drm_disp_close(&disp);

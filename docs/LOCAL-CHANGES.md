@@ -1,26 +1,52 @@
-# v0.3.8 发布变更记录
+# 发布与本地修复记录
 
 记录时间：2026-06-19
 
-## 发布前 GitHub 对账
+## v0.3.9 发布状态
 
 - 当前本地分支：`main`
-- 本地 HEAD：`6c24d18 Revert "Release v0.3.7 USB mode and band lock fixes"`
-- 远端 `origin/main`：同为 `6c24d18`
-- `HEAD...origin/main`：`0 0`，说明本地提交历史没有领先或落后 GitHub。
-- 发布前差异全部来自本地工作区改动，计划直接发布为 `v0.3.8`，跳过已回滚的 `v0.3.7`。
+- 基于上一版：`v0.3.8`
+- 本次发布 tag：`v0.3.9`
+- GitHub release：`https://github.com/33333s/u60pro-devui/releases/tag/v0.3.9`
+- 本次同时需要后端 `zwrt-datad v0.3.3`，用于配套短信列表 32 条上限。
+
+## v0.3.9 本次发布内容
+
+这些改动已在实机验证，并纳入 `v0.3.9`：
+
+- `src/htmlmain.c`：`menu.html` / `lockscreen.html` 强制 `scroll=0` 渲染，修复设置页滑到底后长按电源，电源菜单被当前页面滚动偏移卷走的问题。
+- `scripts/start.sh`：自启前检查 `/proc/cmdline`，只有 `silent_boot.mode=nonsilent` 的正常开机才接管屏幕；关机插电的离线充电启动保持原厂充电动画。
+- `src/htmlmain.c`、`src/data.c`、`include/data.h`、`ui/style.css`：未读短信信封改为固定绘制在状态栏时间右侧，不再跟随页面滚动；短信列表读取/渲染上限扩大到 32 条，短信页可通过竖向滚动查看更多内容。
+- `src/htmlmain.c`：优化滑动跟手性，屏幕亮着时缩短主循环等待时间，降低拖动起始阈值；竖向滚动时只重绘状态栏下方内容区，固定状态栏不再参与每帧重画。
+- `src/backlight.c`、`include/backlight.h`：亮屏淡入动画时长缩短约一半，息屏淡出保持原节奏。
+- `D:\devices\U60Pro\system\screen\u60-datad`：后端 `zte_libwms_get_sms_data` 从 6 条扩大到 32 条，并扩大状态 JSON / 短信缓存，配合屏幕端长短信列表。
+- `docs/DEVELOPMENT.md`、`docs/UI-GUIDE.md`、`CHANGELOG.md`、`docs/LOCAL-CHANGES.md`：补充上述修复、实测结果和后续发布注意事项。
+- 仓库外的管理插件 `D:\devices\U60Pro\ufi_plugins\u60屏幕管理插件.txt` 也已同步修改：写入 `/etc/rc.local` 的内联 `# u60pro_devui` 自启行现在带同样的 `silent_boot.mode=nonsilent` guard；若检测到旧自启行，会替换为新行。
+- 同一个管理插件的 UI 更新逻辑已加固：下载 `ui.tar.gz` 后先在临时目录解压并确认新页面数量，再清空 `/data/ui` 顶层旧 `*.html` / `*.css`，复制完成后核对数量，防止用户点击更新后旧页面和新页面并存导致页数翻倍；插件界面新增「重装UI」按钮，远端版本没变时也能手动重铺模板。
+
+已验证：
+
+- 设置页滑到底后打开电源菜单，菜单固定在正常位置。
+- 关机状态插电进入原厂充电画面。
+- 正常开机进入 DevUI。
+- 管理插件文本已通过本地 JavaScript 语法解析检查。
+- 流畅性优化版已部署到实机；`u60pro-devui` 重新启动后成功打开 DRM、触摸和电源键输入，帧缓冲健康检查不是黑屏。
+- 亮屏淡入减半版已部署到实机；`u60pro-devui` 重新启动正常。
 
 ## 发布内容文件
 
-本次计划纳入 `v0.3.8` 的源码/文档改动：
+已纳入 `v0.3.9` 的源码/文档改动：
 
 - `src/htmlmain.c`
-- `src/html_view.cpp`
-- `ui/06-system.html`
+- `src/backlight.c`
+- `src/data.c`
+- `include/backlight.h`
+- `include/data.h`
+- `scripts/start.sh`
 - `ui/style.css`
 - `version.json`
+- `README.md`
 - `CHANGELOG.md`
-- `.gitignore`
 - `docs/DEVELOPMENT.md`
 - `docs/UI-GUIDE.md`
 - `docs/LOCAL-CHANGES.md`

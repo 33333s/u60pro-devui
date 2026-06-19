@@ -106,7 +106,7 @@ void backlight_fade_off(void)
 {
     int max = read_int(BL_MAX, 255); if (max <= 0) max = 255;
     int lvl = s_on_level > 0 ? s_on_level : max;
-    int dur = 125 * lvl / max; if (dur < 20) dur = 20;   /* ≈0.125s at full, scaled */
+    int dur = 125 * lvl / max; if (dur < 20) dur = 20;   /* about 0.125s at full, scaled */
     fade_to(lvl, 1, dur);
     write_int(BL_BRIGHTNESS, 0);
     s_is_on = 0;
@@ -118,7 +118,7 @@ void backlight_fade_on(void)
 {
     int max = read_int(BL_MAX, 255); if (max <= 0) max = 255;
     int lvl = s_on_level > 0 ? s_on_level : max;
-    int dur = 125 * lvl / max; if (dur < 20) dur = 20;   /* ≈0.125s at full, scaled */
+    int dur = 63 * lvl / max; if (dur < 10) dur = 10;   /* about half of fade-off */
     s_is_on = 1;
     write_int(BL_BRIGHTNESS, 1);   /* soft-start: enable boost at minimum... */
     usleep(20000);                 /* ...let it settle (reduces low-brightness overshoot) */

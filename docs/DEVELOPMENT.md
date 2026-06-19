@@ -82,7 +82,7 @@ ubus 服务 ──▶ u60-datad ──▶ /tmp/u60-datad/state.json ──▶ u6
   - 另含 `net_select`（选网模式）与 `sa_bands`/`nsa_bands`/`lte_bands`（各制式可用/已锁频段，逗号列表，透传自 netinfo），供锁频页读取/写回。
 - `battery`：电量、温度、充电状态、`charger_connect`；以及 `chg_uv`/`chg_ua`（充电器输入电压µV/电流µA，读 `/sys/class/power_supply/usb`）、`bat_uv`/`bat_ua`（电池，读 `.../battery`）——UI 据此显示电压电流并算充/放电功率。
 - `clients`：接入设备数 + `list`（DHCP 租约设备名/IP/MAC，解析 `/tmp/dhcp.leases`）。
-- `sms`（只读）：`unread`（`zwrt_wms_get_wms_capacity` 的设备+SIM 未读数相加）+ `list`（最近 6 条，每条 `id`/`num`/`date`/`unread`/`text`，读 `zte_libwms_get_sms_data`）。正文是 **UTF-16BE 十六进制**，后端解码成 UTF-8（含 emoji 代理对）；日期 `YY,MM,DD,HH,MM,SS,+TZ` 格式化为 `MM-DD HH:MM`；**每条 `tag` 字段 "1"=未读、"0"=已读（不是反过来）**。`unread` 数每轮刷新，`list` 每 10 轮或未读数变化时重读（标记已读后能马上反映）。
+- `sms`（只读）：`unread`（`zwrt_wms_get_wms_capacity` 的设备+SIM 未读数相加）+ `list`（最多 32 条，每条 `id`/`num`/`date`/`unread`/`text`，读 `zte_libwms_get_sms_data`）。正文是 **UTF-16BE 十六进制**，后端解码成 UTF-8（含 emoji 代理对）；日期 `YY,MM,DD,HH,MM,SS,+TZ` 格式化为 `MM-DD HH:MM`；**每条 `tag` 字段 "1"=未读、"0"=已读（不是反过来）**。`unread` 数每轮刷新，`list` 每 10 轮或未读数变化时重读（标记已读后能马上反映）。
 - `wlan`：主 WiFi 的 `ssid` / `key` / `enc`（读 `uci wireless.main_2g.*`）+ `enabled`（`disabled` 取反）。**键名必须是 `wlan` 不能是 `wifi`**——否则消费端按子串找 key 会先命中 `clients.wifi` 计数，导致 SSID/密码读空。
 - `nfc`：`switch`（`zwrt_nfc zwrt_nfc_wifi_get`，1=开）。
 - `dhcp`：网关 `ip`、地址池 `start`/`limit`、`leasetime`（uci）。
@@ -146,7 +146,7 @@ litehtml 没有 canvas/SVG/滚动/圆角绘制，这些都由宿主补：
 - **圆角填充/描边**：容器的 `draw_solid_fill`/`draw_borders` **原本直接画矩形、忽略 `border-radius`**，所以整个 UI 的圆角在设备上一直没真出现。现 `draw_solid_fill` 在有半径时走 `fill_rounded`（按四角半径跳过圆弧外像素），`draw_borders` 在「四边等宽同色 + 有半径」时走 `stroke_rounded`（内外两个圆角形之差）。卡片/开关/按钮/电池框终于真圆角。
 - **多边形填充**：`html_view_fill_poly`（扫描线奇偶规则）画 litehtml/CSS 画不出的形状，如充电闪电。
 - **整页高度**：`document::render()` **返回的是内容宽度不是高度**（坑！），用 `root()->get_placement().height` 拿真实高度，否则滚动永远不触发。
-- **竖向滚动**：`doc->draw(0,0,-scrollY)` 上移内容；点击命中按 `y+scroll` 修正。拖动时预渲染整页到缓冲、每帧窗口贴图（跟手流畅）。
+- **竖向滚动**：`doc->draw(0,0,-scrollY)` 上移内容；点击命中按 `y+scroll` 修正。拖动时预渲染整页到缓冲、每帧窗口贴图。滚动帧只搬动 26px 状态栏下方的内容区，固定状态栏沿用上一帧，不要在每帧滚动中重复画状态栏原生图标。`menu.html`、`lockscreen.html` 是全屏特殊页，渲染时必须强制 `scroll=0`，否则会继承当前长页面滚动偏移，出现电源菜单被卷到屏幕外的问题。
 - **覆盖层（modal）**：`html_view_render_overlay` 不清屏、在已渲染画面上叠加（body 透明只画弹窗框）；先 `fill_rect` 把页面压暗。二级弹窗交互用整屏快照 + 重绘弹窗层（避免每次重排整页）。
 - **分段控件滑动高亮**：拖动开始整页快照一次，之后每帧在快照上贴一个半透明蓝框跟手；松手吸附到最近格再应用。
 - `html_view_fill_rect`：直接填矩形（压暗背景、画高亮框等）。
@@ -214,7 +214,7 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 ```text
 /data/u60pro/u60pro-devui    # UI
 /data/u60pro/u60-datad       # 数据后端
-/data/u60pro/start.sh        # 停原厂 UI → nohup 拉起后端 + UI
+/data/u60pro/start.sh        # 正常开机才停原厂 UI → nohup 拉起后端 + UI
 ```
 
 `scripts/install-autostart.sh` 用 awk 在 `/etc/rc.local` 的 `exit 0` 前**幂等**插一行：
@@ -225,6 +225,16 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 
 开机时原厂 UI 可能先起来，rc.local 较晚由 `start.sh` 停掉它再接管，会有短暂切换。
 
+**必须保留离线充电保护。** 关机状态插电时，原厂 `zte_topsw_devui` 会进入充电动画（`ANIM_MODE_POWER_OFF_CHARGER`）。DevUI 自启不能无条件停原厂 UI；`start.sh` 先检查 `/proc/cmdline`，只有明确包含 `silent_boot.mode=nonsilent` 的正常开机才接管屏幕。否则直接退出，把充电动画留给原厂。插件如果不用 `start.sh`、而是在 `rc.local` 内联启动 datad/devui，也必须加同样 guard。已实测：关机状态插电进入原厂充电画面；正常开机进入 DevUI。
+
+```sh
+cmdline=$(cat /proc/cmdline 2>/dev/null)
+case "$cmdline" in
+  *silent_boot.mode=nonsilent*) echo "start datad/devui here" ;;
+  *) echo u60pro_devui_skip_non_nonsilent_boot >/tmp/u60pro-devui-boot-skip.log ;;
+esac
+```
+
 > **别让自启重复。** 上面 `start.sh` 是**手动/开发**装法。而**插件**会在 rc.local 里写它自己的一行（带 `# u60pro_devui` 标记，内联停原厂+拉起 datad/devui，不调用 start.sh）。两者**只能留一个**——都在的话每次开机会重复拉起，出现两个 `u60-datad` 抢着写同一份 `state.json`（与「单一聚合器」设计相悖；第二个 `u60pro-devui` 一般抢不到 DRM 自己退）。插件靠 `grep 'u60pro_devui'` 判断自启状态，所以要统一就保留插件那条、删掉 `start.sh` 行（及文件）。
 
 ## 性能说明
@@ -232,6 +242,8 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 这块屏更接近命令式显示：`DRM_IOCTL_MODE_DIRTYFB` 每次固定耗时约 **33ms**且**与脏区大小无关**（在阻塞等待面板 TE/刷新节拍），像素拷贝只占约 30µs。所以整屏刷新率上限 ~30fps 是**面板硬件节拍**，**用户态无法“超频”**（要改内核/DTS 的 DSI/TE）。日常 UI 只在内容变化时才推帧，30fps 只影响整屏动画（滑动翻页、充电流光），实际足够流畅。
 
 滑动翻页是**跟手**的：拖动时把当前页与目标页渲染到两张离屏 logical 位图，按手指位移用 `compose_frame` 实时合成 [左|右] 窗口；松手按位移是否过半决定提交或回弹，再用几帧 settle 动画收尾。
+
+触摸延迟主要受主循环等待和拖动起始阈值影响：屏幕亮着时空闲等待保持在约 8ms，熄屏时才回到较长等待；普通页面拖动起始阈值为 10px，点击判定仍保留独立的 14px 容错。
 
 ## 本次（2026-06-13）改动与经验
 
@@ -274,11 +286,13 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 - 列表是**折叠卡片**（`act:sms:N`），只显示号码/时间 + 一行预览（`utf8_trunc` 按字符边界截断、不切坏多字节）；未读条目红点 + 蓝色号码。
 - 点卡片：`data_refresh` 取该条全文存进 `g_sms_*`，开二级详情弹窗（复用 modal overlay）；若该条未读则 `ubus call zwrt_wms zwrt_wms_modify_tag '{"id":"<id>;","tag":0}'` 标记已读（`tag:0`=已读，分号分隔多 id）。未读数变化后端立即重读列表，红点/状态栏图标随之消失。
 - 正文含任意字符，渲染前 `html_esc` 转义 `&<>`。
-- **状态栏未读信封图标**：有未读时在时钟右侧原生画一个信封（`draw_sms_icon`，蓝身+白翻盖），占位 span `#smsico` 定位；和电池闪电一样翻页时常驻、锁屏也显示。字体没有信封字形所以走原生。
+- **状态栏未读信封图标**：有未读时在时钟右侧原生画一个信封（`draw_sms_icon`，蓝身+白翻盖），位置按固定状态栏坐标和当前时间文字宽度计算，不依赖页面里的占位元素，所以不会跟着长页面滚动；和电池闪电一样翻页时常驻、锁屏也显示。字体没有信封字形所以走原生。
 
 ### 电源菜单（原生圆形按键，v0.3.6）
 
 `menu.html` 三个竖排大圆按键。litehtml 画不了电源符号/圆箭头/X，所以 HTML 只给圆的占位框（`#pmc-off`/`#pmc-reboot`/`#pmc-cancel`）+ 文字标签 + 点击区，圆盘和图标全部由 `draw_power_menu()` 原生绘制（`render()` 里在 `path` 含 `menu.html` 时调用）：`pm_disc` 用 `fill_round_rect`(rad=半径)画实心圆，`pm_arc` 画环带（环形扇区多边形→`fill_poly`），`pm_line` 画粗线段（四边形）。关机=带顶部缺口的环+竖线（电源符号），重启=约 290° 环+箭头三角，取消=两条对角线 X。二次确认沿用 `g_pwr_confirm`：armed 时画白色光环 + 标签变「再按一次」。
+
+`menu.html` 是覆盖式特殊页，不属于普通长页面滚动。`render()` 对 `menu.html` 和 `lockscreen.html` 使用 `html_view_set_scroll(0)`，普通页面继续使用 `g_scroll`。不要把这行改回全局 `g_scroll`，否则在设置页滑到底后长按电源，菜单会被当前滚动偏移卷走。
 
 ### USB-C 数据线模式调试记录（v0.3.7 撤回版）
 
@@ -338,7 +352,7 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 
 > **网盘镜像脚本** `openlist-manual-update.cmd`（仓库父目录）：登录 OpenList，把每个 repo 的 `releases/latest/download/version.json` 与网盘上的比对，版本变了才**先删旧文件、再 `add_offline_download` 拉新文件**。双击即可；离线下载是异步的，跑完去网盘列表确认。
 
-> **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：拷新文件前先 `rm -f /data/ui/*.html /data/ui/*.css`（`.lockpin` 是点文件不受影响），且放在「解压成功」分支内避免下载失败误删。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先清场再铺。** 已中招的用户重跑一次「更新 UI」即自愈。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
+> **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
 
 ## 仓库约定
 

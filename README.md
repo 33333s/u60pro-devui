@@ -28,7 +28,7 @@
 - **界面**：`/data/ui` 下每个 `NN-名字.html` 一页，`style.css` 共享样式。HTML 里的 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
 - **后端**：配套 `u60-datad`（[github.com/33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)），轮询 `ubus` 并写出 `/tmp/u60-datad/state.json`，UI 只读快照，自己从不碰 ubus。
 
-自带的示例界面（[ui/](ui/)）含三页：信号（按载波显示 RSRP/SINR、QCI/AMBR）、WiFi（SSID/密码/加密）、系统设置（流量、ADB/单位/主题开关）。
+自带的示例界面（[ui/](ui/)）含六页：信号、短信、WiFi、选网/锁频、图表、系统设置。系统页包含亮度/息屏/锁屏、USB-C 供电方向、USB 网络共享、速率单位和主题等开关。
 
 ## 构建
 

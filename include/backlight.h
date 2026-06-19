@@ -16,8 +16,8 @@ void backlight_toggle(void);
 int  backlight_is_on(void);
 
 /* Animated screen off/on (blocking): fade the live brightness without changing
- * the remembered user level. Off ramps level->1 then 0 (≈0.25s at full, scaled
- * by brightness); on ramps 1->level (≈1s at full, scaled). */
+ * the remembered user level. Off ramps level->1 then 0 (about 0.125s at full,
+ * scaled by brightness); on ramps 1->level in about half that time. */
 void backlight_fade_off(void);
 void backlight_fade_on(void);
 void backlight_predim(void);  /* force live brightness to 1 (before a wake render) */

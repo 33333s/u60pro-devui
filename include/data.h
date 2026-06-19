@@ -10,6 +10,8 @@
 #ifndef U60PRO_DATA_H
 #define U60PRO_DATA_H
 
+#define DEVUI_SMS_MAX 32
+
 typedef struct {
     int  valid;
 
@@ -41,7 +43,7 @@ typedef struct {
 
     /* sms (read-only) */
     int  sms_unread;
-    struct { long id; char num[40], date[16], text[700]; int unread; } sms[6];
+    struct { long id; char num[40], date[16], text[700]; int unread; } sms[DEVUI_SMS_MAX];
     int  sms_n;
 
     /* wifi (main SSID) */

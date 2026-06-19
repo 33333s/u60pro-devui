@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "devui": {
-    "version": "0.3.8",
+    "version": "0.3.9",
     "asset": "u60pro-devui-aarch64",
-    "notes": "USB-C 供电方向与 USB 网络共享开关，RNDIS/ECM 自适应，状态栏原生重绘与常驻"
+    "notes": "电源菜单/离线充电/短信状态栏修复，滚动跟手优化，亮屏淡入加速"
   },
   "ui": {
-    "version": "0.3.8",
+    "version": "0.3.9",
     "asset": "ui.tar.gz",
-    "notes": "设置页新增 USB-C 与状态栏电量百分比开关，移除 ADB 开关，调整状态栏布局"
+    "notes": "短信长列表与状态栏信封固定，特殊页滚动隔离，UI 更新清理兼容"
   }
 }

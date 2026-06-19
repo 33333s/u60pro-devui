@@ -6,6 +6,14 @@
 # SPDX-License-Identifier: MIT
 DIR=/data/u60pro
 
+# Do not steal the vendor charging animation during power-off charging boots.
+# Normal boots on this firmware expose silent_boot.mode=nonsilent; charger-only
+# boots are intentionally left to zte_topsw_devui.
+if ! grep -q 'silent_boot.mode=nonsilent' /proc/cmdline 2>/dev/null; then
+    echo "u60pro-devui: skip autostart on non-nonsilent boot"
+    exit 0
+fi
+
 # Release the panel from the vendor UI.
 /etc/init.d/zte_topsw_devui stop 2>/dev/null
 killall -9 zte_topsw_devui 2>/dev/null

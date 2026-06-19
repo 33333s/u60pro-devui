@@ -40,7 +40,7 @@ int data_refresh(devui_data_t *d)
 
     FILE *fp = fopen(DEVUI_STATE_FILE, "r");
     if (!fp) return 0;
-    static char buf[16384];
+    static char buf[65536];
     size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
     fclose(fp);
     if (n == 0) return 0;
@@ -114,15 +114,15 @@ int data_refresh(devui_data_t *d)
     d->sms_unread = 0;
     d->sms_n = 0;
     {
-        static char smsbuf[8192];
+        static char smsbuf[49152];
         if (json_get(buf, "sms", smsbuf, sizeof smsbuf)) {
             d->sms_unread = (int)json_get_int(smsbuf, "unread", 0);
-            static char list[8192];
+            static char list[49152];
             if (json_get(smsbuf, "list", list, sizeof list)) {
-                for (char *p = list; (p = strchr(p, '{')) && d->sms_n < 6; ) {
+                for (char *p = list; (p = strchr(p, '{')) && d->sms_n < DEVUI_SMS_MAX; ) {
                     char *end = obj_end(p);
                     if (!end) break;
-                    static char obj[900];
+                    static char obj[1400];
                     size_t L = (size_t)(end - p) + 1;
                     if (L >= sizeof obj) L = sizeof obj - 1;
                     memcpy(obj, p, L); obj[L] = 0;
