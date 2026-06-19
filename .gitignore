@@ -3,6 +3,7 @@
 *.a
 /u60pro-devui
 /u60pro-devui.stripped
+/u60pro-devui-aarch64
 /html-poc
 /html-poc.stripped
 /drm_test

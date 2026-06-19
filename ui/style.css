@@ -10,17 +10,17 @@ body.dark  { background: #15161a; color: #e9ebee; }
 body.light { background: #eceef1; color: #1b1d22; }
 
 /* ---- status bar ---- */
-.sbar { height: 26px; line-height: 26px; padding: 0 10px; overflow: hidden; font-size: 13px; }
+.sbar { height: 26px; line-height: 26px; padding: 0 5px 0 8px; overflow: hidden; font-size: 13px; text-align: left; }
 body.dark  .sbar { background: #1d2733; }
 body.light .sbar { background: #d8e2f0; }
-.sbar .clk { font-weight: 700; }
-.sbar .r { float: right; }
-.sbar .r > span { display: inline-block; margin-left: 6px; vertical-align: middle; }
-.spd { font-size: 11px; color: #c2c8d0; }
+.sbar .clk { font-size: 15px; font-weight: 800; }
+.sbar .r { float: right; height: 26px; line-height: 26px; text-align: right; white-space: nowrap; }
+.sbar .r > span { vertical-align: middle; }
+.spd { display: inline-block; height: 17px; line-height: 17px; margin-right: 7px; font-size: 11px; font-weight: 700; color: #c2c8d0; vertical-align: middle; }
 body.light .spd { color: #3a4048; }
 
-/* generation as plain text, unified white (inherits bar text color) */
-.gt { font-size: 12px; font-weight: 700; }
+/* generation label inside the signal badge */
+.gt { display: inline-block; width: 15px; height: 17px; line-height: 9px; font-size: 9px; font-weight: 800; vertical-align: top; text-align: left; }
 
 /* generation badge (unused in status bar now; kept for other pages). Backgrounds
  * are scoped to .gen so the .gt text spans don't pick up a colored box. */
@@ -29,19 +29,19 @@ body.light .spd { color: #3a4048; }
 .gen.g5ga { background: #c026d3; } .gen.g5p { background: #7c4def; } .gen.g5 { background: #2f6fe0; }
 .gen.g4 { background: #1f9d4d; } .gen.glte { background: #0b96b8; } .gen.g3 { background: #6b7280; }
 
-/* battery icon + charge sweep. battery body + terminal are wrapped in .bw so the
+/* battery icon. battery body + terminal are wrapped in .bw so the
  * inter-item margin applies to the wrapper, not between body and terminal. */
-.bw { display: inline-block; vertical-align: middle; white-space: nowrap; font-size: 0; }
-.batt { display: inline-block; width: 24px; height: 10px; padding: 1px; position: relative;
+.bw { display: inline-block; height: 17px; line-height: 17px; vertical-align: middle; white-space: nowrap; font-size: 0; margin-left: 7px; }
+.batt { display: inline-block; width: 40px; height: 15px; line-height: 15px; text-align: center;
         border: 1px solid currentColor; border-radius: 3px; vertical-align: middle;
-        overflow: hidden; }
+        overflow: hidden; font-size: 9px; font-weight: 800; }
+body.dark  .batt { background: #e9ebee; color: #17202b; }
+body.light .batt { background: #1b1d22; color: #ffffff; }
 /* not charging: fill follows theme text color (白色 / 浅色模式黑色) */
-.batt .bf { display: block; height: 100%; border-radius: 1px; background: currentColor; }
-.batt.chg .bf { background: #5ec85e; }   /* charging: green (host draws a bolt over it) */
-.batt.low .bf { background: #e8533a; }   /* low battery: red */
-.tip { display: inline-block; width: 2px; height: 5px; border-radius: 0 2px 2px 0;
+.batt.chg { background: #5ec85e; color: #0b2a12; }
+.batt.low { background: #e8533a; color: #ffffff; }
+.tip { display: inline-block; width: 2px; height: 7px; border-radius: 0 2px 2px 0;
        background: currentColor; vertical-align: middle; }
-.bp { font-size: 12px; vertical-align: middle; }
 
 /* ---- cards ---- */
 .card { margin: 6px 8px 0; border-radius: 8px; padding: 7px 10px; }
@@ -61,10 +61,12 @@ a.rev { text-decoration: none; font-size: 12px; padding: 1px 8px; border-radius:
 body.dark  a.rev { background: #2c2f37; color: #cfd4dc; }
 body.light a.rev { background: #d3d9e2; color: #2a2f38; }
 
-/* ---- signal meter (status bar): strength = number of filled cells ---- */
-.sig { display: inline-block; height: 17px; vertical-align: middle; line-height: 17px; }
-.sig i { display: inline-block; width: 4px; margin-right: 2px; vertical-align: bottom;
-         background: #3a4048; border-radius: 1px; }
+/* ---- signal badge (status bar): label + curved bar rise ---- */
+.sig { display: inline-block; width: 43px; height: 17px; position: relative; vertical-align: middle; line-height: 17px; }
+.sig .gt { position: absolute; left: 0; top: 2px; width: 16px; height: 9px; line-height: 9px; }
+.sbars { display: block; position: absolute; right: 0; bottom: 0; width: 27px; height: 17px; text-align: right; }
+.sig i { display: inline-block; width: 4px; margin-left: 1px; vertical-align: bottom;
+         background: #3a4048; border-radius: 4px 4px 1px 1px; }
 body.light .sig i { background: #c4cad3; }
 .sig i.on { background: #ffffff; }
 body.light .sig i.on { background: #2a2f38; }

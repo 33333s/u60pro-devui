@@ -35,6 +35,12 @@ extern void        html_view_set_scroll(int y);
 extern void        html_view_fill_rect(int x, int y, int w, int h, int r, int g, int b, int a);
 extern void        html_view_fill_poly(const int *xs, const int *ys, int n, int r, int g, int b, int a);
 extern void        html_view_fill_round_rect(int x, int y, int w, int h, int rad, int r, int g, int b, int a);
+extern int         html_view_text_width_px(const char *text, int size);
+extern void        html_view_text_bounds_px(const char *text, int size, int *x0, int *y0, int *x1, int *y1);
+extern void        html_view_draw_text_px(int x, int y, const char *text, int size, int bold,
+                                          int r, int g, int b, int a);
+extern void        html_view_draw_text_contrast_px(int x, int y, const char *text, int size, int bold,
+                                                   int dr, int dg, int db, int lr, int lg, int lb, int a);
 extern int         html_view_render_tall(uint16_t *buf, const char *html, int bufh);
 extern int         html_view_render_overlay(const char *html);
 
@@ -60,7 +66,10 @@ static int  g_show_key;   /* reveal WiFi password (default hidden) */
 static int  g_show_cellid; /* reveal NR Cell ID (default hidden) */
 static int  g_show_imei;   /* reveal IMEI (default hidden) */
 static int  g_speed_bits = 1; /* 1 = Mbps (bit rate), 0 = MB/s (byte rate) */
+static int  g_show_batpct = 1; /* show percent text inside status battery */
 static int  g_charging;   /* set from snapshot; drives charge animation cadence */
+static int  g_stat_bat, g_stat_sig, g_stat_lowbat;
+static char g_stat_time[8], g_stat_speed[40], g_stat_gen[8];
 static unsigned g_phase;  /* animation tick (battery charge sweep) */
 static int  g_scroll;     /* current page vertical scroll offset */
 static int  g_page_h;     /* last rendered page content height */
@@ -72,11 +81,18 @@ static int  g_saved_bright = -1; /* persisted backlight level, -1 = none yet */
  * operstate (wlan0=main 2.4G, wlan2=main 5G); uci/`wifi reload`/`zwrt_wlan
  * reload` are NOT used (they don't work / wedge the radios). PSM = `iw
  * power_save`, persisted via a self-written /etc/hotplug.d/iface/99-disable-powersave
- * script that re-applies the chosen mode on every ifup (so 节能=on actually sticks
+ * script that re-applies the chosen mode on every ifup (so power_save=on sticks
  * across reconnect/reboot). The DHCP pool is computed live from uci. Toggles flip
  * optimistically; a throttle reconciles. */
 static int  g_w24 = -1, g_w5 = -1, g_wpsm = -1;
 static int  g_dps = -1;   /* power direct-supply mode (zwrt_bsp.charger), -1 unknown */
+static int  g_adb_pending = -1; /* optimistic ADB state while USB re-enumerates */
+static int  g_usb_net = -1;     /* Type-C network sharing composition active */
+static int  g_typec_source = -1; /* 1 = reverse charge peer, 0 = charge U60 */
+static int  g_typec_attached = -1;
+static int  g_usb_net_pending = -1;
+static int  g_typec_pending = -1;
+static uint32_t g_usb_net_until, g_typec_until;
 static char g_dhcp_pool[48];
 /* currently WiFi-associated client MACs (lowercased, comma-joined). DHCP leases
  * linger after a device leaves, so the device list filters against this (live
@@ -100,7 +116,7 @@ static int mac_assoc(const char *mac)
 static char g_pin[8];        /* stored PIN ("" = lock disabled) */
 static int  g_lock_state;    /* 0 = normal, 1 = unlock pad, 2 = setup pad */
 static char g_pin_entry[8];  /* digits typed so far */
-static int  g_lock_err;      /* 1 = show "密码错误" on the unlock pad */
+static int  g_lock_err;      /* 1 = show the unlock-pad error message */
 
 static void scan_pages(void)
 {
@@ -140,9 +156,9 @@ static void fmt_uptime(char *o, size_t n, long s) {
 }
 static void fmt_uptime_s(char *o, size_t n, long s) {   /* compact, for the grid */
     long d = s / 86400, hh = (s % 86400) / 3600, mm = (s % 3600) / 60;
-    if (d > 0)       snprintf(o, n, "%ld天%ld时", d, hh);
-    else if (hh > 0) snprintf(o, n, "%ld时%ld分", hh, mm);
-    else             snprintf(o, n, "%ld分", mm);
+    if (d > 0)       snprintf(o, n, "%ldd %ldh", d, hh);
+    else if (hh > 0) snprintf(o, n, "%ldh %ldm", hh, mm);
+    else             snprintf(o, n, "%ldm", mm);
 }
 /* compact speed for the status bar: 3.0M / 80K / 224B */
 static void fmt_speed_c(char *o, size_t n, long bps) {
@@ -167,7 +183,7 @@ static void fmt_speed_u(char *o, size_t n, long bps, int bits)
     else           snprintf(o, n, "%.1f %s", val, unit);
 }
 
-/* Status-bar speed pair: "↑<tx> ↓<rx> <unit>", shared unit picked from the
+/* Status-bar speed pair: "up/down <unit>", shared unit picked from the
  * larger of the two. bits=1 -> Mbps/Kbps/bps; bits=0 -> MB/s/KB/s/B/s. */
 static void fmt_speed_pair(char *buf, size_t cap, long up, long down, int bits) {
     double mul = bits ? 8.0 : 1.0;
@@ -177,7 +193,7 @@ static void fmt_speed_pair(char *buf, size_t cap, long up, long down, int bits) 
     else      { if (mx >= 1e6) { unit = "MB/s"; div = 1e6; } else if (mx >= 1e3) { unit = "KB/s"; div = 1e3; } else { unit = "B/s"; div = 1; } }
     char us[12], ds[12];
     fmt_one(us, sizeof us, u / div); fmt_one(ds, sizeof ds, d / div);
-    snprintf(buf, cap, "\xe2\x86\x91%s \xe2\x86\x93%s %s", us, ds, unit);  /* ↑ ↓ */
+    snprintf(buf, cap, "\xe2\x86\x91%s \xe2\x86\x93%s %s", us, ds, unit);
 }
 
 /* ---- {{key}} template substitution ---- */
@@ -211,12 +227,214 @@ static char *read_file(const char *path)
 {
     FILE *fp = fopen(path, "rb");
     if (!fp) return NULL;
-    fseek(fp, 0, SEEK_END); long n = ftell(fp); fseek(fp, 0, SEEK_SET);
-    char *buf = malloc(n + 1);
+    size_t cap = 4096, n = 0;
+    char *buf = malloc(cap);
     if (!buf) { fclose(fp); return NULL; }
-    if (fread(buf, 1, n, fp) != (size_t)n) { free(buf); fclose(fp); return NULL; }
+    for (;;) {
+        if (n + 1 >= cap) {
+            size_t ncap = cap * 2;
+            char *nbuf = realloc(buf, ncap);
+            if (!nbuf) { free(buf); fclose(fp); return NULL; }
+            buf = nbuf; cap = ncap;
+        }
+        size_t r = fread(buf + n, 1, cap - n - 1, fp);
+        n += r;
+        if (r == 0) break;
+    }
+    if (ferror(fp)) { free(buf); fclose(fp); return NULL; }
     buf[n] = 0; fclose(fp);
     return buf;
+}
+
+static int usb_pid_is(const char *needle)
+{
+    int ok = 0;
+    char *pid = read_file("/sys/kernel/config/usb_gadget/g1/idProduct");
+    if (pid) {
+        ok = strstr(pid, needle) != NULL;
+        free(pid);
+    }
+    return ok;
+}
+
+static int usb_net_has_carrier(void)
+{
+    int ok = 0;
+    char *c = read_file("/sys/class/net/rndis0/carrier");
+    if (c) { if (c[0] == '1') ok = 1; free(c); }
+    c = read_file("/sys/class/net/ecm0/carrier");
+    if (c) { if (c[0] == '1') ok = 1; free(c); }
+    return ok;
+}
+
+static void usb_net_watchdog_stop(void)
+{
+    system("pid=$(cat /tmp/u60-usbnet-watchdog.pid 2>/dev/null); "
+           "[ -n \"$pid\" ] && kill \"$pid\" 2>/dev/null; "
+           "rm -f /tmp/u60-usbnet-watchdog.pid /tmp/u60-usbnet-enabled");
+}
+
+static void usb_net_apply_source_async(void)
+{
+    system("(touch /tmp/u60-typec-source /tmp/u60-usbnet-switching; "
+           "date '+%F %T usbnet apply source' >>/tmp/usb.log 2>/dev/null; "
+           "ubus call zwrt_bsp.powerbank set '{\"state\":0}'; "
+           "sleep 1; ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\",\"PR_Swap\":\"sink\"}'; "
+           "sleep 1; echo peripheral > /sys/bus/platform/devices/a600000.ssusb/mode 2>/dev/null; "
+           "/sbin/usb_composition 90B1 n n y n; "
+           "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do "
+           "att=$(ubus call zwrt_bsp.typec list 2>/dev/null | grep cc_attch_state | grep -o '[0-9]' | head -1); "
+           "pid2=$(cat /sys/kernel/config/usb_gadget/g1/idProduct 2>/dev/null); "
+           "e=$(cat /sys/class/net/ecm0/carrier 2>/dev/null); "
+           "if [ \"$att\" = \"1\" ] && { [ \"$pid2\" = \"0x90b1\" ] || [ \"$pid2\" = \"0x90B1\" ]; } && [ \"$e\" = \"1\" ]; then break; fi; "
+           "sleep 1; done; "
+           "if [ \"$att\" = \"1\" ] && { [ \"$pid2\" = \"0x90b1\" ] || [ \"$pid2\" = \"0x90B1\" ]; } && [ \"$e\" = \"1\" ]; then "
+           "ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\",\"PR_Swap\":\"source\"}'; "
+           "sleep 1; ubus call zwrt_bsp.powerbank set '{\"state\":1}'; "
+           "sleep 1; ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\"}'; "
+           "sleep 1; /sbin/usb_composition 90B1 n n y n; "
+           "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do "
+           "r=$(cat /sys/class/net/rndis0/carrier 2>/dev/null); "
+           "e=$(cat /sys/class/net/ecm0/carrier 2>/dev/null); "
+           "if [ \"$r\" = \"1\" ] || [ \"$e\" = \"1\" ]; then break; fi; "
+           "sleep 1; done; "
+           "else "
+           "date '+%F %T usbnet source no ecm carrier, try rndis' >>/tmp/usb.log 2>/dev/null; "
+           "rm -f /tmp/u60-typec-source; "
+           "/sbin/usb_composition 9057 n n y n; "
+           "sleep 10; "
+           "r=$(cat /sys/class/net/rndis0/carrier 2>/dev/null); "
+           "e=$(cat /sys/class/net/ecm0/carrier 2>/dev/null); "
+           "if [ \"$r\" != \"1\" ] && [ \"$e\" != \"1\" ]; then "
+           "date '+%F %T usbnet rndis no carrier, fallback 90B1' >>/tmp/usb.log 2>/dev/null; "
+           "/sbin/usb_composition 90B1 n n y n; fi; "
+           "fi; "
+           "rm -f /tmp/u60-usbnet-switching) >/tmp/u60-usbnet-switch.log 2>&1 &");
+}
+
+static void usb_net_apply_sink_async(void)
+{
+    system("(touch /tmp/u60-usbnet-switching; rm -f /tmp/u60-typec-source; "
+           "date '+%F %T usbnet apply sink' >>/tmp/usb.log 2>/dev/null; "
+           "ubus call zwrt_bsp.powerbank set '{\"state\":0}'; "
+           "sleep 1; ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\",\"PR_Swap\":\"sink\"}'; "
+           "sleep 1; echo peripheral > /sys/bus/platform/devices/a600000.ssusb/mode 2>/dev/null; "
+           "/sbin/usb_composition 9057 n n y n; "
+           "sleep 10; "
+           "r=$(cat /sys/class/net/rndis0/carrier 2>/dev/null); "
+           "e=$(cat /sys/class/net/ecm0/carrier 2>/dev/null); "
+           "if [ \"$r\" != \"1\" ] && [ \"$e\" != \"1\" ]; then "
+           "date '+%F %T usbnet fallback 90B1' >>/tmp/usb.log 2>/dev/null; "
+           "/sbin/usb_composition 90B1 n n y n; fi; "
+           "rm -f /tmp/u60-usbnet-switching) >/tmp/u60-usbnet-switch.log 2>&1 &");
+}
+
+static void usb_power_only_apply_async(int source)
+{
+    if (source) {
+        system("(touch /tmp/u60-typec-source /tmp/u60-usbnet-switching; "
+               "date '+%F %T usbpower apply source' >>/tmp/usb.log 2>/dev/null; "
+               "ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\",\"PR_Swap\":\"source\"}'; "
+               "sleep 1; ubus call zwrt_bsp.powerbank set '{\"state\":1}'; "
+               "sleep 1; ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\"}'; "
+               "sleep 1; SER=$(cat /sys/kernel/config/usb_gadget/g1/strings/0x409/serialnumber 2>/dev/null); "
+               "sh /sbin/usb/compositions/usb_switch 0x19d2 0x1225 mass_storage \"$SER\"; "
+               "rm -f /tmp/u60-usbnet-switching) >/tmp/u60-usbnet-switch.log 2>&1 &");
+    } else {
+        system("(touch /tmp/u60-usbnet-switching; rm -f /tmp/u60-typec-source; "
+               "date '+%F %T usbpower apply sink' >>/tmp/usb.log 2>/dev/null; "
+               "ubus call zwrt_bsp.powerbank set '{\"state\":0}'; "
+               "sleep 1; ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\",\"PR_Swap\":\"sink\"}'; "
+               "sleep 1; SER=$(cat /sys/kernel/config/usb_gadget/g1/strings/0x409/serialnumber 2>/dev/null); "
+               "sh /sbin/usb/compositions/usb_switch 0x19d2 0x1225 mass_storage \"$SER\"; "
+               "rm -f /tmp/u60-usbnet-switching) >/tmp/u60-usbnet-switch.log 2>&1 &");
+    }
+}
+
+static void usb_net_watchdog_start(void)
+{
+    usb_net_watchdog_stop();
+    system("cat >/tmp/u60-usbnet-watchdog.sh <<'EOF'\n"
+           "#!/bin/sh\n"
+           "touch /tmp/u60-usbnet-enabled\n"
+           "echo $$ >/tmp/u60-usbnet-watchdog.pid\n"
+           "while [ -f /tmp/u60-usbnet-enabled ]; do\n"
+           "  if [ -f /tmp/u60-usbnet-switching ]; then sleep 2; continue; fi\n"
+           "  pid=$(cat /sys/kernel/config/usb_gadget/g1/idProduct 2>/dev/null)\n"
+           "  tc=$(ubus call zwrt_bsp.typec list 2>/dev/null)\n"
+           "  att=$(echo \"$tc\" | grep cc_attch_state | grep -o '[0-9]' | head -1)\n"
+           "  pr=$(echo \"$tc\" | grep power_role | grep -o 'source\\|sink' | head -1)\n"
+           "  r=$(cat /sys/class/net/rndis0/carrier 2>/dev/null)\n"
+           "  e=$(cat /sys/class/net/ecm0/carrier 2>/dev/null)\n"
+            "  case \"$pid\" in 0x9057|0x90b1|0x90B1) netpid=1;; *) netpid=0;; esac\n"
+            "  wantsrc=0; [ -f /tmp/u60-typec-source ] && wantsrc=1\n"
+            "  rolebad=0\n"
+            "  if [ \"$wantsrc\" = 1 ] && [ \"$pr\" != source ]; then rolebad=1; fi\n"
+            "  if [ \"$wantsrc\" != 1 ] && [ \"$pr\" != sink ]; then rolebad=1; fi\n"
+            "  if [ \"$att\" = 1 ] && { [ \"$rolebad\" = 1 ] || [ \"$netpid\" != 1 ] || { [ \"$r\" != 1 ] && [ \"$e\" != 1 ]; }; }; then\n"
+            "    date '+%F %T usbnet watchdog rearm' >>/tmp/usb.log 2>/dev/null\n"
+            "    touch /tmp/u60-usbnet-switching\n"
+            "    if [ \"$wantsrc\" = 1 ]; then\n"
+            "      ubus call zwrt_bsp.powerbank set '{\"state\":0}' >/dev/null 2>&1\n"
+            "      sleep 1\n"
+            "      ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\",\"PR_Swap\":\"sink\"}' >/dev/null 2>&1\n"
+            "      sleep 1\n"
+            "      echo peripheral > /sys/bus/platform/devices/a600000.ssusb/mode 2>/dev/null\n"
+            "      /sbin/usb_composition 90B1 n n y n >>/tmp/usb.log 2>&1\n"
+            "      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do\n"
+            "        att=$(ubus call zwrt_bsp.typec list 2>/dev/null | grep cc_attch_state | grep -o '[0-9]' | head -1)\n"
+            "        pid2=$(cat /sys/kernel/config/usb_gadget/g1/idProduct 2>/dev/null)\n"
+            "        e=$(cat /sys/class/net/ecm0/carrier 2>/dev/null)\n"
+            "        if [ \"$att\" = 1 ] && { [ \"$pid2\" = 0x90b1 ] || [ \"$pid2\" = 0x90B1 ]; } && [ \"$e\" = 1 ]; then break; fi\n"
+            "        sleep 1\n"
+            "      done\n"
+            "      if [ \"$att\" = 1 ] && { [ \"$pid2\" = 0x90b1 ] || [ \"$pid2\" = 0x90B1 ]; } && [ \"$e\" = 1 ]; then\n"
+            "      ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\",\"PR_Swap\":\"source\"}' >/dev/null 2>&1\n"
+            "      sleep 1\n"
+            "      ubus call zwrt_bsp.powerbank set '{\"state\":1}' >/dev/null 2>&1\n"
+            "      sleep 1\n"
+            "      ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\"}' >/dev/null 2>&1\n"
+            "      sleep 1\n"
+            "      /sbin/usb_composition 90B1 n n y n >>/tmp/usb.log 2>&1\n"
+            "      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do\n"
+            "        r=$(cat /sys/class/net/rndis0/carrier 2>/dev/null)\n"
+            "        e=$(cat /sys/class/net/ecm0/carrier 2>/dev/null)\n"
+            "        if [ \"$r\" = 1 ] || [ \"$e\" = 1 ]; then break; fi\n"
+            "        sleep 1\n"
+            "      done\n"
+            "      else\n"
+            "        date '+%F %T usbnet watchdog source no ecm carrier, try rndis' >>/tmp/usb.log 2>/dev/null\n"
+            "        rm -f /tmp/u60-typec-source\n"
+            "        /sbin/usb_composition 9057 n n y n >>/tmp/usb.log 2>&1\n"
+            "        sleep 10\n"
+            "        r=$(cat /sys/class/net/rndis0/carrier 2>/dev/null)\n"
+            "        e=$(cat /sys/class/net/ecm0/carrier 2>/dev/null)\n"
+            "        if [ \"$r\" != 1 ] && [ \"$e\" != 1 ]; then\n"
+            "          date '+%F %T usbnet watchdog rndis no carrier, fallback 90B1' >>/tmp/usb.log 2>/dev/null\n"
+            "          /sbin/usb_composition 90B1 n n y n >>/tmp/usb.log 2>&1\n"
+            "        fi\n"
+            "      fi\n"
+            "    else\n"
+            "      ubus call zwrt_bsp.powerbank set '{\"state\":0}' >/dev/null 2>&1\n"
+            "      ubus call zwrt_bsp.typec set '{\"DR_Swap\":\"device\",\"PR_Swap\":\"sink\"}' >/dev/null 2>&1\n"
+            "      sleep 1\n"
+            "      echo peripheral > /sys/bus/platform/devices/a600000.ssusb/mode 2>/dev/null\n"
+            "      /sbin/usb_composition 9057 n n y n >>/tmp/usb.log 2>&1\n"
+            "      sleep 10\n"
+            "      r=$(cat /sys/class/net/rndis0/carrier 2>/dev/null)\n"
+            "      e=$(cat /sys/class/net/ecm0/carrier 2>/dev/null)\n"
+            "      if [ \"$r\" != 1 ] && [ \"$e\" != 1 ]; then\n"
+            "        date '+%F %T usbnet watchdog fallback 90B1' >>/tmp/usb.log 2>/dev/null\n"
+            "        /sbin/usb_composition 90B1 n n y n >>/tmp/usb.log 2>&1\n"
+            "      fi\n"
+            "    fi\n"
+            "    rm -f /tmp/u60-usbnet-switching\n"
+            "  fi\n"
+            "  sleep 12\n"
+            "done\n"
+           "EOF\n"
+           "chmod +x /tmp/u60-usbnet-watchdog.sh\n"
+           "nohup /tmp/u60-usbnet-watchdog.sh >/tmp/u60-usbnet-watchdog.log 2>&1 &");
 }
 
 /* Read page-2 aux state into the cache: band on/off from netdev operstate (the
@@ -234,11 +452,16 @@ static void wifi_aux_refresh(void)
         "ip=$(uci -q get network.lan.ipaddr); st=$(uci -q get dhcp.lan.start); lim=$(uci -q get dhcp.lan.limit);"
         "if [ -n \"$ip\" ] && [ -n \"$st\" ]; then pre=${ip%.*}; end=$((st+lim-1)); [ $end -gt 254 ] && end=254;"
         "echo \"POOL=$pre.$st - $pre.$end\"; fi;"
-        /* "connected now" = WiFi-associated stations ∪ ARP-complete entries
+        /* "connected now" = WiFi-associated stations plus ARP-complete entries
          * (ARP covers LAN/USB clients too; leases alone linger 24h). */
         "echo MACS=$({ for w in wlan0 wlan1 wlan2 wlan3; do iw dev $w station dump 2>/dev/null | awk '/Station/{print $2}'; done;"
         " awk 'NR>1 && $3!=\"0x0\"{print $4}' /proc/net/arp 2>/dev/null; } | tr 'A-Z\\n' 'a-z,');"
-        "echo DPS=$(ubus call zwrt_bsp.charger list 2>/dev/null | grep direct_power_supply_mode | grep -o 'enable\\|disable')", "r");
+        "echo DPS=$(ubus call zwrt_bsp.charger list 2>/dev/null | grep direct_power_supply_mode | grep -o 'enable\\|disable');"
+        "pid=$(cat /sys/kernel/config/usb_gadget/g1/idProduct 2>/dev/null);"
+        "echo USBNET=$([ \"$pid\" = 0x9057 ] || [ \"$pid\" = 0x90b1 ] || [ \"$pid\" = 0x90B1 ] && echo 1 || echo 0);"
+        "tc=$(ubus call zwrt_bsp.typec list 2>/dev/null);"
+        "echo TYPECSRC=$(echo \"$tc\" | grep power_role | grep -o 'source\\|sink' | head -1);"
+        "echo TYPECATTACH=$(echo \"$tc\" | grep cc_attch_state | grep -o '[0-9]' | head -1)", "r");
     if (!fp) return;
     char line[768];
     while (fgets(line, sizeof line, fp)) {
@@ -256,6 +479,16 @@ static void wifi_aux_refresh(void)
         else if (!strncmp(line, "DPS=", 4)) {
             if (strstr(line, "disable")) g_dps = 0;
             else if (strstr(line, "enable")) g_dps = 1;
+        }
+        else if (!strncmp(line, "USBNET=", 7)) {
+            g_usb_net = atoi(line + 7) ? 1 : 0;
+        }
+        else if (!strncmp(line, "TYPECSRC=", 9)) {
+            if (strstr(line, "source")) g_typec_source = 1;
+            else if (strstr(line, "sink")) g_typec_source = 0;
+        }
+        else if (!strncmp(line, "TYPECATTACH=", 12)) {
+            g_typec_attached = atoi(line + 12) ? 1 : 0;
         }
     }
     pclose(fp);
@@ -305,6 +538,7 @@ static void load_conf(void)
     while (fgets(line, sizeof line, fp)) {
         if      (sscanf(line, "theme=%d", &v) == 1)      g_theme = !!v;
         else if (sscanf(line, "speed_bits=%d", &v) == 1) g_speed_bits = !!v;
+        else if (sscanf(line, "show_batpct=%d", &v) == 1) g_show_batpct = !!v;
         else if (sscanf(line, "autooff=%d", &v) == 1)    g_autooff_ms = v;
         else if (sscanf(line, "bright=%d", &v) == 1)     g_saved_bright = v;
     }
@@ -314,14 +548,14 @@ static void save_conf(void)
 {
     FILE *fp = fopen(CONF_FILE, "w");
     if (!fp) return;
-    fprintf(fp, "theme=%d\nspeed_bits=%d\nautooff=%d\nbright=%d\n",
-            g_theme, g_speed_bits, g_autooff_ms, backlight_get());
+    fprintf(fp, "theme=%d\nspeed_bits=%d\nshow_batpct=%d\nautooff=%d\nbright=%d\n",
+            g_theme, g_speed_bits, g_show_batpct, g_autooff_ms, backlight_get());
     fclose(fp);
 }
 
-/* Append one carrier card (band·bw + PCI, then RSRP/SINR colored by quality).
+/* Append one carrier card (band/bw + PCI, then RSRP/SINR colored by quality).
  * A carrier reporting the floor sentinel (RSRP <= -140) is "configured but not
- * active" — its values are grayed out and tagged 未激活. */
+ * active"; its values are grayed out and tagged inactive. */
 static int car_row(char *buf, int o, int cap, const char *band, const char *bw,
                    const char *arfcn, const char *pci, const char *rsrp, const char *sinr)
 {
@@ -349,10 +583,7 @@ static int ca_split(char *g, char **f, int maxf)
     return n;
 }
 
-/* Build the 5-cell staircase signal meter into buf. Strength is shown by the
- * NUMBER of filled cells (derived from RSRP); filled cells are a fixed color
- * (white), empty cells are dim. */
-static void build_sigbars(char *buf, size_t cap, int rsrp)
+static int signal_level(int rsrp)
 {
     int lvl;
     if      (rsrp == 0)    lvl = 0;   /* unknown / no signal */
@@ -361,12 +592,7 @@ static void build_sigbars(char *buf, size_t cap, int rsrp)
     else if (rsrp >= -100) lvl = 3;
     else if (rsrp >= -110) lvl = 2;
     else                   lvl = 1;
-    static const int hpx[5] = { 5, 8, 11, 14, 17 };
-    int o = snprintf(buf, cap, "<span class='sig'>");
-    for (int b = 0; b < 5; b++)
-        o += snprintf(buf + o, cap - o, "<i class='%s' style='height:%dpx'></i>",
-                      b < lvl ? "on" : "", hpx[b]);
-    snprintf(buf + o, cap - o, "</span>");
+    return lvl;
 }
 
 /* ---- rolling history for the charts page (sampled once per second) ---- */
@@ -413,49 +639,31 @@ static void draw_charts(void)
 {
     int x, y, w, h;
     if (html_view_rect("#chart-cpu", &x, &y, &w, &h)) {
-        html_view_polyline(x, y, w, h, h_cpu, h_n, 0, 100, 0x4f, 0x8b, 0xff, 2, 26); /* 占用 蓝 */
-        html_view_polyline(x, y, w, h, h_ct,  h_n, 20, 70, 0xff, 0x8c, 0x42, 2, 0);  /* 温度 橙 */
+        html_view_polyline(x, y, w, h, h_cpu, h_n, 0, 100, 0x4f, 0x8b, 0xff, 2, 26); /* CPU usage, blue */
+        html_view_polyline(x, y, w, h, h_ct,  h_n, 20, 70, 0xff, 0x8c, 0x42, 2, 0);  /* temperature, orange */
     }
     if (html_view_rect("#chart-mem", &x, &y, &w, &h))
-        html_view_polyline(x, y, w, h, h_mem, h_n, 0, 100, 0x46, 0xc4, 0x6f, 2, 34); /* 内存 绿 */
+        html_view_polyline(x, y, w, h, h_mem, h_n, 0, 100, 0x46, 0xc4, 0x6f, 2, 34); /* memory, green */
     if (html_view_rect("#chart-net", &x, &y, &w, &h)) {
         static int rxi[HIST], txi[HIST];
         long mx = 1;
         for (int i = 0; i < h_n; i++) { if (h_rx[i] > mx) mx = h_rx[i]; if (h_tx[i] > mx) mx = h_tx[i]; }
         for (int i = 0; i < h_n; i++) { rxi[i] = (int)h_rx[i]; txi[i] = (int)h_tx[i]; }
-        html_view_polyline(x, y, w, h, rxi, h_n, 0, (int)mx, 0x4f, 0x8b, 0xff, 2, 22); /* 下行 蓝 */
-        html_view_polyline(x, y, w, h, txi, h_n, 0, (int)mx, 0xff, 0x8c, 0x42, 2, 0);  /* 上行 橙 */
+        html_view_polyline(x, y, w, h, rxi, h_n, 0, (int)mx, 0x4f, 0x8b, 0xff, 2, 22); /* downlink, blue */
+        html_view_polyline(x, y, w, h, txi, h_n, 0, (int)mx, 0xff, 0x8c, 0x42, 2, 0);  /* uplink, orange */
     }
     if (html_view_rect("#chart-batt", &x, &y, &w, &h)) {
         static int tn[HIST], pn[HIST];
         int mx = 1;
         for (int i = 0; i < h_n; i++) if (h_pwr[i] > mx) mx = h_pwr[i];
         for (int i = 0; i < h_n; i++) { tn[i] = (h_bt[i] - 20) * 2; pn[i] = (int)((long)h_pwr[i] * 100 / mx); }
-        html_view_polyline(x, y, w, h, pn, h_n, 0, 100, 0x4f, 0x8b, 0xff, 2, 22); /* 功率 蓝 */
-        html_view_polyline(x, y, w, h, tn, h_n, 0, 100, 0xff, 0x8c, 0x42, 2, 0);  /* 温度 橙 */
+        html_view_polyline(x, y, w, h, pn, h_n, 0, 100, 0x4f, 0x8b, 0xff, 2, 22); /* power, blue */
+        html_view_polyline(x, y, w, h, tn, h_n, 0, 100, 0xff, 0x8c, 0x42, 2, 0);  /* temperature, orange */
     }
 }
 
-/* Draw a lightning bolt natively over the battery (#batt) while charging. The
- * bolt is a bit taller than the battery so it protrudes past the frame but
- * stays inside the 26px status bar. No-op if not charging / no #batt. */
-static void draw_batt_bolt(void)
-{
-    if (!g_charging) return;
-    int x, y, w, h;
-    if (!html_view_rect("#batt", &x, &y, &w, &h)) return;
-    int bw = w * 11 / 20; if (bw < 9) bw = 9;          /* ~55% of battery width (bolder) */
-    int bx = x + (w - bw) / 2, by = y - 5, bh = h + 10;   /* taller: protrudes ~5px each end */
-    static const int nx[6] = { 58, 14, 46, 42, 86, 54 };
-    static const int ny[6] = {  0, 54, 54, 100, 46, 46 };
-    int xs[6], ys[6];
-    for (int k = 0; k < 6; k++) { xs[k] = bx + nx[k] * bw / 100; ys[k] = by + ny[k] * bh / 100; }
-    int v = g_theme ? 0x00 : 0xff;                     /* light theme -> black, dark -> white */
-    html_view_fill_poly(xs, ys, 6, v, v, v, 255);
-}
-
 /* Padlock glyph centered in the lower screen, shown on the locked preview
- * (state 1). Drawn natively (shape, not a glyph) like the battery bolt. */
+ * (state 1). Drawn natively so it does not depend on font glyph coverage. */
 static void draw_lock_icon(void)
 {
     const int cx = 160, cy = 406;          /* icon center, lower-middle */
@@ -485,7 +693,7 @@ static int  g_sms_unread_now;  /* unread SMS present -> draw the status-bar enve
 static char g_sms_num[40], g_sms_date[16], g_sms_text[700];   /* opened message */
 
 /* Draw a small envelope in the status bar (over the #smsico spacer) when there
- * are unread messages. Native shape — the font has no envelope glyph. */
+ * are unread messages. Native shape; the font has no envelope glyph. */
 static void draw_sms_icon(void)
 {
     if (!g_sms_unread_now) return;
@@ -501,7 +709,78 @@ static void draw_sms_icon(void)
     html_view_fill_poly(xs, ys, 3, 0xff, 0xff, 0xff, 255);
 }
 
-/* ---- band lock (锁频): comma-list band sets ---- */
+/* ---- band lock (éé¢): comma-list band sets ---- */
+static void draw_native_statusbar(void)
+{
+    const int dark = !g_theme;
+    const int bg_r = dark ? 0x1d : 0xd8, bg_g = dark ? 0x27 : 0xe2, bg_b = dark ? 0x33 : 0xf0;
+    const int fg_r = dark ? 0xe9 : 0x1b, fg_g = dark ? 0xeb : 0x1d, fg_b = dark ? 0xee : 0x22;
+    const int dim_r = dark ? 0x5b : 0xa6, dim_g = dark ? 0x66 : 0xae, dim_b = dark ? 0x74 : 0xb8;
+
+    html_view_fill_rect(0, 0, 320, 26, bg_r, bg_g, bg_b, 255);
+    html_view_draw_text_px(8, 4, g_stat_time, 16, 0, fg_r, fg_g, fg_b, 255);
+
+    const int bat_x = 279, bat_y = 5, bat_w = 35, bat_h = 16;
+    const int tip_x = bat_x + bat_w, tip_y = bat_y + 5;
+    const int sig_y = 3, sig_h = 18;
+    const int sig_left = bat_x - 49;
+    static const int bh[5] = { 7, 7, 7, 7, 7 };
+    static const int bx[5] = { 18, 23, 28, 33, 38 };
+    static const int bw[5] = { 4, 4, 4, 4, 4 };
+    const int bar_left = sig_left + bx[0];
+    const int bar_right = sig_left + bx[4] + bw[4];
+    const int group_gap = bat_x - bar_right;
+    int sw = html_view_text_width_px(g_stat_speed, 13);
+    int sx = bar_left - group_gap - sw; if (sx < 84) sx = 84;
+    html_view_draw_text_px(sx, 5, g_stat_speed, 13, 0, fg_r, fg_g, fg_b, 255);
+
+    const int base = sig_y + sig_h + 1;
+    for (int i = 0; i < 5; i++) {
+        int on = i < g_stat_sig;
+        int r = on ? fg_r : dim_r, g = on ? fg_g : dim_g, b = on ? fg_b : dim_b;
+        int x = sig_left + bx[i];
+        html_view_fill_round_rect(x, base - bh[i], bw[i], bh[i], 2, r, g, b, 255);
+    }
+    int gen_size = 11, gw = html_view_text_width_px(g_stat_gen, gen_size);
+    if (gw > 24) { gen_size = 10; gw = html_view_text_width_px(g_stat_gen, gen_size); }
+    if (gw > 24) { gen_size = 9; }
+    gw = html_view_text_width_px(g_stat_gen, gen_size);
+    int gx = bar_left + ((bar_right - bar_left) - gw) / 2;
+    html_view_draw_text_px(gx, sig_y, g_stat_gen, gen_size, 0, fg_r, fg_g, fg_b, 255);
+
+    html_view_fill_round_rect(bat_x, bat_y, bat_w, bat_h, 4, fg_r, fg_g, fg_b, 255);
+    if (dark)
+        html_view_fill_round_rect(bat_x + 1, bat_y + 1, bat_w - 2, bat_h - 2, 3, bg_r, bg_g, bg_b, 255);
+    else
+        html_view_fill_round_rect(bat_x + 1, bat_y + 1, bat_w - 2, bat_h - 2, 3, 0xd6, 0xdc, 0xe4, 255);
+    html_view_fill_round_rect(tip_x, tip_y, 2, 7, 1, fg_r, fg_g, fg_b, 255);
+
+    int bat_pct = clampi(g_stat_bat, 0, 100);
+    int draw_charging = g_charging;
+    int fr = fg_r, fgc = fg_g, fb = fg_b;
+    if (draw_charging) { fr = 0x5e; fgc = 0xc8; fb = 0x5e; }
+    else if (g_stat_lowbat) { fr = 0xe8; fgc = 0x53; fb = 0x3a; }
+    int fill_w = (bat_w - 4) * bat_pct / 100;
+    if (fill_w > 0)
+        html_view_fill_round_rect(bat_x + 2, bat_y + 2, fill_w, bat_h - 4, 2, fr, fgc, fb, 255);
+
+    if (g_show_batpct) {
+        char bp[8]; snprintf(bp, sizeof bp, "%d%%", bat_pct);
+        int x0, y0, x1, y1;
+        int pct_size = 11;
+        html_view_text_bounds_px(bp, pct_size, &x0, &y0, &x1, &y1);
+        if (x1 - x0 > bat_w - 4) {
+            pct_size = 10;
+            html_view_text_bounds_px(bp, pct_size, &x0, &y0, &x1, &y1);
+        }
+        int tx = bat_x + (bat_w - (x1 - x0)) / 2 - x0;
+        int ty = bat_y + (bat_h - (y1 - y0)) / 2 - y0 + 1;
+        html_view_draw_text_contrast_px(tx, ty, bp, pct_size, 0,
+                                        0x12, 0x25, 0x18,
+                                        0xf2, 0xf5, 0xf7, 255);
+    }
+}
+
 static int  g_modal;           /* 0 none, 1 SA, 2 NSA, 3 LTE (second-level dialog) */
 static int  g_segdrag;         /* dragging the segmented control (suppress cell highlight) */
 static char g_toast[48];       /* toast message ("" = hidden) */
@@ -552,7 +831,7 @@ static void build_chips_cls(char *buf, size_t cap, const char *uni, const char *
         o += snprintf(buf + o, cap - o, "<a href='act:%s:%s' class='%s'>%s%s</a>",
                       act, tk, band_in(sel, tk) ? on : off, pfx, tk);
     }
-    if (o == 0) snprintf(buf, cap, "<span class='muted'>无可用频段</span>");
+    if (o == 0) snprintf(buf, cap, "<span class='muted'>暂无可选频段</span>");
 }
 
 /* One-line summary of a card's current band selection. */
@@ -573,7 +852,6 @@ static const struct { const char *v, *lab; } g_netmodes[4] = {
 static const struct { int ms; const char *lab; } g_autooffs[6] = {
     { 0, "关" }, { 30000, "30秒" }, { 60000, "1分" },
     { 120000, "2分" }, { 300000, "5分" }, { 600000, "10分" } };
-
 /* escape &,<,> for safe litehtml parsing of arbitrary SMS text */
 static void html_esc(char *dst, size_t cap, const char *src)
 {
@@ -590,7 +868,7 @@ static void html_esc(char *dst, size_t cap, const char *src)
 }
 
 /* Copy at most maxb bytes of UTF-8 without splitting a multibyte char; stop at
- * a newline. Sets *cut if the source was longer (so the caller can add "…"). */
+ * a newline. Sets *cut if the source was longer, so the caller can add ellipsis. */
 static void utf8_trunc(char *dst, size_t cap, const char *src, int maxb, int *cut)
 {
     int o = 0; *cut = 0;
@@ -644,7 +922,6 @@ static const char *modal_html(void)
         g_theme ? "light" : "dark", title, chips);
     return out;
 }
-
 /* Fill a kv table from the current device state. Buffers are static. */
 static int build_kv(struct kv *t)
 {
@@ -654,7 +931,7 @@ static int build_kv(struct kv *t)
     static char s_cellid[20], s_pci[12], s_clients[8], s_up[24], s_rxs[20], s_txs[20];
     static char s_rxb[16], s_txb[16], s_cpu[8], s_mem[8], w_rsrp[6], w_rsrq[6], w_sinr[6], w_bw[6];
     static char s_oper[48], s_ssid[64], s_key[64], s_page[8], s_np[8], s_model[64], s_fw[80];
-    static char s_qci[8], s_ambr[24], s_sig[280], s_sbar[640], s_dots[320];
+    static char s_qci[8], s_ambr[24], s_sbar[640], s_dots[320];
 
     devui_data_t d;
     if (!data_refresh(&d)) memset(&d, 0, sizeof d);
@@ -696,8 +973,6 @@ static int build_kv(struct kv *t)
     /* qci / ambr (from modem qos): unified Mbps, e.g. 3000/200 Mbps */
     snprintf(s_qci, sizeof s_qci, "%d", d.qci);
     snprintf(s_ambr, sizeof s_ambr, "%.0f/%.0f Mbps", d.ambr_dl, d.ambr_ul);
-
-    build_sigbars(s_sig, sizeof s_sig, d.nr_rsrp ? d.nr_rsrp : d.lte_rsrp);
 
     /* ---- per-carrier display + generation badge ----
      * nrca group: idx,pci,?,band,arfcn,bw,?,rsrp,rsrq,sinr,rssi
@@ -760,8 +1035,8 @@ static int build_kv(struct kv *t)
     if (is_endc)     { total_bw = nr_bw + lte_bw; cmode = "EN-DC"; }
     else if (is_nsa) { total_bw = nr_cc > 0 ? nr_bw : lte_bw; cmode = "5G NSA"; }
     else if (is_sa)  { total_bw = nr_bw; cmode = "5G SA"; }
-    else if (is_lte) { total_bw = lte_bw; cmode = (d.mcc == 460) ? "4G" : "4G LTE"; }
-    else             { total_bw = 0; cmode = d.net_type[0] ? d.net_type : "无服务"; }
+    else if (is_lte) { total_bw = lte_bw; cmode = "4G LTE"; }
+    else             { total_bw = 0; cmode = d.net_type[0] ? d.net_type : "No Service"; }
     { char cnt[48];
       if (lte_cc && nr_cc) snprintf(cnt, sizeof cnt, "%d LTE + %d NR 载波", lte_cc, nr_cc);
       else if (nr_cc)      snprintf(cnt, sizeof cnt, "%d NR 载波", nr_cc);
@@ -777,15 +1052,14 @@ static int build_kv(struct kv *t)
         if (m == 0 || m == 2 || m == 4 || m == 7 || m == 8) op = 1;
         else if (m == 1 || m == 6 || m == 9) op = 2;
         else if (m == 3 || m == 5 || m == 11) op = 3;
-        else if (m == 15) op = 4; else op = 5;
+        else if (m == 15) op = 4;
+        else op = 5;
     }
-    /* operator: show Chinese names for the four mainland carriers */
     if (d.mcc == 460) {
         const char *cn = op == 1 ? "中国移动" : op == 2 ? "中国联通" :
                          op == 3 ? "中国电信" : op == 4 ? "中国广电" : NULL;
         if (cn) snprintf(s_oper, sizeof s_oper, "%s", cn);
     }
-
     const char *gen = "--";
     if (is_sa) {
         if ((op == 1 || op == 4) && nr_cc >= 3) gen = "5GA";
@@ -802,28 +1076,19 @@ static int build_kv(struct kv *t)
     else if (!strcmp(gen, "5G"))  genc = "g5";
     else if (!strcmp(gen, "4G"))  genc = "g4";
     else if (!strcmp(gen, "LTE")) genc = "glte";
+    snprintf(g_stat_time, sizeof g_stat_time, "%s", s_time);
+    g_stat_sig = signal_level(d.nr_rsrp ? d.nr_rsrp : d.lte_rsrp);
+    snprintf(g_stat_gen, sizeof g_stat_gen, "%s", gen);
 
-    /* ---- shared status bar: time | speed | gen-text | sigbars | battery | % ---- */
+    /* ---- shared status bar: native-drawn content over a simple 26px slot ---- */
     {
-        char sp[40], bcls[20];
+        char sp[40];
         fmt_speed_pair(sp, sizeof sp, d.tx_speed, d.rx_speed, g_speed_bits);
-        snprintf(bcls, sizeof bcls, "%s%s", g_charging ? "chg " : "",
-                 d.bat_percent <= 20 ? "low" : "");
-        /* battery: bf = level fill; when charging the host draws a lightning
-         * bolt natively over #batt (CSS/font can't draw one reliably). */
+        snprintf(g_stat_speed, sizeof g_stat_speed, "%s", sp);
+        g_stat_bat = clampi(d.bat_percent, 0, 100);
+        g_stat_lowbat = d.bat_percent <= 20;
         g_sms_unread_now = d.sms_unread > 0;
-        const char *smsb = g_sms_unread_now ? "<span id='smsico' class='smsico'></span>" : "";
-        snprintf(s_sbar, sizeof s_sbar,
-            "<div class='sbar'><span class='clk'>%s</span>%s<span class='r'>"
-            "<span class='spd'>%s</span>"
-            "<span class='gt %s'>%s</span>"
-            "%s"
-            "<span class='bw'><span id='batt' class='batt %s'><span class='bf' style='width:%d%%'></span></span><span class='tip'></span></span>"
-            "<span class='bp'>%d%%</span>"
-            "</span></div>",
-            s_time, smsb, sp, genc, gen, s_sig,
-            bcls, clampi(d.bat_percent, 0, 100),
-            d.bat_percent);
+        snprintf(s_sbar, sizeof s_sbar, "<div class='sbar'><span id='smsico' class='smsico'></span></div>");
     }
 
     /* ---- bottom page dots ---- */
@@ -924,16 +1189,16 @@ static int build_kv(struct kv *t)
     static char s_smslist[4000];
     {
         int o = 0;
-        for (int i = 0; i < d.sms_n; i++) {
+        for (int si = 0; si < d.sms_n; si++) {
             char prev[80]; int cut;
-            utf8_trunc(prev, sizeof prev, d.sms[i].text, 40, &cut);
+            utf8_trunc(prev, sizeof prev, d.sms[si].text, 40, &cut);
             char esc[200];
             html_esc(esc, sizeof esc, prev);
             o += snprintf(s_smslist + o, sizeof s_smslist - o,
                 "<a href='act:sms:%d' class='sms%s'>"
                 "<div class='smsh'><span class='smsn'>%s</span><span class='smsd'>%s</span></div>"
                 "<div class='smsp'>%s%s</div></a>",
-                i, d.sms[i].unread ? " un" : "", d.sms[i].num, d.sms[i].date,
+                si, d.sms[si].unread ? " un" : "", d.sms[si].num, d.sms[si].date,
                 esc, cut ? "…" : "");
         }
         if (d.sms_n == 0)
@@ -951,11 +1216,31 @@ static int build_kv(struct kv *t)
       else                strcpy(s_lease, "-"); }
 
     int adb_on = !strcmp(d.usb_mode, "debug");
+    int usb_net_on = (g_usb_net == 1) || usb_pid_is("9057") || usb_pid_is("90b1") || usb_pid_is("90B1");
+    int usb_reverse = (g_typec_source == 1);
+    uint32_t now_ms = millis();
+    if (g_adb_pending >= 0) {
+        if (g_adb_pending == adb_on) g_adb_pending = -1;
+        else                         adb_on = g_adb_pending;
+    }
+    if (g_usb_net_pending >= 0) {
+        if (g_usb_net_pending == usb_net_on || now_ms > g_usb_net_until) g_usb_net_pending = -1;
+        else                                                            usb_net_on = g_usb_net_pending;
+    }
+    if (g_typec_pending >= 0) {
+        if (g_typec_pending == usb_reverse || now_ms > g_typec_until) g_typec_pending = -1;
+        else                                                         usb_reverse = g_typec_pending;
+    }
+    const char *adb_state = g_adb_pending >= 0 ? "切换中" : (adb_on ? "已开启" : "已关闭");
+    const char *usb_pwr_state = g_typec_pending >= 0 ? "切换中" : (usb_reverse ? "反向供电" : "给U60充电");
+    const char *usb_net_state = g_usb_net_pending >= 0 ? "切换中" : (usb_net_on ? "共享中" : "仅充电");
+
     int connected = strstr(d.wan_status, "connect") != NULL;
+    int wifi_master = (g_w24 == 1 || g_w5 == 1);
     int i = 0;
     t[i++] = (struct kv){ "STATUSBAR", s_sbar };   t[i++] = (struct kv){ "DOTS", s_dots };
-    t[i++] = (struct kv){ "SIGBARS", s_sig };
-    t[i++] = (struct kv){ "TIME", s_time };       t[i++] = (struct kv){ "BAT", s_bat };
+    t[i++] = (struct kv){ "SIGBARS", "" };
+    t[i++] = (struct kv){ "TIME", s_time };        t[i++] = (struct kv){ "BAT", s_bat };
     t[i++] = (struct kv){ "OPER", s_oper };        t[i++] = (struct kv){ "NETTYPE", d.net_type };
     t[i++] = (struct kv){ "BAND", d.band };        t[i++] = (struct kv){ "WAN", connected ? "已连接" : "未连接" };
     t[i++] = (struct kv){ "RSRP", s_rsrp };        t[i++] = (struct kv){ "RSRP_W", w_rsrp };
@@ -971,43 +1256,44 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "QCI", s_qci };          t[i++] = (struct kv){ "AMBR", s_ambr };
     t[i++] = (struct kv){ "SSID", s_ssid };        t[i++] = (struct kv){ "KEY", s_key };
     t[i++] = (struct kv){ "ENC", d.wifi_enc[0] ? d.wifi_enc : "-" };
-    t[i++] = (struct kv){ "MODEL", s_model };       t[i++] = (struct kv){ "FW", s_fw };
-    t[i++] = (struct kv){ "PAGE", s_page };         t[i++] = (struct kv){ "NPAGES", s_np };
+    t[i++] = (struct kv){ "MODEL", s_model };      t[i++] = (struct kv){ "FW", s_fw };
+    t[i++] = (struct kv){ "PAGE", s_page };        t[i++] = (struct kv){ "NPAGES", s_np };
     t[i++] = (struct kv){ "CARRIERS", s_carriers }; t[i++] = (struct kv){ "GEN", s_gen };
     t[i++] = (struct kv){ "GENCLASS", genc };
     t[i++] = (struct kv){ "THEME", g_theme ? "light" : "dark" };
     t[i++] = (struct kv){ "BATCLASS", d.bat_percent <= 20 ? "low" : "" };
     t[i++] = (struct kv){ "KEYBTN", g_show_key ? "隐藏密码" : "显示密码" };
     t[i++] = (struct kv){ "ADBCLASS", adb_on ? "on" : "off" };
-    t[i++] = (struct kv){ "ADBSTATE", adb_on ? "已开启" : "已关闭" };
+    t[i++] = (struct kv){ "ADBSTATE", adb_state };
+    t[i++] = (struct kv){ "USBPWRCLASS", usb_reverse ? "on" : "off" };
+    t[i++] = (struct kv){ "USBPWRSTATE", usb_pwr_state };
+    t[i++] = (struct kv){ "USBNETCLASS", usb_net_on ? "on" : "off" };
+    t[i++] = (struct kv){ "USBNETSTATE", usb_net_state };
+    t[i++] = (struct kv){ "BATPCTCLASS", g_show_batpct ? "on" : "off" };
+    t[i++] = (struct kv){ "BATPCTSTATE", g_show_batpct ? "已显示" : "已隐藏" };
     t[i++] = (struct kv){ "THEMECLASS", g_theme ? "on" : "off" };
     t[i++] = (struct kv){ "THEMESTATE", g_theme ? "浅色模式" : "深色模式" };
     t[i++] = (struct kv){ "SPUNITCLASS", g_speed_bits ? "on" : "off" };
     t[i++] = (struct kv){ "SPUNITSTATE", g_speed_bits ? "比特率 Mbps" : "字节率 MB/s" };
     t[i++] = (struct kv){ "SPUNIT", s_spu };
-    /* system page */
-    t[i++] = (struct kv){ "CPUUSAGE", s_cusage };  t[i++] = (struct kv){ "CPUTEMP", s_ctemp };
-    t[i++] = (struct kv){ "BATTEMP", s_btemp };    t[i++] = (struct kv){ "SWVER", s_swver };
+    t[i++] = (struct kv){ "CPUUSAGE", s_cusage }; t[i++] = (struct kv){ "CPUTEMP", s_ctemp };
+    t[i++] = (struct kv){ "BATTEMP", s_btemp };   t[i++] = (struct kv){ "SWVER", s_swver };
     t[i++] = (struct kv){ "IMEI", s_imei };
     t[i++] = (struct kv){ "IMEIBTN", g_show_imei ? "隐藏" : "显示" };
-    t[i++] = (struct kv){ "BRIGHT", s_bright }; t[i++] = (struct kv){ "AUTOOFF", s_autooff };
+    t[i++] = (struct kv){ "BRIGHT", s_bright };   t[i++] = (struct kv){ "AUTOOFF", s_autooff };
     t[i++] = (struct kv){ "MEMDETAIL", s_memdet }; t[i++] = (struct kv){ "UPSHORT", s_upshort };
-    t[i++] = (struct kv){ "CHGV", s_chgv };  t[i++] = (struct kv){ "CHGI", s_chgi };
-    t[i++] = (struct kv){ "BATV", s_batv };  t[i++] = (struct kv){ "BATI", s_bati };
-    t[i++] = (struct kv){ "PWR", s_pwr };    t[i++] = (struct kv){ "PWRLBL", d.charger_connect ? "充电" : "放电" };
-    /* lock page */
-    t[i++] = (struct kv){ "NETSEG", s_netseg };  t[i++] = (struct kv){ "TOAST", s_toast };
-    /* power menu: armed button shows a confirm label + highlight */
+    t[i++] = (struct kv){ "CHGV", s_chgv };       t[i++] = (struct kv){ "CHGI", s_chgi };
+    t[i++] = (struct kv){ "BATV", s_batv };       t[i++] = (struct kv){ "BATI", s_bati };
+    t[i++] = (struct kv){ "PWR", s_pwr };         t[i++] = (struct kv){ "PWRLBL", d.charger_connect ? "充电" : "放电" };
+    t[i++] = (struct kv){ "NETSEG", s_netseg };   t[i++] = (struct kv){ "TOAST", s_toast };
     t[i++] = (struct kv){ "PWROFFLBL",  g_pwr_confirm == 1 ? "再按一次" : "关机" };
     t[i++] = (struct kv){ "PWROFFCLS",  g_pwr_confirm == 1 ? "armed" : "" };
     t[i++] = (struct kv){ "PWRREBLBL",  g_pwr_confirm == 2 ? "再按一次" : "重启" };
     t[i++] = (struct kv){ "PWRREBCLS",  g_pwr_confirm == 2 ? "armed" : "" };
-    t[i++] = (struct kv){ "CURSA", s_cursa };    t[i++] = (struct kv){ "CURNSA", s_curnsa };
+    t[i++] = (struct kv){ "CURSA", s_cursa };     t[i++] = (struct kv){ "CURNSA", s_curnsa };
     t[i++] = (struct kv){ "CURLTE", s_curlte };
-    /* wifi page */
     t[i++] = (struct kv){ "NFCCLASS", d.nfc_switch ? "on" : "off" };
     t[i++] = (struct kv){ "NFCSTATE", d.nfc_switch ? "已开启" : "已关闭" };
-    int wifi_master = (g_w24 == 1 || g_w5 == 1);   /* on if either main band is up */
     t[i++] = (struct kv){ "WIFICLASS", wifi_master ? "on" : "off" };
     t[i++] = (struct kv){ "WIFISTATE", (g_w24 < 0 && g_w5 < 0) ? "—" : wifi_master ? "已开启" : "已关闭" };
     t[i++] = (struct kv){ "WIFI24CLASS", g_w24 == 1 ? "on" : "off" };
@@ -1023,12 +1309,12 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "DHCP_POOL", g_dhcp_pool[0] ? g_dhcp_pool : s_pool };
     t[i++] = (struct kv){ "DHCP_LEASE", s_lease };
 
-    /* ---- lock screen (PIN pad): dots reflect typed digits; aux = 取消 in setup ---- */
-    static char s_pindots[512], s_lockaux[140];   /* ring markup is verbose; keep roomy */
+    /* ---- lock screen (PIN pad): dots reflect typed digits. ---- */
+    static char s_pindots[512], s_lockaux[140];
     {
         int filled = (int)strlen(g_pin_entry);
         int o = snprintf(s_pindots, sizeof s_pindots, "<div class='pin-slots'>");
-        for (int k = 0; k < 4; k++)            /* typed = solid dot, empty = hollow ring */
+        for (int k = 0; k < 4; k++)
             o += (k < filled)
                ? snprintf(s_pindots + o, sizeof s_pindots - o, "<span class='ps'><span class='dot'></span></span>")
                : snprintf(s_pindots + o, sizeof s_pindots - o,
@@ -1052,7 +1338,7 @@ static const char *page_html(const char *path)
 {
     char *tmpl = read_file(path);   /* re-read each time = live reload */
     if (!tmpl) return NULL;
-    struct kv t[120];
+    struct kv t[160];
     int n = build_kv(t);
     char *html = apply_template(tmpl, t, n);
     free(tmpl);
@@ -1096,7 +1382,7 @@ static void pm_arc(int cx, int cy, double ro, double ri, int a0, int a1, int r, 
     html_view_fill_poly(xs, ys, N, r, g, b, 255);
 }
 
-/* kind: 0=power(关机) 1=reboot(重启) 2=cancel(取消) */
+/* kind: 0=power, 1=reboot, 2=cancel */
 static void pm_glyph(const char *sel, int kind, int cr, int cg, int cb)
 {
     int x, y, w, h;
@@ -1111,7 +1397,7 @@ static void pm_glyph(const char *sel, int kind, int cr, int cg, int cb)
     if (kind == 0) {                         /* power: ring with a gap at top + vertical bar */
         pm_arc(cx, cy, ro, ri, 110, 430, W, W, W);
         pm_line(cx, cy - rad * 0.06, cx, cy - rad * 0.60, th, W, W, W);
-    } else if (kind == 1) {                  /* reboot: ~290° ring + arrowhead at one end */
+    } else if (kind == 1) {                  /* reboot: about 290 degree ring + arrowhead */
         int a0 = 120, a1 = 410;
         pm_arc(cx, cy, ro, ri, a0, a1, W, W, W);
         double te = a1 * PM_PI / 180.0, rm = (ro + ri) / 2.0;
@@ -1137,6 +1423,21 @@ static void draw_power_menu(void)
 
 static void capture_fb(drm_disp_t *d);   /* fwd: fb snapshot for modal overlay */
 
+static void maybe_dump_fb(drm_disp_t *d)
+{
+    if (access("/tmp/u60-dumpfb", F_OK) != 0) return;
+    FILE *f = fopen("/tmp/fb.dump", "wb");
+    if (!f) return;
+    const int W = d->width, H = d->height, pp = d->pitch_px;
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            uint16_t px = d->fb[(size_t)(H - 1 - y) * pp + (W - 1 - x)];
+            fwrite(&px, sizeof px, 1, f);
+        }
+    }
+    fclose(f);
+}
+
 static void render(drm_disp_t *disp, const char *path)
 {
     const char *html = page_html(path);
@@ -1144,7 +1445,7 @@ static void render(drm_disp_t *disp, const char *path)
     html_view_set_scroll(g_scroll);
     g_page_h = html_view_render_html(html);
     draw_charts();      /* native polylines into any #chart-* placeholders */
-    draw_batt_bolt();   /* native lightning over the battery while charging */
+    draw_native_statusbar();
     draw_sms_icon();    /* native envelope in the status bar when unread SMS */
     if (strstr(path, "menu.html")) draw_power_menu();   /* round power buttons */
     if (g_lock_state == 1) draw_lock_icon();   /* locked preview: lock glyph */
@@ -1160,6 +1461,7 @@ static void render(drm_disp_t *disp, const char *path)
         html_view_render_overlay(sms_modal_html());
     }
     drm_disp_dirty(disp, 0, 0, disp->width - 1, disp->height - 1);
+    maybe_dump_fb(disp);
 }
 
 /* Offscreen page bitmaps (logical, no rotation) for slide transitions.
@@ -1168,7 +1470,7 @@ static void render(drm_disp_t *disp, const char *path)
 static uint16_t g_bufA[320 * 480], g_bufB[320 * 480];
 
 /* Status bar stays pinned during a swipe (only the content below slides), so
- * the native bolt — drawn at a fixed spot — lines up with it. g_sbar_src points
+ * the native status bar, drawn at a fixed spot, lines up with it. g_sbar_src points
  * at the page buffer rendered at scroll 0 (its top rows hold the status bar). */
 #define SBAR_H 26   /* matches .sbar height in style.css */
 static const uint16_t *g_sbar_src;
@@ -1190,9 +1492,10 @@ static void compose_frame(drm_disp_t *d, int o)
             }
         }
     }
-    draw_batt_bolt();   /* native bolt over the pinned battery (buffers lack it) */
+    draw_native_statusbar();
     draw_sms_icon();    /* native envelope over the pinned status bar */
     drm_disp_dirty(d, 0, 0, W - 1, H - 1);
+    maybe_dump_fb(d);
 }
 
 /* Render the page pair for a drag direction into A(left)/B(right). dir>0 = next.
@@ -1221,7 +1524,7 @@ static void anim_o(drm_disp_t *d, int o0, int o1)
 
 /* Smooth vertical scrolling: the full page is pre-rendered once into g_scrollbuf
  * (logical, unrotated); each drag frame just blits the visible window + scrollbar
- * — no re-parse/re-layout, so it keeps up like the horizontal swipe. */
+ * without re-parsing/re-layout, so it keeps up like the horizontal swipe. */
 #define SCROLLMAX 1280
 static uint16_t g_scrollbuf[320 * SCROLLMAX];
 static int g_scroll_h;
@@ -1235,6 +1538,8 @@ static void scroll_blit(drm_disp_t *d, int scroll)
         uint16_t *dp = d->fb + (size_t)(Hh - 1 - y) * pp + (W - 1);
         for (int x = 0; x < W; x++) *dp-- = src ? src[x] : 0;
     }
+    draw_native_statusbar();
+    draw_sms_icon();
     drm_disp_dirty(d, 0, 0, W - 1, Hh - 1);
 }
 
@@ -1280,8 +1585,8 @@ static void screen_off(drm_disp_t *d)
     drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
 }
 /* Screen on: render, then "warm up" the command-mode panel with several frame
- * pushes while the backlight is still 0 — this drives it past the idle-exit
- * transient (the flash) invisibly — then fade the backlight up from 0. */
+ * pushes while the backlight is still 0; this drives it past the idle-exit
+ * transient invisibly, then fades the backlight up from 0. */
 static void screen_on(drm_disp_t *d, const char *path)
 {
     render(d, path);       /* backlight still 0 from screen_off */
@@ -1328,6 +1633,8 @@ int main(void)
     if (g_saved_bright >= 0) backlight_set(g_saved_bright);   /* restore brightness */
     load_pin();
     wifi_aux_refresh();                   /* prime page-2 switch states */
+    if (usb_pid_is("9057") || usb_pid_is("90b1") || usb_pid_is("90B1"))
+        usb_net_watchdog_start();
     if (lock_enabled()) enter_lock(0);   /* boot straight into the unlock pad */
     render(&disp, CUR_PATH);
     uint32_t last_data = millis(), last_act = millis();
@@ -1385,7 +1692,7 @@ int main(void)
                 }
             }
         } else if (g_lock_state) {
-            /* PIN pad (3=unlock / 2=setup): tap only, no confirm key — a 4th digit
+            /* PIN pad (3=unlock / 2=setup): tap only, no confirm key; a 4th digit
              * auto-submits. Drain the tap queue so a fast burst of taps all land
              * (the per-digit re-render would otherwise let polls miss presses). */
             int tx, ty;
@@ -1552,6 +1859,7 @@ int main(void)
                         else if (!strcmp(a, "revealcell")) { g_show_cellid = !g_show_cellid; need_render = 1; }
                         else if (!strcmp(a, "revealimei")) { g_show_imei = !g_show_imei; need_render = 1; }
                         else if (!strcmp(a, "spunit"))    { g_speed_bits = !g_speed_bits; save_conf(); need_render = 1; }
+                        else if (!strcmp(a, "batpct"))    { g_show_batpct = !g_show_batpct; save_conf(); need_render = 1; }
                         else if (!strcmp(a, "nfc")) {
                             devui_data_t dd; char cmd[120];
                             int on = (data_refresh(&dd) && dd.nfc_switch) ? 0 : 1;
@@ -1591,11 +1899,11 @@ int main(void)
                             need_render = 1;
                         }
                         else if (!strcmp(a, "psm")) {
-                            int turn_on = g_wpsm == 1 ? 0 : 1;   /* 节能 on = power_save on */
+                            int turn_on = g_wpsm == 1 ? 0 : 1;   /* power_save on = battery saving */
                             const char *m = turn_on ? "on" : "off";
                             /* The switch owns /etc/hotplug.d/iface/99-disable-powersave: it writes
                              * the script itself (re-applying the chosen mode on every ifup) and
-                             * applies it now, so the feature is self-contained — nothing needs to be
+                             * applies it now, so the feature is self-contained; nothing needs to be
                              * pre-installed. (Also drop the legacy "psm" file from older builds, which
                              * sorts later and would otherwise override this one.) */
                             char cmd[700];
@@ -1618,10 +1926,77 @@ int main(void)
                         else if (!strcmp(a, "adb")) {
                             devui_data_t dd;
                             const char *mode = "debug";
-                            if (data_refresh(&dd) && !strcmp(dd.usb_mode, "debug")) mode = "user";
-                            char cmd[96];
-                            snprintf(cmd, sizeof cmd, "ubus call zwrt_bsp.usb set '{\"mode\":\"%s\"}'", mode);
+                            if (data_refresh(&dd) && !strcmp(dd.usb_mode, "debug") &&
+                                !usb_pid_is("90b1") && !usb_pid_is("90B1"))
+                                mode = "user";
+                            g_adb_pending = !strcmp(mode, "debug");
+                            char cmd[160];
+                            if (g_adb_pending)
+                                snprintf(cmd, sizeof cmd,
+                                    "/sbin/usb_composition 9059 n n y y >/dev/null 2>&1 &");
+                            else
+                                snprintf(cmd, sizeof cmd,
+                                    "ubus call zwrt_bsp.usb set '{\"mode\":\"user\"}' >/dev/null 2>&1 &");
                             system(cmd);
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "usbpower")) {
+                            if (g_typec_pending >= 0 && now < g_typec_until) {
+                                need_render = 1;
+                                goto action_done;
+                            }
+                            int cur = g_typec_source == 1;
+                            int target = !cur;
+                            int net_active = ((g_usb_net_pending >= 0 ? g_usb_net_pending : g_usb_net) == 1 ||
+                                              usb_pid_is("9057") ||
+                                              usb_pid_is("90b1") || usb_pid_is("90B1"));
+                            if (net_active) {
+                                system("touch /tmp/u60-usbnet-switching");
+                                if (target) usb_net_apply_source_async();
+                                else        usb_net_apply_sink_async();
+                                usb_net_watchdog_start();
+                                g_usb_net = 1;
+                            } else {
+                                usb_power_only_apply_async(target);
+                            }
+                            g_typec_source = target;
+                            g_typec_pending = target;
+                            g_typec_until = now + 20000;
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "usbnet")) {
+                            char cmd[900];
+                            int cur = g_usb_net_pending >= 0 ? g_usb_net_pending :
+                                      ((g_usb_net == 1) || usb_pid_is("9057") ||
+                                       usb_pid_is("90b1") || usb_pid_is("90B1"));
+                            int target = !cur;
+                            if (g_usb_net_pending >= 0 && now < g_usb_net_until) {
+                                need_render = 1;
+                                goto action_done;
+                            }
+                            if (!target) {
+                                snprintf(cmd, sizeof cmd,
+                                    "(rm -f /tmp/u60-usbnet-switching; "
+                                    "SER=$(cat /sys/kernel/config/usb_gadget/g1/strings/0x409/serialnumber 2>/dev/null); "
+                                    "sh /sbin/usb/compositions/usb_switch 0x19d2 0x1225 mass_storage \"$SER\") >/dev/null 2>&1 &");
+                                g_usb_net = 0;
+                                g_usb_net_pending = 0;
+                                g_usb_net_until = now + 20000;
+                                usb_net_watchdog_stop();
+                                system(cmd);
+                            } else {
+                                int want_source = g_typec_pending >= 0 ? g_typec_pending : (g_typec_source == 1);
+                                g_usb_net = 1;
+                                g_typec_source = want_source;
+                                g_usb_net_pending = 1;
+                                g_typec_pending = want_source;
+                                g_usb_net_until = now + 20000;
+                                g_typec_until = now + 20000;
+                                system("touch /tmp/u60-usbnet-switching");
+                                usb_net_watchdog_start();
+                                if (want_source) usb_net_apply_source_async();
+                                else             usb_net_apply_sink_async();
+                            }
                             need_render = 1;
                         }
                         else if (!strcmp(a, "bright")) {    /* tap position on the bar = level */
@@ -1649,7 +2024,7 @@ int main(void)
                                 "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1 &", a + 4);
                             system(cmd);
                             snprintf(g_net_pending, sizeof g_net_pending, "%s", a + 4);
-                            need_render = 1;
+                            snprintf(g_toast, sizeof g_toast, "网络模式已切换"); g_toast_until = now + 1600;
                         }
                         else if (!strncmp(a, "openmodal:", 10)) {   /* open band-lock dialog */
                             const char *r = a + 10;
@@ -1681,6 +2056,7 @@ int main(void)
                         }
                     }
                 }
+action_done:
                 dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0; g_segdrag = 0;
             }
         }

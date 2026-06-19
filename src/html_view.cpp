@@ -41,6 +41,14 @@ static inline void put_px(int x, int y, int r, int g, int b, int a)
     *p = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
+static inline uint16_t get_px565(int x, int y)
+{
+    if (x < 0 || y < 0 || x >= g_w || y >= g_h || !g_fb) return 0;
+    int dx = g_rotate ? (g_w - 1 - x) : x;
+    int dy = g_rotate ? (g_h - 1 - y) : y;
+    return g_fb[dy * g_pitch_px + dx];
+}
+
 /* Is (x,y) inside a rounded rectangle? Used by both rounded fill and rounded
  * border stroking (litehtml hands us radii but leaves the drawing to us). */
 static bool pt_in_round(int x, int y, int fx, int fy, int fw, int fh,
@@ -390,6 +398,112 @@ extern "C" void html_view_fill_round_rect(int x, int y, int w, int h, int rad, i
         for (int xx = x; xx < x + w; xx++)
             if (pt_in_round(xx, yy, x, y, w, h, rad, rad, rad, rad))
                 put_px(xx, yy, r, g, b, a);
+}
+
+extern "C" int html_view_text_width_px(const char *text, int size)
+{
+    if (!g_face || !text) return 0;
+    FT_Set_Pixel_Sizes(g_face, 0, size);
+    int w = 0;
+    for (const char *s = text; *s; ) {
+        unsigned cp = utf8_next(s);
+        if (FT_Load_Char(g_face, cp, FT_LOAD_DEFAULT)) continue;
+        w += g_face->glyph->advance.x >> 6;
+    }
+    return w;
+}
+
+extern "C" void html_view_text_bounds_px(const char *text, int size,
+                                         int *x0, int *y0, int *x1, int *y1)
+{
+    if (x0) *x0 = 0;
+    if (y0) *y0 = 0;
+    if (x1) *x1 = 0;
+    if (y1) *y1 = 0;
+    if (!g_face || !text) return;
+    FT_Set_Pixel_Sizes(g_face, 0, size);
+    int ascent = g_face->size->metrics.ascender >> 6;
+    int pen = 0, minx = 0, miny = 0, maxx = 0, maxy = 0, seen = 0;
+    for (const char *s = text; *s; ) {
+        unsigned cp = utf8_next(s);
+        if (FT_Load_Char(g_face, cp, FT_LOAD_RENDER)) continue;
+        FT_GlyphSlot gl = g_face->glyph;
+        int gx0 = pen + gl->bitmap_left;
+        int gy0 = ascent - gl->bitmap_top;
+        int gx1 = gx0 + (int)gl->bitmap.width;
+        int gy1 = gy0 + (int)gl->bitmap.rows;
+        if (!seen) {
+            minx = gx0; miny = gy0; maxx = gx1; maxy = gy1; seen = 1;
+        } else {
+            if (gx0 < minx) minx = gx0;
+            if (gy0 < miny) miny = gy0;
+            if (gx1 > maxx) maxx = gx1;
+            if (gy1 > maxy) maxy = gy1;
+        }
+        pen += gl->advance.x >> 6;
+    }
+    if (!seen) return;
+    if (x0) *x0 = minx;
+    if (y0) *y0 = miny;
+    if (x1) *x1 = maxx;
+    if (y1) *y1 = maxy;
+}
+
+extern "C" void html_view_draw_text_px(int x, int y, const char *text, int size, int bold,
+                                       int r, int g, int b, int a)
+{
+    if (!g_face || !text) return;
+    FT_Set_Pixel_Sizes(g_face, 0, size);
+    int ascent = g_face->size->metrics.ascender >> 6;
+    int pen = x, base = y + ascent;
+    for (const char *s = text; *s; ) {
+        unsigned cp = utf8_next(s);
+        if (FT_Load_Char(g_face, cp, FT_LOAD_RENDER)) continue;
+        FT_GlyphSlot gl = g_face->glyph;
+        FT_Bitmap &bm = gl->bitmap;
+        for (int pass = 0; pass < (bold ? 2 : 1); pass++) {
+            int ox = pen + gl->bitmap_left + pass, oy = base - gl->bitmap_top;
+            for (int row = 0; row < (int)bm.rows; row++)
+                for (int col = 0; col < (int)bm.width; col++) {
+                    int aa = bm.buffer[row * bm.pitch + col];
+                    if (aa) put_px(ox + col, oy + row, r, g, b, aa * a / 255);
+                }
+        }
+        pen += gl->advance.x >> 6;
+    }
+}
+
+extern "C" void html_view_draw_text_contrast_px(int x, int y, const char *text, int size, int bold,
+                                                int dr, int dg, int db, int lr, int lg, int lb, int a)
+{
+    if (!g_face || !text) return;
+    FT_Set_Pixel_Sizes(g_face, 0, size);
+    int ascent = g_face->size->metrics.ascender >> 6;
+    int pen = x, base = y + ascent;
+    for (const char *s = text; *s; ) {
+        unsigned cp = utf8_next(s);
+        if (FT_Load_Char(g_face, cp, FT_LOAD_RENDER)) continue;
+        FT_GlyphSlot gl = g_face->glyph;
+        FT_Bitmap &bm = gl->bitmap;
+        for (int pass = 0; pass < (bold ? 2 : 1); pass++) {
+            int ox = pen + gl->bitmap_left + pass, oy = base - gl->bitmap_top;
+            for (int row = 0; row < (int)bm.rows; row++)
+                for (int col = 0; col < (int)bm.width; col++) {
+                    int aa = bm.buffer[row * bm.pitch + col];
+                    if (!aa) continue;
+                    uint16_t bg = get_px565(ox + col, oy + row);
+                    int br = ((bg >> 11) & 0x1F) * 255 / 31;
+                    int bgc = ((bg >> 5) & 0x3F) * 255 / 63;
+                    int bb = (bg & 0x1F) * 255 / 31;
+                    int luma = (br * 299 + bgc * 587 + bb * 114) / 1000;
+                    int r = luma > 116 ? dr : lr;
+                    int g = luma > 116 ? dg : lg;
+                    int b = luma > 116 ? db : lb;
+                    put_px(ox + col, oy + row, r, g, b, aa * a / 255);
+                }
+        }
+        pen += gl->advance.x >> 6;
+    }
 }
 
 /* Hit-test a tap; returns the clicked anchor href ("" if none). */

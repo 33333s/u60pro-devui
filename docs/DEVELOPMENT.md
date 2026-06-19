@@ -30,7 +30,7 @@ ubus 服务 ──▶ u60-datad ──▶ /tmp/u60-datad/state.json ──▶ u6
 - 每个 `NN-name.html` 是一页，按文件名排序，可左右滑动切换。`menu.html` 是电源长按弹出的覆盖层，不计入翻页。
 - 所有页面用 `<link rel="stylesheet" href="style.css">` 共享一份样式（容器的 `import_css` 从 `/data/ui/` 读取）。
 - HTML 里的 `{{TOKEN}}` 在渲染前由 C 宿主替换成实时数据（见“模板令牌”）。
-- `href="act:xxx"` 的链接是**动作**：点击后 UI 不跳转，而是执行对应动作（翻页指示、揭示密码、切主题、切 ADB 等）。
+- `href="act:xxx"` 的链接是**动作**：点击后 UI 不跳转，而是执行对应动作（翻页指示、揭示密码、切主题、切 USB-C 模式等）。
 - 每次渲染都**重新读取**页面文件 = 改完 HTML 直接 `adb push` 到 `/data/ui` 即可热生效，不必重启进程。
 
 当前六页（左右滑动，底部圆点指示；`menu.html` 为电源长按覆盖层）。**页面按文件名编号排序**——v0.3.5 在信号页后插入短信页，其余顺延，所以编号从 v0.3.4 的 `02-wifi/03-lock/04-charts/05-system` 改成了下面这套（**改名是后面那个「插件更新残留」坑的根因**，见版本机制一节）：
@@ -40,7 +40,7 @@ ubus 服务 ──▶ u60-datad ──▶ /tmp/u60-datad/state.json ──▶ u6
 - **03-wifi.html — WiFi**：SSID、密码（默认打码）、加密；WiFi 总开关 / 2.4G / 5G / 节能(PSM) / NFC 开关；已连接设备列表（在线过滤）；DHCP 信息（地址池实时由 uci 算）。
 - **04-lock.html — 锁频**：选网方式分段控件 + 5G SA / 5G NSA / 4G 三张锁频卡（点开二级弹窗，频段芯片一行四个）+ 恢复默认。
 - **05-charts.html — 图表**：CPU 占用+温度 / 内存 / 网速 / 电池(功率+温度) 四张原生折线图。
-- **06-system.html — 系统/设置**：CPU/内存占用、温度、充电器/电池电压电流、版本号、IMEI(打码)；屏幕亮度滑条、自动息屏分段控件、锁屏 / 电源直供电(DPS) / ADB / 速率单位 / 主题 开关。可竖向滚动。
+- **06-system.html — 系统/设置**：CPU/内存占用、温度、充电器/电池电压电流、版本号、IMEI(打码)；屏幕亮度滑条、自动息屏分段控件、锁屏 / 电源直供电(DPS) / USB-C 供电方向 / USB 网络共享 / 速率单位 / 主题 开关。可竖向滚动。
 - **lockscreen.html — 锁屏键盘**：特殊页（同 `menu.html`，不计入翻页）。开启锁屏后由宿主在 `g_lock_state` 非 0 时全屏显示，4 位 PIN 数字键盘 + 删除键。状态栏（含未读短信信封图标）一并显示。详见下方「屏幕锁（PIN）」。
 - **menu.html — 电源菜单**：电源键长按弹出。三个竖排大圆形按键（关机/重启/取消），圆盘和图标原生绘制，下方文字标签，二次确认。详见下方「电源菜单（原生圆形按键）」。
 
@@ -279,6 +279,24 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 ### 电源菜单（原生圆形按键，v0.3.6）
 
 `menu.html` 三个竖排大圆按键。litehtml 画不了电源符号/圆箭头/X，所以 HTML 只给圆的占位框（`#pmc-off`/`#pmc-reboot`/`#pmc-cancel`）+ 文字标签 + 点击区，圆盘和图标全部由 `draw_power_menu()` 原生绘制（`render()` 里在 `path` 含 `menu.html` 时调用）：`pm_disc` 用 `fill_round_rect`(rad=半径)画实心圆，`pm_arc` 画环带（环形扇区多边形→`fill_poly`），`pm_line` 画粗线段（四边形）。关机=带顶部缺口的环+竖线（电源符号），重启=约 290° 环+箭头三角，取消=两条对角线 X。二次确认沿用 `g_pwr_confirm`：armed 时画白色光环 + 标签变「再按一次」。
+
+### USB-C 数据线模式调试记录（v0.3.7 撤回版）
+
+这轮 USB-C 菜单尝试过“插线弹窗，四个模式：给 U60 充电+共享网络、U60 给设备充电+共享网络、仅给 U60 充电、仅给设备充电”。结论是：功能还不能发布，下面是已经确认的事实和坑，后续继续做时先看这里。
+
+- 原厂前屏 UI 的 Type-C 菜单不是直接手搓 USB gadget。静态分析和运行时 trace 显示它主要调用 `ZTD_SetTypeCDeviceRole()`、`ZTD_SetTypeCSinkRole()`、`ZTD_SetPowerBankEnableState()`、`ZTD_GetTypeCRole()`；这些最终走 `zwrt_bsp.typec set` / `zwrt_bsp.powerbank set`。SDK 字符串里能看到 `DR_Swap`、`PR_Swap`、`source`、`sink`、`host`，但不要仅凭函数名把“DeviceRole”想当然映射成 `DR_Swap=device`；这个值需要继续用原厂 UI 实机 trace 确认。
+- 原厂开机/ADB 共存的稳定 USB composition 来自 `/tmp/usb.log`：先 `0x19d2:0x1225 mass_storage`，再 `0x19d2:0x1403 rndis_gsi`，最后 `0x19d2:0x1404 rndis_gsi,diag,serial,modem,mass_storage,ffs,dpl,qdss`。这是 ZTE legacy `/sbin/usb/compositions/usb_switch` 路径，最终把 `rndis_gsi`、`ffs.adb`、`diag/serial/modem/mass_storage/dpl/qdss` 挂到同一个 config。系统自带 Qualcomm configfs composition 另有 `9059`，描述是 `DIAG+ADB+RNDIS : ECM`，第一 config 挂 `gsi.rndis + ffs.diag + ffs.adb`，第二 config 挂 `gsi.ecm`。ADB 开关后续优先沿用这两条系统路径，不要手搓 ADB+ECM config。
+- `/sys/devices/virtual/android_usb/android0/usbnet_type` 在设备上是只读状态，不要指望直接写它切 `rndis/ecm/ncm`。`usb_switch` 会根据函数组合创建 `rndis0` 或 `ecm0`，但底层 `zte_ubus_bsp_usb` 仍会周期性报告当前 composition/usbnet 状态。
+- 设备内核有 `gsi.ecm`、`gsi.rndis`、`ncm.0` 等函数目录，说明 ECM/NCM 相关函数存在；但 `usb_switch` 脚本只内置了 `rndis_gsi`、`rndis_lagecy`、`ecm` 等 case，没有通用 NCM case。NCM 不能只凭目录存在就宣称可用，必须单独验证。
+- 已试过的危险/不稳定路径：手搓双 config、复制完整原厂 config 到第二 config、强行组合 ECM+ADB，都可能导致 Windows 不认、ADB 掉线、USB 服务反复重启，严重时设备重启。不要把这些实验方案直接发布。
+- 实测一次“ADB 开不起”根因是前面实验残留了空的 `/sys/kernel/config/usb_gadget/g1/configs/c.2`：`idProduct` 已是 `0x1404`、`ffs.adb` 也挂着，但 `UDC` 为空，手动 `echo a600000.dwc3 > UDC` 报 `Invalid argument`，`dmesg` 明确有 `Config c/2 of g1 needs at least one function` / `failed to start g1: -22`。恢复方式是只删除这个空配置再绑定：`rm -f .../configs/c.2/f*; rmdir .../configs/c.2/strings/*; rmdir .../configs/c.2; echo a600000.dwc3 > .../UDC`。恢复后 `zwrt_bsp.usb list` 变 `connect:1`，`android0/state=CONFIGURED`，Windows ADB 重新出现。**这个坑再次说明不要发布双 config 方案。**
+- 原厂“ECM/RNDIS 自适应”不要自己复刻 configfs，优先用系统自带 composition。电脑/ADB 调试可用 `/sbin/usb_composition 9059 n n y y`（`RNDIS + DIAG + ADB : ECM`），Windows 选 RNDIS 且 ADB 仍在。发布给前屏的“USB网络共享”不用 ADB，默认先切 Type-C `device/sink`，必要时先 `echo peripheral > /sys/bus/platform/devices/a600000.ssusb/mode`，再 `/sbin/usb_composition 9057 n n y n`（`RNDIS : ECM`）。实测在电脑上这是 ADB 关闭状态的 RNDIS 共享，`idProduct=0x9057` 且 `rndis0 carrier=1`；在手机上 `9057` 可能 `CONFIGURED` 但 `rndis0/ecm0` 都 `NO-CARRIER`，所以前屏命令会等待几秒检查 carrier，若 RNDIS/ECM 都没起来则自动降到纯 ECM：`/sbin/usb_composition 90B1 n n y n`。纯 ECM 实测 `ecm0` 变 `UP,LOWER_UP`、桥进 `br-lan`，并出现手机 DHCP 租约。注意 `90B1` 只是 fallback：如果换回电脑，前屏后台看到 `90B1` 无 carrier 会重新探测 `9057`，避免从手机切到电脑后粘在 ECM；如果还残留 `/tmp/u60-typec-source`，watchdog 会先试 `90B1`，但只有 `idProduct=0x90B1/0x90b1` 且 `ecm0 carrier=1` 才允许继续反向供电，不能把切换前残留的 `rndis0 carrier=1` 当成功。若 `90B1` 没有 `ecm0 carrier`，自动清掉 source 标记并回到 `9057/RNDIS`。若用户同时打开反向供电和网络共享，实测可用顺序是：暂停 USB 网络 watchdog，先在 `device/sink` 下用 `90B1` 等到 `ecm0 carrier=1`，再 `DR_Swap=device + PR_Swap=source`，再 `powerbank state=1`，再补一次 `DR_Swap=device`，最后切 `90B1`；成功状态为 `power_role=source`、`data_role=device`、`cc_attch_state=1`、`otg_powerbank_state=1`、`ecm0 carrier=1`。一旦底层 `/sys/bus/platform/devices/a600000.ssusb/mode` 卡成 `none`，直接切 composition 只会停在 `DISCONNECTED`，要先拉回 `peripheral`。
+- 系统自带 Qualcomm composition 里有 `9057`（RNDIS:ECM）、`9059`（DIAG+ADB+RNDIS:ECM）、`90B1`（ECM）。`9059` 能在设备侧创建 `rndis0 + ecm0`，但实测手机连接时仍可能 `NO-CARRIER`，且如果 Type-C 角色处在 `no_cc`/host 状态，手机不会识别 U60 网卡。后续如继续用 `9059`，必须从干净拔插开始验证 carrier、DHCP、手机侧网卡，而不是只看设备侧接口存在。
+- 反向供电（充电宝模式）和 USB device 网络是两件事：`powerbank state=1` / `PR_Swap=source` 只能证明 U60 在给对端供电，不代表 U60 已经作为 USB 网卡设备被对端枚举。调试时必须同时看 `zwrt_bsp.typec list`、`zwrt_bsp.usb list`、gadget `UDC/idVendor/idProduct/configs`、`ip -br link`、`brctl show br-lan`、`dmesg`。
+- 插充电宝也弹菜单是错误方向：不能把“充电连接”当成“数据线连接”。后续弹窗触发应优先看 Type-C/USB 数据连接状态（例如 `zwrt_bsp.usb connect/typec_cc`、`typec cc_attch_state` 和数据角色），不要仅靠 charger 事件；纯充电宝/纯电源不应该弹 USB 数据模式菜单。
+- 设置页手动打开 USB 菜单时，确认按钮不能被 USB 后台切换阻塞。UI 上应该先关闭弹窗/显示 toast，再后台执行 Type-C/USB 切换；弹窗打开期间暂停周期数据刷新和 USB 轮询，避免 litehtml 重排导致点击慢。
+- 弹窗交互要求：点击选项只高亮，不立即应用；点“确认”才执行，点“取消/稍后”只关闭。litehtml 触摸点击建议走 tap queue，不要只依赖 release 坐标；按钮不要使用贴底 absolute 布局，嵌入式点击命中容易失灵。
+- 320x480 屏幕上 USB 弹窗内容很容易被裁切。四个选项如果带长说明会自动换行撑爆高度；更稳的布局是四个较大的标题卡片 + 简短状态行 + 确认/取消，或去掉每项说明。不要用桌面浏览器盒模型估高度，必须实机看屏幕。
 
 ### 其它版本要点（v0.3.1 – v0.3.6）
 
