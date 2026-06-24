@@ -2,6 +2,47 @@
 
 记录时间：2026-06-24
 
+## v0.4.1 发布状态
+
+- 本次发布 tag：`v0.4.1`
+- 前端仓库：`33333s/u60pro-devui`
+- 本次为**devui 二进制修复版**：`devui` 升到 `0.4.1`，`ui` 保持 `0.4.0`
+
+## v0.4.1 本次发布内容
+
+这次发布围绕“关机插电仍会进入普通 DevUI，且界面无触控”做修正，重点如下：
+
+- `src/htmlmain.c`：新增 `g_charge_boot` 全屏充电启动分支，关机充电时直接渲染独立的电池充电页，不再进入普通页面流。
+- `src/htmlmain.c`：补充 `boot_is_charge_mode()`、`boot_has_external_power()` 等判定；若启动时检测到**有外部供电但触控初始化失败**，则强制切到充电页，覆盖实机上 `mode_power_on` / `silent_boot.mode=nonsilent` 也会出现在关机充电路径里的异常情况。
+- `src/htmlmain.c`：重画闪电图标，改成非自交多边形，修复“闪电只显示半个”的填充问题。
+- `scripts/start.sh`：不再把离线充电让回原厂 UI，而是改为记录 `boot-trace.log`，按 `mode_main_state` 区分正常开机 / 充电启动；充电启动仅拉起 `u60pro-devui`，不启动 `u60-datad`。
+- `CHANGELOG.md`、`README.md`、`docs/DEVELOPMENT.md`：同步更新到当前真实启动策略，并把 `version.json` 示例切到 `devui 0.4.1 / ui 0.4.0`。
+
+## v0.4.1 实机验证结论
+
+已在设备上实测确认：
+
+- 关机状态插电直接进入 DevUI 的全屏充电页。
+- 长按电源键不再落入原厂那个无触控的充电界面。
+- 新版闪电图标完整显示，不再只剩半个。
+- 设备当前运行的 `/data/u60pro/u60pro-devui` 已替换到新 MD5：`c2f76a29f5fa29af1eb76f41ff5b1907`。
+
+## v0.4.1 本次发布文件
+
+- `scripts/start.sh`
+- `src/htmlmain.c`
+- `version.json`
+- `README.md`
+- `CHANGELOG.md`
+- `docs/DEVELOPMENT.md`
+- `docs/LOCAL-CHANGES.md`
+
+## v0.4.1 Release 资产
+
+- `u60pro-devui-aarch64`
+- `ui.tar.gz`
+- `version.json`
+
 ## v0.4.0 发布状态
 
 - 本次发布 tag：`v0.4.0`

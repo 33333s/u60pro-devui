@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "devui": {
-    "version": "0.4.0",
+    "version": "0.4.1",
     "asset": "u60pro-devui-aarch64",
-    "notes": "信号页支持 ENDC/LTE-NSA 拆分显示与滚动，修复 NR 频段和 4G SCC 信号显示"
+    "notes": "关机充电改由 DevUI 全屏页接管，修复真实设备上插电仍落入无触控界面与闪电图标只显示半个的问题"
   },
   "ui": {
     "version": "0.4.0",
     "asset": "ui.tar.gz",
-    "notes": "第一页改为可滚动，ENDC/LTE-NSA 分卡展示，并补充 LTE 载波摘要与总频宽"
+    "notes": "第一页可滚动，ENDC/LTE-NSA 分卡展示，并补充 LTE 载波摘要与总频宽"
   }
 }

@@ -43,6 +43,7 @@ extern void        html_view_draw_text_contrast_px(int x, int y, const char *tex
                                                    int dr, int dg, int db, int lr, int lg, int lb, int a);
 extern int         html_view_render_tall(uint16_t *buf, const char *html, int bufh);
 extern int         html_view_render_overlay(const char *html);
+static void        maybe_dump_fb(drm_disp_t *d);
 
 #ifndef UI_DIR
 #define UI_DIR "/data/ui"
@@ -71,6 +72,7 @@ static int  g_charging;   /* set from snapshot; drives charge animation cadence 
 static int  g_stat_bat, g_stat_sig, g_stat_lowbat;
 static char g_stat_time[8], g_stat_speed[40], g_stat_gen[8];
 static unsigned g_phase;  /* animation tick (battery charge sweep) */
+static int  g_charge_boot; /* power-off charging boot: full-screen charging UI */
 static int  g_scroll;     /* current page vertical scroll offset */
 static int  g_page_h;     /* last rendered page content height */
 static int  g_autooff_ms; /* auto screen-off timeout, 0 = never */
@@ -110,6 +112,89 @@ static int mac_assoc(const char *mac)
     }
     lc[j] = 0;
     return strstr(g_assoc_macs, lc) != NULL;
+}
+
+static int read_long_path(const char *path, long *out)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+    long v;
+    int ok = fscanf(fp, "%ld", &v) == 1;
+    fclose(fp);
+    if (!ok) return 0;
+    *out = v;
+    return 1;
+}
+
+static int read_line_path(const char *path, char *out, size_t cap)
+{
+    FILE *fp = fopen(path, "r");
+    size_t n;
+    if (!fp || cap == 0) { if (fp) fclose(fp); return 0; }
+    if (!fgets(out, (int)cap, fp)) { fclose(fp); return 0; }
+    fclose(fp);
+    n = strcspn(out, "\r\n");
+    out[n] = 0;
+    return 1;
+}
+
+static int boot_is_nonsilent(void)
+{
+    char cmdline[2048];
+    FILE *fp = fopen("/proc/cmdline", "r");
+    if (!fp) return 0;
+    size_t n = fread(cmdline, 1, sizeof cmdline - 1, fp);
+    fclose(fp);
+    cmdline[n] = 0;
+    return strstr(cmdline, "silent_boot.mode=nonsilent") != NULL;
+}
+
+static int read_mode_main_state(char *out, size_t cap)
+{
+    FILE *fp = fopen("/etc/config/zwrt_zte_mc_tmp", "r");
+    char line[256];
+    if (!fp || cap == 0) { if (fp) fclose(fp); return 0; }
+    while (fgets(line, sizeof line, fp)) {
+        if (!strstr(line, "option mode_main_state")) continue;
+        char *q = strchr(line, '\'');
+        if (!q) continue;
+        char *e = strchr(q + 1, '\'');
+        if (!e) continue;
+        size_t n = (size_t)(e - (q + 1));
+        if (n >= cap) n = cap - 1;
+        memcpy(out, q + 1, n);
+        out[n] = 0;
+        fclose(fp);
+        return 1;
+    }
+    fclose(fp);
+    return 0;
+}
+
+static int boot_is_charge_mode(void)
+{
+    char mode[64];
+    if (read_mode_main_state(mode, sizeof mode)) {
+        if (!strncmp(mode, "mode_power_off_", 15)) return 1;
+        if (!strcmp(mode, "mode_power_on") || !strcmp(mode, "mode_power_on_charger")) return 0;
+    }
+    return !boot_is_nonsilent();
+}
+
+static int boot_has_external_power(void)
+{
+    long v;
+    char st[32];
+    if (read_long_path("/sys/class/power_supply/usb/online", &v) && v != 0) return 1;
+    if (read_long_path("/sys/class/power_supply/charger_zte/present_mbb", &v) && v != 0) return 1;
+    if (read_long_path("/sys/class/power_supply/type-c_zte/present_mbb", &v) && v != 0) return 1;
+    if (read_line_path("/sys/class/power_supply/battery/status", st, sizeof st)) {
+        if (!strcmp(st, "Charging") || !strcmp(st, "Full")) return 1;
+    }
+    if (read_long_path("/sys/class/power_supply/charger_zte/status_mbb", &v) && v == 1) return 1;
+    if (read_long_path("/sys/class/power_supply/battery_zte/status_mbb", &v) && v == 1) return 1;
+    if (read_long_path("/sys/class/power_supply/statistics_zte/batt_status", &v) && v == 1) return 1;
+    return 0;
 }
 
 /* ---- screen lock (4-digit PIN) ---- */
@@ -804,6 +889,129 @@ static void draw_native_statusbar(void)
                                         0x12, 0x25, 0x18,
                                         0xf2, 0xf5, 0xf7, 255);
     }
+}
+
+static void draw_center_text_px(int cx, int y, const char *text, int size, int bold,
+                                int r, int g, int b, int a)
+{
+    int x0, y0, x1, y1;
+    html_view_text_bounds_px(text, size, &x0, &y0, &x1, &y1);
+    html_view_draw_text_px(cx - (x1 - x0) / 2 - x0, y - y0, text, size, bold, r, g, b, a);
+}
+
+struct charge_boot_state {
+    int pct;
+    int charger;
+    int charging;
+    int full;
+    long chg_uv;
+    long chg_ua;
+};
+
+static void charge_boot_refresh(struct charge_boot_state *s)
+{
+    devui_data_t d;
+    char st[32];
+    long v;
+    memset(s, 0, sizeof *s);
+    s->pct = -1;
+
+    if (data_refresh(&d)) {
+        s->pct = d.bat_percent;
+        s->charger = d.charger_connect ? 1 : 0;
+        s->charging = (d.charger_connect || d.charging) ? 1 : 0;
+        s->chg_uv = d.chg_uv;
+        s->chg_ua = d.chg_ua;
+    }
+    if (s->pct < 0 && read_long_path("/sys/class/power_supply/battery/capacity", &v))
+        s->pct = (int)v;
+    if (read_line_path("/sys/class/power_supply/battery/status", st, sizeof st)) {
+        if (!strcmp(st, "Full")) s->full = 1;
+        if (!strcmp(st, "Charging")) s->charging = 1;
+    }
+    if (!s->charger && read_long_path("/sys/class/power_supply/usb/online", &v))
+        s->charger = v != 0;
+    if (!s->charger && read_long_path("/sys/class/power_supply/usb/present", &v))
+        s->charger = v != 0;
+    if (!s->charger && (s->charging || s->full)) s->charger = 1;
+    if (s->pct < 0) s->pct = 0;
+    if (s->pct > 100) s->pct = 100;
+}
+
+static void render_charge_boot(drm_disp_t *disp)
+{
+    struct charge_boot_state s;
+    const int W = disp->width, H = disp->height;
+    const int bx = 54, by = 130, bw = 208, bh = 104;
+    const int ix = bx + 7, iy = by + 7, iw = bw - 14, ih = bh - 14;
+    const int tipw = 10, tiph = 32;
+    int fill_w, pulse, fr, fg, fb;
+    char pct[8], line1[32], line2[64];
+
+    charge_boot_refresh(&s);
+    g_phase++;
+
+    html_view_fill_rect(0, 0, W, H, 0x09, 0x0d, 0x14, 255);
+    html_view_fill_round_rect(-28, 36, 154, 154, 72, 0x18, 0x24, 0x38, 88);
+    html_view_fill_round_rect(184, 282, 156, 156, 78, 0x0f, 0x2a, 0x22, 72);
+    draw_center_text_px(W / 2, 50, "关机充电", 20, 0, 0xd9, 0xdf, 0xea, 255);
+
+    html_view_fill_round_rect(bx, by, bw, bh, 26, 0xd9, 0xdf, 0xea, 255);
+    html_view_fill_round_rect(bx + 3, by + 3, bw - 6, bh - 6, 23, 0x0f, 0x14, 0x1d, 255);
+    html_view_fill_round_rect(bx + bw, by + (bh - tiph) / 2, tipw, tiph, 4, 0xd9, 0xdf, 0xea, 255);
+
+    pulse = (int)(g_phase % 24);
+    if (pulse > 12) pulse = 24 - pulse;
+    fr = 0x5e; fg = 0xc8; fb = 0x5e;
+    if (s.full) { fr = 0x58; fg = 0xb7; fb = 0xff; }
+    else if (s.pct <= 20 && !s.charger) { fr = 0xe8; fg = 0x53; fb = 0x3a; }
+    if (s.charger && !s.full) {
+        fr = clampi(fr + pulse * 3, 0, 255);
+        fg = clampi(fg + pulse * 2, 0, 255);
+        fb = clampi(fb + pulse * 3 / 2, 0, 255);
+    }
+    fill_w = iw * s.pct / 100;
+    if (fill_w <= 0 && s.charger) fill_w = 8;
+    if (fill_w > 0) {
+        html_view_fill_round_rect(ix, iy, fill_w, ih, 18, fr, fg, fb, 255);
+        if (s.charger && !s.full && fill_w > 20) {
+            int sheen = ix + ((int)(g_phase * 11) % (fill_w + 28)) - 28;
+            if (sheen < ix) sheen = ix;
+            if (sheen < ix + fill_w)
+                html_view_fill_rect(sheen, iy + 6, 18, ih - 12, 0xff, 0xff, 0xff, 42);
+        }
+    }
+
+    if (s.charger) {
+        int cx = W / 2, cy = by + bh / 2;
+        int xs[7] = { cx - 12, cx + 2, cx - 3, cx + 11, cx - 8, cx - 2, cx - 11 };
+        int ys[7] = { cy - 30, cy - 30, cy - 6, cy - 6, cy + 30, cy + 5, cy + 5 };
+        int shx[7], shy[7];
+        int br = s.full ? 0xf5 : 0xff;
+        int bg = s.full ? 0xfb : 0xf4;
+        int bb = s.full ? 0xff : 0xa7;
+        for (int i = 0; i < 7; i++) { shx[i] = xs[i] + 1; shy[i] = ys[i] + 2; }
+        html_view_fill_poly(shx, shy, 7, 0x05, 0x08, 0x0c, 120);
+        html_view_fill_poly(xs, ys, 7, br, bg, bb, 245);
+    }
+
+    snprintf(pct, sizeof pct, "%d%%", s.pct);
+    draw_center_text_px(W / 2, 274, pct, 46, 1, 0xf5, 0xf7, 0xfa, 255);
+
+    if (s.full) snprintf(line1, sizeof line1, "已充满");
+    else if (s.charging) snprintf(line1, sizeof line1, "充电中");
+    else if (s.charger) snprintf(line1, sizeof line1, "已接入电源");
+    else snprintf(line1, sizeof line1, "等待充电");
+    draw_center_text_px(W / 2, 330, line1, 20, 0, 0x9f, 0xd6, 0xb5, 255);
+
+    if (s.chg_uv > 0 && s.chg_ua > 0)
+        snprintf(line2, sizeof line2, "输入 %.1fV · %ldmA", s.chg_uv / 1000000.0, s.chg_ua / 1000);
+    else
+        snprintf(line2, sizeof line2, "按电源键可熄屏/亮屏");
+    draw_center_text_px(W / 2, 364, line2, 14, 0, 0x8e, 0x98, 0xa6, 255);
+
+    drm_disp_dirty(disp, 0, 0, W - 1, H - 1);
+    maybe_dump_fb(disp);
 }
 
 static int  g_modal;           /* 0 none, 1 SA, 2 NSA, 3 LTE (second-level dialog) */
@@ -1690,7 +1898,8 @@ static void screen_off(drm_disp_t *d)
  * transient invisibly, then fades the backlight up from 0. */
 static void screen_on(drm_disp_t *d, const char *path)
 {
-    render(d, path);       /* backlight still 0 from screen_off */
+    if (g_charge_boot) render_charge_boot(d);
+    else               render(d, path);       /* backlight still 0 from screen_off */
     for (int k = 0; k < 5; k++) {            /* ~175ms of dark refresh */
         usleep(35000);
         drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
@@ -1703,17 +1912,26 @@ int main(void)
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
 
-    scan_pages();
-    if (g_npages == 0) { fprintf(stderr, "no pages in %s\n", UI_DIR); return 1; }
+    g_charge_boot = boot_is_charge_mode();
+    if (!g_charge_boot) {
+        scan_pages();
+        if (g_npages == 0) { fprintf(stderr, "no pages in %s\n", UI_DIR); return 1; }
+    }
 
     drm_disp_t disp;
     if (drm_disp_init(&disp) != 0) { fprintf(stderr, "drm init failed\n"); return 1; }
     html_view_init(disp.fb, disp.width, disp.height, disp.pitch_px, 1, UI_FONT);
     html_view_set_uidir(UI_DIR);
 
-    touch_input_t touch; touch_input_init(&touch, disp.width, disp.height);
+    touch_input_t touch;
+    int touch_ok = touch_input_init(&touch, disp.width, disp.height) == 0;
     key_input_t key;     key_input_init(&key);
     backlight_init();
+
+    if (!g_charge_boot && !touch_ok && boot_has_external_power()) {
+        fprintf(stderr, "boot: forcing charge UI (touch missing, external power present)\n");
+        g_charge_boot = 1;
+    }
 
     int menu = 0, prev_press = 0, prev_lock = 0, was_on = 1, down_x = 0, down_y = 0;
     int dragging = 0, drag_dir = 0, drag_target = 0;
@@ -1732,12 +1950,16 @@ int main(void)
 
     load_conf();                          /* restore persisted UI settings */
     if (g_saved_bright >= 0) backlight_set(g_saved_bright);   /* restore brightness */
-    load_pin();
-    wifi_aux_refresh();                   /* prime page-2 switch states */
-    if (usb_pid_is("9057") || usb_pid_is("90b1") || usb_pid_is("90B1"))
-        usb_net_watchdog_start();
-    if (lock_enabled()) enter_lock(0);   /* boot straight into the unlock pad */
-    render(&disp, CUR_PATH);
+    if (!g_charge_boot) {
+        load_pin();
+        wifi_aux_refresh();                   /* prime page-2 switch states */
+        if (usb_pid_is("9057") || usb_pid_is("90b1") || usb_pid_is("90B1"))
+            usb_net_watchdog_start();
+        if (lock_enabled()) enter_lock(0);   /* boot straight into the unlock pad */
+        render(&disp, CUR_PATH);
+    } else {
+        render_charge_boot(&disp);
+    }
     uint32_t last_data = millis(), last_act = millis();
 
     while (g_run) {
@@ -1750,18 +1972,30 @@ int main(void)
         if (ev == KEY_EV_SHORT) {
             if (backlight_is_on()) {
                 screen_off(&disp);
-                if (lock_enabled()) enter_lock(0);   /* power key locks the screen */
+                if (!g_charge_boot && lock_enabled()) enter_lock(0);   /* power key locks the screen */
             } else {
-                screen_on(&disp, CUR_PATH);
+                screen_on(&disp, g_charge_boot ? NULL : CUR_PATH);
             }
         } else if (ev == KEY_EV_LONG) {
-            if (g_lock_state) {                       /* no power menu while locked */
+            if (g_charge_boot) {
+                if (!backlight_is_on()) screen_on(&disp, NULL);
+            } else if (g_lock_state) {               /* no power menu while locked */
                 if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
             } else {
                 menu = !menu; g_pwr_confirm = 0;
                 if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
                 else need_render = 1;
             }
+        }
+
+        if (g_charge_boot) {
+            touch_input_clear_taps(&touch);
+            prev_press = 0;
+            if (now - last_data >= 120) { need_render = 1; last_data = now; }
+            if (need_render && backlight_is_on()) render_charge_boot(&disp);
+            was_on = backlight_is_on();
+            if (!animating) usleep(backlight_is_on() ? IDLE_SLEEP_ON_US : IDLE_SLEEP_OFF_US);
+            continue;
         }
 
         /* touch: follow-finger swipe (pages) / drag (scroll) + tap actions */

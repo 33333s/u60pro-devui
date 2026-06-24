@@ -227,13 +227,23 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 
 开机时原厂 UI 可能先起来，rc.local 较晚由 `start.sh` 停掉它再接管，会有短暂切换。
 
-**必须保留离线充电保护。** 关机状态插电时，原厂 `zte_topsw_devui` 会进入充电动画（`ANIM_MODE_POWER_OFF_CHARGER`）。DevUI 自启不能无条件停原厂 UI；`start.sh` 先检查 `/proc/cmdline`，只有明确包含 `silent_boot.mode=nonsilent` 的正常开机才接管屏幕。否则直接退出，把充电动画留给原厂。插件如果不用 `start.sh`、而是在 `rc.local` 内联启动 datad/devui，也必须加同样 guard。已实测：关机状态插电进入原厂充电画面；正常开机进入 DevUI。
+**离线充电现在改为 DevUI 自己接管。** 在这版固件上，“关机插电”并不总会稳定暴露成 `mode_power_off_*` 或缺失 `silent_boot.mode=nonsilent`；实机日志里出现过**明明是关机充电，却同时表现为 `mode_power_on` + `silent_boot.mode=nonsilent`** 的情况，导致单靠启动脚本 guard 无法可靠把屏幕留给原厂，而且落进去的普通 DevUI 还是无触控的。
+
+当前策略改为：
+
+- `start.sh` 始终停原厂 `zte_topsw_devui` 并拉起 `u60pro-devui`。
+- 启动脚本优先读 `/etc/config/zwrt_zte_mc_tmp` 的 `mode_main_state`；明确是 `mode_power_off_*` 时按**充电启动**处理，只启动 `u60pro-devui`，不拉 `u60-datad`。
+- `u60pro-devui` 内部再做一层兜底：若启动时**外部供电存在**且**触控初始化失败**，则强制切到自己的全屏充电页，避免误入普通页面。
+- `start.sh` 会把 `mode_main_state`、`reboot_reason_code`、`/proc/cmdline`、电源状态和输入设备枚举写进 `/data/u60pro/boot-trace.log`，用于继续比对不同开机路径。
+
+已实测：关机状态插电直接进入 DevUI 的全屏充电页；正常开机仍进入普通 DevUI。
 
 ```sh
-cmdline=$(cat /proc/cmdline 2>/dev/null)
-case "$cmdline" in
-  *silent_boot.mode=nonsilent*) echo "start datad/devui here" ;;
-  *) echo u60pro_devui_skip_non_nonsilent_boot >/tmp/u60pro-devui-boot-skip.log ;;
+mode_main_state="$(awk -F\"'\" '/option mode_main_state/ { print $2; exit }' /etc/config/zwrt_zte_mc_tmp 2>/dev/null)"
+case "$mode_main_state" in
+  mode_power_off_*) echo "charge boot: start devui only" ;;
+  mode_power_on|mode_power_on_charger) echo "normal boot: start datad + devui" ;;
+  *) echo "fallback to cmdline/touch+power heuristics" ;;
 esac
 ```
 
@@ -333,7 +343,7 @@ esac
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "0.4.0", "asset": "u60pro-devui-aarch64" },
+  "devui": { "version": "0.4.1", "asset": "u60pro-devui-aarch64" },
   "ui":    { "version": "0.4.0", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
 { "schema": 1, "datad": { "version": "0.4.0", "asset": "u60-datad-aarch64" } }
