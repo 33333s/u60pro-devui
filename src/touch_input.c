@@ -201,6 +201,14 @@ void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed)
                 t->press_x = sx; t->press_y = sy; t->in_tap = 1;
             } else if (was && !new_press && t->in_tap) {   /* release: latch a tap if it barely moved */
                 int dx = sx - t->press_x, dy = sy - t->press_y;
+                int ns = (t->strokeq_tail + 1) % 8;
+                if (ns != t->strokeq_head) {
+                    t->strokeq_x0[t->strokeq_tail] = t->press_x;
+                    t->strokeq_y0[t->strokeq_tail] = t->press_y;
+                    t->strokeq_x1[t->strokeq_tail] = sx;
+                    t->strokeq_y1[t->strokeq_tail] = sy;
+                    t->strokeq_tail = ns;
+                }
                 if (dx * dx + dy * dy <= 14 * 14) {
                     int nx = (t->tapq_tail + 1) % 8;
                     if (nx != t->tapq_head) {      /* enqueue (drop if full) */
@@ -229,7 +237,23 @@ int touch_input_take_tap(touch_input_t *t, int *x, int *y)
     return 1;
 }
 
-void touch_input_clear_taps(touch_input_t *t) { t->tapq_head = t->tapq_tail = 0; t->in_tap = 0; }
+int touch_input_take_stroke(touch_input_t *t, int *x0, int *y0, int *x1, int *y1)
+{
+    if (t->strokeq_head == t->strokeq_tail) return 0;
+    *x0 = t->strokeq_x0[t->strokeq_head];
+    *y0 = t->strokeq_y0[t->strokeq_head];
+    *x1 = t->strokeq_x1[t->strokeq_head];
+    *y1 = t->strokeq_y1[t->strokeq_head];
+    t->strokeq_head = (t->strokeq_head + 1) % 8;
+    return 1;
+}
+
+void touch_input_clear_taps(touch_input_t *t)
+{
+    t->tapq_head = t->tapq_tail = 0;
+    t->strokeq_head = t->strokeq_tail = 0;
+    t->in_tap = 0;
+}
 
 unsigned long touch_input_report_count(void) { return s_report_count; }
 

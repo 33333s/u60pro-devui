@@ -12,6 +12,7 @@
 #include "touch_input.h"
 #include "key_input.h"
 #include "backlight.h"
+#include "devui_ext.h"
 
 #include <dirent.h>
 #include <math.h>
@@ -1636,6 +1637,12 @@ static int build_kv(struct kv *t)
     return i;
 }
 
+static void refresh_status_cache(void)
+{
+    struct kv t[160];
+    (void)build_kv(t);
+}
+
 /* Build the data-filled HTML for a page (returns a static buffer). */
 static const char *page_html(const char *path)
 {
@@ -1768,6 +1775,15 @@ static void render(drm_disp_t *disp, const char *path)
     maybe_dump_fb(disp);
 }
 
+static void render_ext_view(drm_disp_t *disp, devui_ext_t *ext)
+{
+    devui_ext_render(ext, disp);
+    draw_native_statusbar();
+    draw_sms_icon();
+    drm_disp_dirty(disp, 0, 0, disp->width - 1, disp->height - 1);
+    maybe_dump_fb(disp);
+}
+
 /* Offscreen page bitmaps (logical, no rotation) for slide transitions.
  * During a drag: g_bufA = left page, g_bufB = right page (windowed by offset o:
  * window column x shows [left|right][x+o], o in 0..W). */
@@ -1776,9 +1792,12 @@ static uint16_t g_bufA[320 * 480], g_bufB[320 * 480];
 /* Status bar stays pinned during a swipe (only the content below slides), so
  * the native status bar, drawn at a fixed spot, lines up with it. g_sbar_src points
  * at the page buffer rendered at scroll 0 (its top rows hold the status bar). */
-#define SBAR_H 26   /* matches .sbar height in style.css */
+#define SBAR_H DEVUI_EXT_STATUSBAR_H
 #define DRAG_START_PX 10
 #define DRAG_CANCEL_PX 22
+#define EXT_BACK_EDGE_PX 24
+#define EXT_BACK_COMMIT_PX 56
+#define EXT_BACK_MAX_DY 44
 #define IDLE_SLEEP_ON_US 8000
 #define IDLE_SLEEP_OFF_US 30000
 static const uint16_t *g_sbar_src;
@@ -1907,6 +1926,16 @@ static void screen_on(drm_disp_t *d, const char *path)
     backlight_fade_on();   /* 0 -> user level */
 }
 
+static void screen_on_ext(drm_disp_t *d, devui_ext_t *ext)
+{
+    render_ext_view(d, ext);                  /* backlight still 0 from screen_off */
+    for (int k = 0; k < 5; k++) {
+        usleep(35000);
+        drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
+    }
+    backlight_fade_on();
+}
+
 int main(void)
 {
     signal(SIGINT, on_sig);
@@ -1940,6 +1969,14 @@ int main(void)
     int segging = 0, seg_x = 0, seg_y = 0, seg_w = 0, seg_h = 0;   /* segmented control drag */
     int seg_which = 0, seg_n = 4;   /* 1 = net mode (4 cells), 2 = auto-off (6) */
     const int W = disp.width, H = disp.height;
+    devui_ext_t ext;
+    memset(&ext, 0, sizeof ext);
+    ext.srv_fd = -1;
+    int ext_ok = 0;
+    if (!g_charge_boot) {
+        ext_ok = devui_ext_init(&ext, W, H) == 0;
+        if (!ext_ok) fprintf(stderr, "warning: external display socket disabled\n");
+    }
     char menu_path[300], lock_path[300];
     snprintf(menu_path, sizeof menu_path, "%s/menu.html", UI_DIR);
     snprintf(lock_path, sizeof lock_path, "%s/lockscreen.html", UI_DIR);
@@ -1966,18 +2003,50 @@ int main(void)
         uint32_t now = millis();
         int need_render = 0, animating = 0;
 
+        if (ext_ok && g_lock_state && devui_ext_active(&ext)) {
+            devui_ext_deactivate(&ext);
+            touch_input_clear_taps(&touch);
+            need_render = 1;
+        }
+        if (ext_ok && !g_lock_state) {
+            int ext_changed = devui_ext_poll(&ext, now);
+            if (ext_changed) {
+                dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0;
+                menu = 0; g_modal = 0; g_sms_open = -1;
+                touch_input_clear_taps(&touch);
+                if (devui_ext_active(&ext)) {
+                    refresh_status_cache();
+                    if (backlight_is_on()) {
+                        render_ext_view(&disp, &ext);
+                        animating = 1;
+                    }
+                } else {
+                    need_render = 1;
+                }
+            }
+        }
+
         /* power key */
         int ev = key_input_poll(&key, now);
         if (ev == KEY_EV_SHORT || ev == KEY_EV_LONG) last_act = now;
         if (ev == KEY_EV_SHORT) {
             if (backlight_is_on()) {
                 screen_off(&disp);
-                if (!g_charge_boot && lock_enabled()) enter_lock(0);   /* power key locks the screen */
+                if (!g_charge_boot && lock_enabled()) {
+                    if (ext_ok) devui_ext_deactivate(&ext);
+                    enter_lock(0);   /* power key locks the screen */
+                }
             } else {
-                screen_on(&disp, g_charge_boot ? NULL : CUR_PATH);
+                if (ext_ok && devui_ext_active(&ext) && !g_lock_state)
+                    screen_on_ext(&disp, &ext);
+                else
+                    screen_on(&disp, g_charge_boot ? NULL : CUR_PATH);
             }
         } else if (ev == KEY_EV_LONG) {
-            if (g_charge_boot) {
+            if (ext_ok && devui_ext_active(&ext) && !g_lock_state) {
+                if (!backlight_is_on()) screen_on_ext(&disp, &ext);
+                else { devui_ext_deactivate(&ext); need_render = 1; }
+            } else if (g_charge_boot) {
                 if (!backlight_is_on()) screen_on(&disp, NULL);
             } else if (g_lock_state) {               /* no power menu while locked */
                 if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
@@ -2059,6 +2128,30 @@ int main(void)
                     g_pin_entry[0] = 0; g_lock_err = 0; g_lock_state = 0; need_render = 1;
                 }
             }
+        } else if (ext_ok && devui_ext_active(&ext)) {
+            if (!pressed) {
+                int sx, sy, ex, ey;
+                while (devui_ext_active(&ext) &&
+                       touch_input_take_stroke(&touch, &sx, &sy, &ex, &ey)) {
+                    int dx = ex - sx, dy = ey - sy;
+                    int ady = dy < 0 ? -dy : dy;
+                    if (sx <= EXT_BACK_EDGE_PX && sy >= ext.content_y &&
+                        dx > EXT_BACK_COMMIT_PX && ady <= EXT_BACK_MAX_DY) {
+                        devui_ext_deactivate(&ext);
+                        touch_input_clear_taps(&touch);
+                        need_render = 1;
+                        break;
+                    }
+                }
+            }
+
+            if (devui_ext_active(&ext) && !pressed) {
+                int tx, ty, cx, cy;
+                while (touch_input_take_tap(&touch, &tx, &ty))
+                    if (devui_ext_content_point(&ext, tx, ty, &cx, &cy))
+                        devui_ext_handle_tap(&ext, cx, cy, now);
+            }
+            dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0;
         } else if (g_sms_open >= 0) {
             /* SMS detail dialog: any tap (close button or outside) dismisses */
             if (!pressed && prev_press) { g_sms_open = -1; need_render = 1; }
@@ -2413,20 +2506,34 @@ action_done:
         /* auto screen-off after the configured idle timeout (locks if enabled) */
         if (g_autooff_ms > 0 && backlight_is_on() && now - last_act >= (uint32_t)g_autooff_ms) {
             screen_off(&disp);
-            if (lock_enabled()) enter_lock(0);
+            if (lock_enabled()) {
+                if (ext_ok) devui_ext_deactivate(&ext);
+                enter_lock(0);
+            }
         }
 
         /* periodic data refresh (not mid-drag), once per second */
-        if (!dragging && now - last_data >= 1000) { need_render = 1; last_data = now; }
+        if (!dragging && now - last_data >= 1000) {
+            if (ext_ok && devui_ext_active(&ext) && !g_lock_state)
+                refresh_status_cache();
+            need_render = 1;
+            last_data = now;
+        }
 
         /* reconcile page-2 WiFi switch states from uci/iw on a slow throttle */
         if (!dragging && now - g_wifi_aux_at >= 4000) { g_wifi_aux_at = now; wifi_aux_refresh(); }
 
-        if (need_render && backlight_is_on()) render(&disp, CUR_PATH);
+        if (need_render && backlight_is_on()) {
+            if (ext_ok && devui_ext_active(&ext) && !g_lock_state)
+                render_ext_view(&disp, &ext);
+            else
+                render(&disp, CUR_PATH);
+        }
         was_on = backlight_is_on();   /* track for next frame's wake-touch discard */
         if (!animating) usleep(backlight_is_on() ? IDLE_SLEEP_ON_US : IDLE_SLEEP_OFF_US);
     }
 
+    if (ext_ok) devui_ext_close(&ext);
     drm_disp_close(&disp);
     return 0;
 }

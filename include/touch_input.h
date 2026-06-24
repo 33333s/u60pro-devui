@@ -28,6 +28,8 @@ typedef struct {
     int press_x, press_y, in_tap;
     int tapq_x[8], tapq_y[8];
     int tapq_head, tapq_tail;
+    int strokeq_x0[8], strokeq_y0[8], strokeq_x1[8], strokeq_y1[8];
+    int strokeq_head, strokeq_tail;
 } touch_input_t;
 
 /* Probe and open a touch device scaled to screen_w x screen_h. 0 on success. */
@@ -42,7 +44,12 @@ void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed);
  * apply every tap that landed during a blocking render. */
 int  touch_input_take_tap(touch_input_t *t, int *x, int *y);
 
-/* Drop any queued taps (call when switching context, e.g. entering a pad). */
+/* Pop the oldest completed stroke (press->release), returning start/end points.
+ * This lets callers recognize gestures even if the full drag lands between two
+ * polling iterations. */
+int  touch_input_take_stroke(touch_input_t *t, int *x0, int *y0, int *x1, int *y1);
+
+/* Drop any queued taps/strokes (call when switching context, e.g. entering a pad). */
 void touch_input_clear_taps(touch_input_t *t);
 
 /* Total SYN_REPORT samples seen (for measuring touch report rate). */

@@ -336,10 +336,19 @@ extern "C" int html_view_render_overlay(const char *html)
 /* Render into a plain logical W*H RGB565 buffer (no rotation) for animations. */
 extern "C" int html_view_render_to(uint16_t *buf, const char *html)
 {
-    uint16_t *sfb = g_fb; int sp = g_pitch_px, sr = g_rotate;
-    g_fb = buf; g_pitch_px = g_w; g_rotate = 0;
+    uint16_t *sfb = g_fb; int sw = g_w, sh = g_h, sp = g_pitch_px, sr = g_rotate, ssc = g_scroll_y;
+    g_fb = buf; g_w = sw; g_h = sh; g_pitch_px = sw; g_rotate = 0; g_scroll_y = 0;
     int hh = html_view_render_html(html);
-    g_fb = sfb; g_pitch_px = sp; g_rotate = sr;
+    g_fb = sfb; g_w = sw; g_h = sh; g_pitch_px = sp; g_rotate = sr; g_scroll_y = ssc;
+    return hh;
+}
+
+extern "C" int html_view_render_to_size(uint16_t *buf, int w, int h, const char *html)
+{
+    uint16_t *sfb = g_fb; int sw = g_w, sh = g_h, sp = g_pitch_px, sr = g_rotate, ssc = g_scroll_y;
+    g_fb = buf; g_w = w; g_h = h; g_pitch_px = w; g_rotate = 0; g_scroll_y = 0;
+    int hh = html_view_render_html(html);
+    g_fb = sfb; g_w = sw; g_h = sh; g_pitch_px = sp; g_rotate = sr; g_scroll_y = ssc;
     return hh;
 }
 

@@ -26,6 +26,7 @@
 - **显示**：[src/drm_disp.c](src/drm_disp.c) 打开 `/dev/dri/card0`，运行时枚举面板/crtc/mode，映射 RGB565 dumb framebuffer，通过 `DIRTYFB` 提交。
 - **触摸**：[src/touch_input.c](src/touch_input.c) 自动探测触摸屏并缩放坐标；电源键短按息屏、长按菜单。
 - **界面**：`/data/ui` 下每个 `NN-名字.html` 一页，`style.css` 共享样式。HTML 里的 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
+- **外部接口**：内建本地 `DEVUI-IPC`，保留原生状态栏；其他进程可直接把内容投到状态栏下方的内容区，并通过点击事件日志驱动自己的交互逻辑。
 - **后端**：配套 `u60-datad`（[github.com/33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)），轮询 `ubus` 并写出 `/tmp/u60-datad/state.json`，UI 只读快照，自己从不碰 ubus。
 
 自带的示例界面（[ui/](ui/)）含六页：信号、短信、WiFi、选网/锁频、图表、系统设置。系统页包含亮度/息屏/锁屏、USB-C 供电方向、USB 网络共享、速率单位和主题等开关。
@@ -88,6 +89,7 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 
 - [docs/UI-GUIDE.md](docs/UI-GUIDE.md) — **自定义界面教程**（令牌、动作、限制、示例）
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — 架构、构建、数据模型、踩坑记录
+- [docs/DEVUI-IPC.md](docs/DEVUI-IPC.md) — DevUI 内建外部画面接口（像素帧、图片、绘图命令、文字）
 - [docs/HARDWARE.md](docs/HARDWARE.md) — 设备硬件接口
 - [CHANGELOG.md](CHANGELOG.md) — 更新日志
 

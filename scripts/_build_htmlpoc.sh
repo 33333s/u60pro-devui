@@ -11,14 +11,14 @@ cd "$ROOT"
 
 [ -f "$LH/lib/liblitehtml.a" ] || { echo "build liblitehtml first (_build_litehtml.sh)"; exit 1; }
 
-for f in drm_disp json data touch_input key_input backlight htmlmain; do
-    "$CC" -O2 -D_GNU_SOURCE -Iinclude -c "src/$f.c" -o "/tmp/$f.o"
+for f in drm_disp json data touch_input key_input backlight devui_ext htmlmain; do
+    "$CC" -O2 -D_GNU_SOURCE -Iinclude -Ithird_party/stb -c "src/$f.c" -o "/tmp/$f.o"
 done
 "$CXX" -O2 -std=c++17 -w -Iinclude -I"$FT/include" \
        -I"$LH/include" -I"$LH/include/litehtml" -c src/html_view.cpp -o /tmp/html_view.o
 
 "$CXX" -static /tmp/drm_disp.o /tmp/json.o /tmp/data.o /tmp/touch_input.o \
-       /tmp/key_input.o /tmp/backlight.o /tmp/htmlmain.o /tmp/html_view.o \
+       /tmp/key_input.o /tmp/backlight.o /tmp/devui_ext.o /tmp/htmlmain.o /tmp/html_view.o \
        "$LH/lib/liblitehtml.a" "$FT/lib/libfreetype.a" -lm -o html-poc
 
 "$TC/aarch64-linux-strip" -o html-poc.stripped html-poc
