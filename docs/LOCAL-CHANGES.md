@@ -68,3 +68,9 @@
 
 - 管理插件继续读取两个仓库各自的 `latest release / version.json`。
 - 如果后续外部网盘需要分发，直接镜像 GitHub release 的同名文件即可，不再单独维护仓库内同步脚本或额外文档步骤。
+
+## v0.4.0 发版后补提交（未重发 release）
+
+- `zwrt-datad/src/main.c`：修复 `AMBR` 读空。实机日志中 `qci` 会比 `apn_ambr_*` 更频繁刷新，单纯读统一尾窗时，`AMBR` 很容易被其它新日志挤出窗口；现改为分别读取**最后一条 `qci`** 和 **最后一条 `apn_ambr_*`** 日志，再缓存最后已知值。实机已验证 `state.json` 恢复输出 `ambr_dl=20008.641`、`ambr_ul=10008.640`。
+- `u60pro-devui/docs/DEVELOPMENT.md`：补充 GitHub release 打包约束。`ui.tar.gz` 必须保持与旧版一致的平铺结构，不能混入 `ui/` 目录、`./` 前缀或 macOS `._*` 条目。
+- GitHub 上的 `u60pro-devui v0.4.0` release 资产已原位替换为干净的 `ui.tar.gz`，仅修正打包结构，不重新发新 tag / 新 release。

@@ -89,7 +89,7 @@ ubus 服务 ──▶ u60-datad ──▶ /tmp/u60-datad/state.json ──▶ u6
 - `nfc`：`switch`（`zwrt_nfc zwrt_nfc_wifi_get`，1=开）。
 - `dhcp`：网关 `ip`、地址池 `start`/`limit`、`leasetime`（uci）。
 - `traffic`：实时会话上下行速率与字节数（`zwrt_data get_wwandst`，参数须 `cid:1,type:1`）。
-- `qos`：`qci`、`ambr_dl`/`ambr_ul`（Mbps）解析自 `/data/logfs/key.log` 的 `[DATA]` 行；外加 `usb_mode`（`zwrt_bsp.usb list`）。**注意**：qci/ambr 是偶发的 PDU 建立日志，会随日志增长滚出窗口——后端读较大尾窗（6000 行）**并缓存最后已知值**。
+- `qos`：`qci`、`ambr_dl`/`ambr_ul`（Mbps）解析自 `/data/logfs/key.log` 的 `[DATA]` 行；外加 `usb_mode`（`zwrt_bsp.usb list`）。**注意**：qci/ambr 是偶发的 PDU 建立日志；其中 `ambr` 往往比 `qci` 更稀疏。后端会分别读取**最后一条 `qci`** 和 **最后一条 `apn_ambr_*`** 相关日志，并缓存最后已知值，避免 `ambr` 被统一尾窗里的其它日志挤掉。
 - `system`：运行时间、CPU 温度、`cpu_usage`（/proc/stat 差值）、`mem_used_pct` + `mem_total`/`mem_avail`、`sw_version`/`imei`（一次性）、型号、固件。
 
 这份 JSON 是后端与 UI 之间的接口契约（完整字段见 `u60-datad/docs/STATE_SCHEMA.md`）。字段增删改名时，后端 schema 和 UI 的 `data.c` / 令牌逻辑必须一起改。
@@ -353,6 +353,7 @@ esac
 
 **发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`；改了 `ui/*.html` / `style.css` 这类界面文件就也要升 `ui`）→ 传 `version.json` + 资产到 GitHub release。若你在仓库外另做镜像，直接镜像 GitHub release 的同名文件即可；本仓库不再维护手动网盘同步脚本。
 > **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
+> **坑：`ui.tar.gz` 的打包结构必须和旧版保持一致。** 设备侧更新逻辑默认期望的是“**顶层平铺页面文件**”的 tar 包：只有 `01-signal.html`、`02-sms.html`、…、`style.css`，**没有** `ui/` 目录、**没有** `./` 前缀、**没有** macOS 产生的 `._*` AppleDouble 文件。用 macOS 自带打包工具直接打整个目录时，容易把这些额外条目也塞进去，导致 UI 更新失败。打包时应显式关闭资源叉（如 `COPYFILE_DISABLE=1`），并直接列出页面文件名生成 tar。
 
 ## 仓库约定
 
