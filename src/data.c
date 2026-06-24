@@ -36,6 +36,8 @@ static char *obj_end(char *p)
 
 int data_refresh(devui_data_t *d)
 {
+    memset(d, 0, sizeof *d);
+    d->cpu_usage = -1;
     d->valid = 0;
 
     FILE *fp = fopen(DEVUI_STATE_FILE, "r");
@@ -52,12 +54,14 @@ int data_refresh(devui_data_t *d)
         getstr(sec, "type", d->net_type, sizeof d->net_type);
         getstr(sec, "operator", d->operator_name, sizeof d->operator_name);
         getstr(sec, "band", d->band, sizeof d->band);
+        getstr(sec, "nr_band", d->nr_band, sizeof d->nr_band);
         getstr(sec, "nr_snr", d->nr_snr, sizeof d->nr_snr);
         getstr(sec, "wan_status", d->wan_status, sizeof d->wan_status);
         getstr(sec, "lte_snr", d->lte_snr, sizeof d->lte_snr);
         getstr(sec, "nr_bw", d->nr_bw, sizeof d->nr_bw);
         getstr(sec, "nrca", d->nrca, sizeof d->nrca);
         getstr(sec, "lteca", d->lteca, sizeof d->lteca);
+        getstr(sec, "ltecasig", d->ltecasig, sizeof d->ltecasig);
         getstr(sec, "net_select", d->net_select, sizeof d->net_select);
         getstr(sec, "sa_bands", d->sa_bands, sizeof d->sa_bands);
         getstr(sec, "nsa_bands", d->nsa_bands, sizeof d->nsa_bands);

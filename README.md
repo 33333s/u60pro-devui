@@ -46,7 +46,7 @@ bash scripts/_build_litehtml.sh
 bash scripts/_build_htmlpoc.sh
 ```
 
-产物是单个**静态 AArch64 ELF**（strip 后约 2.3M），无动态依赖，直接拷到设备运行。
+产物是单个**静态 AArch64 ELF**，无动态依赖，直接拷到设备运行。
 
 > 也可以直接到 [Releases](https://github.com/33333s/u60pro-devui/releases) 下载编译好的二进制。
 
@@ -76,13 +76,13 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 ```jsonc
 // 本仓库 version.json
 { "schema": 1,
-  "devui": { "version": "0.3.3", "asset": "u60pro-devui-aarch64" },
-  "ui":    { "version": "0.3.3", "asset": "ui.tar.gz" } }
+  "devui": { "version": "0.4.0", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.4.0", "asset": "ui.tar.gz" } }
 ```
 
-插件读各项目 **latest release** 的 `version.json`，与本地记录比对，支持**单独更新** datad / devui / ui 或一键更新全部；更新源可选 **GitHub 直连** 或 **网盘镜像**（镜像须保留相同文件名 `u60pro-devui-aarch64` / `ui.tar.gz` / `version.json`）。
+插件读各项目 **latest release** 的 `version.json`，与本地记录比对，支持**单独更新** datad / devui / ui 或一键更新全部。默认更新源就是 GitHub release；如果你自己在外部做镜像，只要保持 `u60pro-devui-aarch64` / `ui.tar.gz` / `version.json` 这些文件名不变即可，本仓库不再维护单独的网盘同步流程。
 
-**发版**：改 `version.json` 里对应组件的版本号（ui 改动只升 `ui`，二进制改动只升 `devui`）→ 把 `version.json`、二进制、`ui.tar.gz` 一起传到 GitHub release（用网盘镜像的话同步一份）。
+**发版**：改 `version.json` 里对应组件的版本号（ui 改动只升 `ui`，二进制改动只升 `devui`）→ 把 `version.json`、二进制、`ui.tar.gz` 一起传到 GitHub release。
 
 ## 文档
 

@@ -583,6 +583,32 @@ static int ca_split(char *g, char **f, int maxf)
     return n;
 }
 
+static int ca_groups(char *s, char **g, int maxg)
+{
+    int n = 0; char *save;
+    for (char *tk = strtok_r(s, ";", &save); tk && n < maxg; tk = strtok_r(NULL, ";", &save)) g[n++] = tk;
+    return n;
+}
+
+/* LTE SCC signal is sometimes exposed separately from legacy 5-field lteca.
+ * We accept both full 11-field groups and shorter signal-only groups by
+ * locating the first "RSRP-like" value (typically <= -40 dBm), then taking
+ * SINR from two fields later when present. */
+static int ca_sig_pick(char *g, const char **rsrp, const char **sinr)
+{
+    char *f[16];
+    int nf = ca_split(g, f, 16), rp = -1;
+    *rsrp = *sinr = NULL;
+    for (int i = 0; i < nf; i++) {
+        if (atof(f[i]) <= -40.0) { rp = i; break; }
+    }
+    if (rp < 0) return 0;
+    *rsrp = f[rp];
+    if (rp + 2 < nf)      *sinr = f[rp + 2];
+    else if (rp + 1 < nf) *sinr = f[rp + 1];
+    return 1;
+}
+
 static int signal_level(int rsrp)
 {
     int lvl;
@@ -931,6 +957,7 @@ static int build_kv(struct kv *t)
     static char s_rxb[16], s_txb[16], s_cpu[8], s_mem[8], w_rsrp[6], w_rsrq[6], w_sinr[6], w_bw[6];
     static char s_oper[48], s_ssid[64], s_key[64], s_page[8], s_np[8], s_model[64], s_fw[80];
     static char s_qci[8], s_ambr[24], s_sbar[640], s_dots[320];
+    static char s_nrrows[1500], s_lterows[1700], s_carriers[4000], s_nr_block[2200], s_lte_block[2200], s_sigcards[5000], s_gen[8];
 
     devui_data_t d;
     if (!data_refresh(&d)) memset(&d, 0, sizeof d);
@@ -970,13 +997,23 @@ static int build_kv(struct kv *t)
     snprintf(w_bw, sizeof w_bw, "%d", clampi(atoi(d.nr_bw), 3, 100));
 
     /* qci / ambr (from modem qos): unified Mbps, e.g. 3000/200 Mbps */
-    snprintf(s_qci, sizeof s_qci, "%d", d.qci);
-    snprintf(s_ambr, sizeof s_ambr, "%.0f/%.0f Mbps", d.ambr_dl, d.ambr_ul);
+    if (d.qci > 0) snprintf(s_qci, sizeof s_qci, "%d", d.qci);
+    else           snprintf(s_qci, sizeof s_qci, "-");
+    if (d.ambr_dl > 0.0 || d.ambr_ul > 0.0) {
+        char dl[12], ul[12];
+        if (d.ambr_dl > 0.0) snprintf(dl, sizeof dl, "%.0f", d.ambr_dl);
+        else                 snprintf(dl, sizeof dl, "-");
+        if (d.ambr_ul > 0.0) snprintf(ul, sizeof ul, "%.0f", d.ambr_ul);
+        else                 snprintf(ul, sizeof ul, "-");
+        snprintf(s_ambr, sizeof s_ambr, "%s/%s Mbps", dl, ul);
+    } else {
+        snprintf(s_ambr, sizeof s_ambr, "-");
+    }
 
     /* ---- per-carrier display + generation badge ----
      * nrca group: idx,pci,?,band,arfcn,bw,?,rsrp,rsrq,sinr,rssi
-     * lteca group: pci,band,?,earfcn,bw   (includes the serving cell) */
-    static char s_nrrows[1500], s_lterows[1700], s_carriers[3600], s_gen[8];
+     * lteca is seen in both legacy 5-field and newer 11-field variants.
+     * Some firmwares expose LTE SCC signal details separately via ltecasig. */
     int is_endc = strstr(d.net_type, "ENDC") || strstr(d.net_type, "EN-DC");
     int is_nsa  = strstr(d.net_type, "NSA") != NULL;
     int is_sa   = strstr(d.net_type, "SA") && !is_nsa;
@@ -985,13 +1022,14 @@ static int build_kv(struct kv *t)
     int show_lte = is_nsa || is_endc || is_lte;
     int nr_cc = 0, nr_bw = 0, lte_cc = 0, lte_bw = 0, no = 0, lo = 0;
     char rp[12], pc[12], ac[16];
+    const char *nr_band = d.nr_band[0] ? d.nr_band : d.band;
 
     /* NR carriers: PCell from main fields + nrca SCells */
     s_nrrows[0] = 0;
-    if (show_nr && d.band[0] && d.nr_bw[0]) {
+    if (show_nr && nr_band[0] && d.nr_bw[0]) {
         snprintf(rp, sizeof rp, "%d", d.nr_rsrp); snprintf(pc, sizeof pc, "%d", d.nr_pci);
         snprintf(ac, sizeof ac, "%ld", d.nr_channel);
-        no = car_row(s_nrrows, no, sizeof s_nrrows, d.band, d.nr_bw, ac, pc, rp, d.nr_snr);
+        no = car_row(s_nrrows, no, sizeof s_nrrows, nr_band, d.nr_bw, ac, pc, rp, d.nr_snr);
         nr_cc = 1; nr_bw = atoi(d.nr_bw);
     }
     if (show_nr) {
@@ -1000,30 +1038,64 @@ static int build_kv(struct kv *t)
             char g[96]; strncpy(g, grp, sizeof g - 1); g[sizeof g - 1] = 0;
             char *f[12]; int nf = ca_split(g, f, 12);
             if (nf > 5 && atoi(f[5]) > 0) {
+                double rpv = (nf > 7 && f[7] && f[7][0]) ? atof(f[7]) : 0.0;
                 char bn[12]; snprintf(bn, sizeof bn, "n%s", f[3]);
                 no = car_row(s_nrrows, no, sizeof s_nrrows, bn, f[5], nf > 4 ? f[4] : "-",
                              nf > 1 ? f[1] : "-", nf > 7 ? f[7] : "-", nf > 9 ? f[9] : "-");
-                nr_cc++; nr_bw += atoi(f[5]);
+                if (rpv > -140.0) { nr_cc++; nr_bw += atoi(f[5]); }
             }
         }
     }
 
-    /* LTE carriers: lteca "pci,band,?,earfcn,bw" (first entry = serving cell) */
+    /* LTE carriers: support both legacy 5-field and newer 11-field groups. */
     s_lterows[0] = 0;
     if (show_lte) {
         char lteca[256]; strncpy(lteca, d.lteca, sizeof lteca - 1); lteca[sizeof lteca - 1] = 0;
-        for (char *grp = strtok(lteca, ";"); grp; grp = strtok(NULL, ";")) {
+        char ltecasig[256]; strncpy(ltecasig, d.ltecasig, sizeof ltecasig - 1); ltecasig[sizeof ltecasig - 1] = 0;
+        char *lgrps[8], *sgrps[8];
+        int lgn = ca_groups(lteca, lgrps, 8);
+        int sgn = ca_groups(ltecasig, sgrps, 8);
+        int sig_off = (sgn > 0 && lgn == sgn + 1);   /* ltecasig often contains SCC only */
+        for (int gi = 0; gi < lgn; gi++) {
+            char *grp = lgrps[gi];
+            const char *siggrp = NULL;
             char g[96]; strncpy(g, grp, sizeof g - 1); g[sizeof g - 1] = 0;
-            char *f[8]; int nf = ca_split(g, f, 8);
-            if (nf >= 5 && atoi(f[4]) > 0) {
-                char bn[12]; snprintf(bn, sizeof bn, "B%s", f[1]);
+            char *f[12]; int nf = ca_split(g, f, 12);
+            const char *f_band = NULL, *f_bw = NULL, *f_arfcn = NULL, *f_pci = NULL, *f_rp = NULL, *f_sn = NULL;
+            const char *sig_rp = NULL, *sig_sn = NULL;
+            char sig_rp_buf[16] = "", sig_sn_buf[16] = "";
+            if (nf >= 11) {
+                f_band = f[3]; f_arfcn = f[4]; f_bw = f[5]; f_pci = f[1]; f_rp = f[7]; f_sn = f[9];
+            } else if (nf >= 5) {
+                f_band = f[1]; f_arfcn = f[3]; f_bw = f[4]; f_pci = f[0];
+            }
+            if (sgn == lgn && gi < sgn) siggrp = sgrps[gi];
+            else if (sig_off && gi > 0 && gi - 1 < sgn) siggrp = sgrps[gi - 1];
+            else if (gi < sgn) siggrp = sgrps[gi];
+            if (siggrp && siggrp[0]) {
+                char sg[96]; strncpy(sg, siggrp, sizeof sg - 1); sg[sizeof sg - 1] = 0;
+                if (ca_sig_pick(sg, &sig_rp, &sig_sn)) {
+                    if (sig_rp && sig_rp[0]) snprintf(sig_rp_buf, sizeof sig_rp_buf, "%s", sig_rp);
+                    if (sig_sn && sig_sn[0]) snprintf(sig_sn_buf, sizeof sig_sn_buf, "%s", sig_sn);
+                }
+            }
+            if ((!f_rp || !f_rp[0]) && sig_rp_buf[0]) f_rp = sig_rp_buf;
+            if ((!f_sn || !f_sn[0]) && sig_sn_buf[0]) f_sn = sig_sn_buf;
+            if (f_bw && atoi(f_bw) > 0) {
+                double rpv = (f_rp && f_rp[0]) ? atof(f_rp) : -139.0;
+                char bn[12];
+                if (f_band && (f_band[0] == 'B' || f_band[0] == 'b')) snprintf(bn, sizeof bn, "%s", f_band);
+                else snprintf(bn, sizeof bn, "B%s", (f_band && f_band[0]) ? f_band : "-");
                 char lr[12] = "-", ls[12] = "-";
+                if (f_rp && f_rp[0]) snprintf(lr, sizeof lr, "%s", f_rp);
+                if (f_sn && f_sn[0]) snprintf(ls, sizeof ls, "%s", f_sn);
                 if (lte_cc == 0) {   /* serving-cell signal from main fields */
                     if (d.lte_rsrp) snprintf(lr, sizeof lr, "%d", d.lte_rsrp);
                     if (d.lte_snr[0]) snprintf(ls, sizeof ls, "%s", d.lte_snr);
                 }
-                lo = car_row(s_lterows, lo, sizeof s_lterows, bn, f[4], f[3], f[0], lr, ls);
-                lte_cc++; lte_bw += atoi(f[4]);
+                lo = car_row(s_lterows, lo, sizeof s_lterows, bn, f_bw, f_arfcn ? f_arfcn : "-",
+                             f_pci ? f_pci : "-", lr, ls);
+                if (rpv > -140.0) { lte_cc++; lte_bw += atoi(f_bw); }
             }
         }
     }
@@ -1032,7 +1104,7 @@ static int build_kv(struct kv *t)
     /* total bandwidth per NSA/ENDC rules; header label */
     int total_bw; const char *cmode;
     if (is_endc)     { total_bw = nr_bw + lte_bw; cmode = "EN-DC"; }
-    else if (is_nsa) { total_bw = nr_cc > 0 ? nr_bw : lte_bw; cmode = "5G NSA"; }
+    else if (is_nsa) { total_bw = nr_bw + lte_bw; cmode = "5G NSA"; }
     else if (is_sa)  { total_bw = nr_bw; cmode = "5G SA"; }
     else if (is_lte) { total_bw = lte_bw; cmode = "4G LTE"; }
     else             { total_bw = 0; cmode = d.net_type[0] ? d.net_type : "No Service"; }
@@ -1043,6 +1115,29 @@ static int build_kv(struct kv *t)
       else                 snprintf(cnt, sizeof cnt, "无载波");
       snprintf(s_carriers, sizeof s_carriers, "<div class='sec'>%s · %s · %d MHz</div>%s%s",
                cmode, cnt, total_bw, s_nrrows, s_lterows); }
+    if ((is_endc || is_nsa) && s_nrrows[0] && s_lterows[0]) {
+        snprintf(s_nr_block, sizeof s_nr_block,
+                 "<div class='card'>"
+                 "<div class='title'>%s <span class='sub'>%s</span>"
+                 "<span class='qa'><b>QCI %s</b><br>AMBR %s</span></div>"
+                 "<div class='sec'>%s · %d LTE + %d NR 载波 · %d MHz</div>"
+                 "<div class='ctitle'>NR</div>%s"
+                 "</div>",
+                 s_oper, d.net_type, s_qci, s_ambr, cmode, lte_cc, nr_cc, total_bw, s_nrrows);
+        snprintf(s_lte_block, sizeof s_lte_block,
+                 "<div class='card'><div class='ctitle'>LTE</div>"
+                 "<div class='sec'>%d LTE 载波 · %d MHz</div>%s</div>",
+                 lte_cc, lte_bw, s_lterows);
+        snprintf(s_sigcards, sizeof s_sigcards, "%s%s", s_nr_block, s_lte_block);
+    } else {
+        snprintf(s_sigcards, sizeof s_sigcards,
+                 "<div class='card'>"
+                 "<div class='title'>%s <span class='sub'>%s</span>"
+                 "<span class='qa'><b>QCI %s</b><br>AMBR %s</span></div>"
+                 "%s"
+                 "</div>",
+                 s_oper, d.net_type, s_qci, s_ambr, s_carriers);
+    }
 
     /* generation badge: 5GA / 5G+ / 5G / 4G / LTE / 3G */
     int op = 0;   /* 1 mobile, 2 unicom, 3 telecom, 4 broadnet, 5 other-mainland */
@@ -1258,6 +1353,7 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "MODEL", s_model };      t[i++] = (struct kv){ "FW", s_fw };
     t[i++] = (struct kv){ "PAGE", s_page };        t[i++] = (struct kv){ "NPAGES", s_np };
     t[i++] = (struct kv){ "CARRIERS", s_carriers }; t[i++] = (struct kv){ "GEN", s_gen };
+    t[i++] = (struct kv){ "SIGNALCARDS", s_sigcards };
     t[i++] = (struct kv){ "GENCLASS", genc };
     t[i++] = (struct kv){ "THEME", g_theme ? "light" : "dark" };
     t[i++] = (struct kv){ "BATCLASS", d.bat_percent <= 20 ? "low" : "" };

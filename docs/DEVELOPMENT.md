@@ -76,9 +76,11 @@ ubus 服务 ──▶ u60-datad ──▶ /tmp/u60-datad/state.json ──▶ u6
 
 后端轮询并归一化的字段段：
 
-- `net`：制式、信号条、运营商、频段、NR/LTE 的 RSRP/RSRQ/SNR/RSSI、MCC/MNC、PCI/Cell ID/ARFCN、`nr_bw`，以及载波聚合描述符 `nrca` / `lteca`（直接透传自 `zte_nwinfo_api`），WAN 状态。
-  - **`nrca` 格式**（实测）：`;` 分隔载波，`,` 分隔字段，每个副载波 11 个字段：`idx, PCI, ?, band, arfcn, bw, ?, rsrp, rsrq, sinr, rssi`。例：`0,273,1,41,504990,100,0,-140.0,-43.0,-23.0,-120.0;` = n41 / 100MHz / PCI273 / RSRP-140 / SINR-23。所以解析取 `band=f[3]`、`bw=f[5]`、`pci=f[1]`、`rsrp=f[7]`、`sinr=f[9]`。`lteca` 同结构（band 前缀 `B`）。
-  - **没有载波聚合时 `nrca`/`lteca` 是空串**——此时信号页只有主载波一张卡片，属正常，不是 bug。CA 激活后副载波卡片自动出现。
+- `net`：制式、信号条、运营商、频段、NR/LTE 的 RSRP/RSRQ/SNR/RSSI、MCC/MNC、PCI/Cell ID/ARFCN、`nr_band`、`nr_bw`，以及载波聚合描述符 `nrca` / `lteca` / `ltecasig`（直接透传自 `zte_nwinfo_api`），WAN 状态。
+  - **`nrca` 格式**（实测）：`;` 分隔载波，`,` 分隔字段，每个副载波 11 个字段：`idx, PCI, ?, band, arfcn, bw, ?, rsrp, rsrq, sinr, rssi`。例：`0,273,1,41,504990,100,0,-140.0,-43.0,-23.0,-120.0;` = n41 / 100MHz / PCI273 / RSRP-140 / SINR-23。所以解析取 `band=f[3]`、`bw=f[5]`、`pci=f[1]`、`rsrp=f[7]`、`sinr=f[9]`。
+  - **`lteca` 格式**有两种：新格式与 `nrca` 同样是 11 字段；旧格式是 5 字段 `pci, band, is_scc, earfcn, bw`。旧格式本身不带 `RSRP/SINR`，这些值会单独出现在 `ltecasig`。
+  - **`ltecasig` 格式**（实测）通常为每组 `rsrp, rsrq, sinr, rssi, ?, ?`；并且组数可能比 `lteca` 少 1，因为它只包含 `SCC`，不包含 `PCell`。UI 规则是：第一张 LTE 卡片使用主小区 `lte_*` 字段，后续 LTE SCC 按顺序消费 `ltecasig`。
+  - **没有载波聚合时 `nrca`/`lteca`/`ltecasig` 是空串**——此时信号页只有主载波一张卡片，属正常，不是 bug。CA 激活后副载波卡片自动出现。
   - 另含 `net_select`（选网模式）与 `sa_bands`/`nsa_bands`/`lte_bands`（各制式可用/已锁频段，逗号列表，透传自 netinfo），供锁频页读取/写回。
 - `battery`：电量、温度、充电状态、`charger_connect`；以及 `chg_uv`/`chg_ua`（充电器输入电压µV/电流µA，读 `/sys/class/power_supply/usb`）、`bat_uv`/`bat_ua`（电池，读 `.../battery`）——UI 据此显示电压电流并算充/放电功率。
 - `clients`：接入设备数 + `list`（DHCP 租约设备名/IP/MAC，解析 `/tmp/dhcp.leases`）。
@@ -331,27 +333,25 @@ esac
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "0.3.3", "asset": "u60pro-devui-aarch64" },
-  "ui":    { "version": "0.3.3", "asset": "ui.tar.gz" } }
+  "devui": { "version": "0.4.0", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.4.0", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
-{ "schema": 1, "datad": { "version": "0.3.1", "asset": "u60-datad-aarch64" } }
+{ "schema": 1, "datad": { "version": "0.4.0", "asset": "u60-datad-aarch64" } }
 ```
 
 - 仓库根目录留了一份 `version.json` 作为**源头**（发版时改它），但插件实际读的是 **release 资产**（`…/releases/latest/download/version.json`），所以**每次发版都要把 `version.json` 连同二进制/`ui.tar.gz` 一起传到 release**。
 - 插件把远端各组件版本与本地记录（localStorage）比对，标“可更新”；可单独更新某个组件，也可一键更新全部。二进制更新先下到 `*.new` 再 `mv` 覆盖（避开运行中可执行文件的 `ETXTBSY`），devui 更新后校验失败自动回退原厂。
 - **彻底卸载**清 `/data/u60pro`（二进制）、`/data/ui`（界面）、`/etc/rc.local` 自启行，并恢复原厂。
 
-### 更新源：GitHub 直连 / 网盘镜像
+### 更新源：GitHub release
 
-插件可切换两种源，文件名必须一致：
+当前发布流程统一以 GitHub release 为准，文件名保持固定：
 
-- **GitHub 直连**：`https://github.com/<repo>/releases/latest/download/<file>`，基址 + 文件名拼接。
-- **网盘镜像**：直接克隆 release 的同名文件。本项目网盘用 AList，**每个文件带独立 `?sign=` 直链**（末尾 `:0` = 永不过期），无法用基址拼接，所以插件里维护一张 `NETDISK_FILES` 全直链表（key 形如 `devui/ui.tar.gz`）。换网盘或重传导致 sign 变化时，只改这张表。两个 `version.json` 不能同目录（撞名），故 devui、datad 各一个目录。
+- `https://github.com/<repo>/releases/latest/download/<file>`
+- devui 仓库资产：`u60pro-devui-aarch64`、`ui.tar.gz`、`version.json`
+- datad 仓库资产：`u60-datad-aarch64`、`version.json`
 
-**发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`；改了 menu.html/style.css 这类界面文件就也要升 `ui`）→ 传 `version.json` + 资产到 GitHub release →（如启用网盘）跑 `openlist-manual-update.cmd` 把 release 离线下载镜像到网盘并确认。
-
-> **网盘镜像脚本** `openlist-manual-update.cmd`（仓库父目录）：登录 OpenList，把每个 repo 的 `releases/latest/download/version.json` 与网盘上的比对，版本变了才**先删旧文件、再 `add_offline_download` 拉新文件**。双击即可；离线下载是异步的，跑完去网盘列表确认。
-
+**发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`；改了 `ui/*.html` / `style.css` 这类界面文件就也要升 `ui`）→ 传 `version.json` + 资产到 GitHub release。若你在仓库外另做镜像，直接镜像 GitHub release 的同名文件即可；本仓库不再维护手动网盘同步脚本。
 > **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
 
 ## 仓库约定

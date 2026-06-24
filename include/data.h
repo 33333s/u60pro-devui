@@ -20,6 +20,7 @@ typedef struct {
     int  bars;
     char operator_name[48];
     char band[16];
+    char nr_band[16];
     int  nr_rsrp, nr_rsrq, nr_rssi;
     char nr_snr[12];
     int  lte_rsrp, lte_rsrq, lte_rssi;
@@ -27,7 +28,7 @@ typedef struct {
     int  rssi, mcc, mnc, nr_pci;
     long nr_cell_id, nr_channel;
     char nr_bw[12];
-    char nrca[256], lteca[256];
+    char nrca[256], lteca[256], ltecasig[256];
     char wan_status[32];
     char net_select[16];
     char sa_bands[256], nsa_bands[256], lte_bands[256];

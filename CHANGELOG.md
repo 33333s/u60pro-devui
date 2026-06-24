@@ -1,5 +1,19 @@
 # 更新日志
 
+## v0.4.0 - 2026-06-24
+
+### 变更
+
+- **信号页 ENDC / LTE-NSA 结构调整**：ENDC 和 LTE-NSA 下改为 **NR 卡片 + LTE 卡片** 上下分离显示；NR only / LTE only 保持原布局。第一页内容超出一屏时可继续上下滚动。
+- **ENDC / LTE-NSA 频宽汇总规则更新**：表头总频宽改为 **LTE + NR 相加**；LTE 子卡片额外显示 `X LTE 载波 · Y MHz` 摘要，便于直接看 4G 侧聚合情况。
+
+### 修复
+
+- **NR 主卡误显示 LTE 频段**：后端补回 `net.nr_band`，NR 主卡优先显示真实 `nr_band`，不再把 `wan_active_band` 错当 NR 频段。
+- **QCI / AMBR、系统页、WiFi 页回归**：后端快照补回 `qos`、`system.cpu_usage`、`system.sw_version`、`system.imei`、`battery.chg_uv/chg_ua/bat_uv/bat_ua`、`wlan`、`nfc`、`dhcp`、`clients.list` 等字段，修复部署过程中引入的页面读空问题。
+- **4G SCC 信号读取**：新增透传 `net.ltecasig`。当设备上的 `lteca` 为旧 5 字段格式，而 LTE 副载波的 `RSRP/SINR` 单独放在 `ltecasig` 时，UI 会自动补齐 4G SCC 的信号显示。
+- **`ltecasig` 与 `lteca` 组数不一致**：实机存在 `lteca` 含 `PCell + 多个 SCC`、但 `ltecasig` 仅包含 `SCC` 组的情况。现 UI 自动从第二张 LTE 载波开始对齐 `ltecasig`，避免 LTE SCC 的 `RSRP` 全空、最后一个 `SINR` 丢失。
+
 ## v0.3.9 - 2026-06-19
 
 ### 修复
@@ -234,4 +248,3 @@
 - 建立 clean-room 的 U60Pro 前面板 UI 项目。
 - 接入 LVGL + DRM/KMS + evdev 的基础显示、触摸和页面框架。
 - 增加与 `zwrt-datad` 后端配套的快照读取模型。
-
