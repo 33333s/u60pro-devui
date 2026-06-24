@@ -1,6 +1,54 @@
 # 发布与本地修复记录
 
-记录时间：2026-06-24
+记录时间：2026-06-25
+
+## v1.1.0 发布状态
+
+- 本次发布 tag：`v1.1.0`
+- 前端仓库：`33333s/u60pro-devui`
+- 本次为**devui 二进制功能版**：`devui` 升到 `1.1.0`，`ui` 保持 `0.4.0`
+
+## v1.1.0 本次发布内容
+
+这次发布围绕“把外部画面接口正式内建进 DevUI，并保留原生状态栏与系统返回手势”展开，重点如下：
+
+- `src/devui_ext.c`、`include/devui_ext.h`：新增内建 `DEVUI-IPC` 渲染通道，提供本地 Unix Domain Socket `/tmp/u60-devui.sock` 与事件日志 `/tmp/u60-devui-events.log`，支持 `PING`、`CLOSE`、`FRAME`、`IMAGE`、`DRAW`、`TEXT`。
+- `src/htmlmain.c`：把外部画面接入主循环，统一处理外部画面前台/超时/锁屏退出/电源键兜底退出；外部画面前台时保留原生状态栏，只接管状态栏下方内容区。
+- `src/htmlmain.c`、`src/touch_input.c`、`include/touch_input.h`：新增内容区点击回传和左边缘右滑返回；点击写入事件日志，系统手势直接关闭外部画面，不再落给原生 HTML UI。
+- `src/html_view.cpp`：补充按指定尺寸渲染的文字页接口，供 `TEXT` 能直接排版到状态栏下方内容区。
+- `CHANGELOG.md`、`README.md`、`docs/DEVELOPMENT.md`、`docs/DEVUI-IPC.md`：同步整理为正式接口文档和发布说明。
+
+## v1.1.0 实机验证结论
+
+已在设备上实测确认：
+
+- 通过 `DEVUI-IPC` 可以正常显示像素帧、图片和可交互页面。
+- 外部画面前台时，顶部状态栏继续由 DevUI 原生显示和刷新。
+- 内容区点击可正常回传到事件日志。
+- 内容区左边缘右滑可正常返回原生 DevUI。
+- 返回原生页面后，DevUI 自带界面和原有交互仍然可用。
+
+## v1.1.0 本次发布文件
+
+- `src/devui_ext.c`
+- `include/devui_ext.h`
+- `src/htmlmain.c`
+- `src/html_view.cpp`
+- `src/touch_input.c`
+- `include/touch_input.h`
+- `scripts/_build_htmlpoc.sh`
+- `version.json`
+- `README.md`
+- `CHANGELOG.md`
+- `docs/DEVELOPMENT.md`
+- `docs/DEVUI-IPC.md`
+- `docs/LOCAL-CHANGES.md`
+
+## v1.1.0 Release 资产
+
+- `u60pro-devui-aarch64`
+- `ui.tar.gz`
+- `version.json`
 
 ## v0.4.1 发布状态
 

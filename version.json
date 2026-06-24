@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "devui": {
-    "version": "0.4.1",
+    "version": "1.1.0",
     "asset": "u60pro-devui-aarch64",
-    "notes": "关机充电改由 DevUI 全屏页接管，修复真实设备上插电仍落入无触控界面与闪电图标只显示半个的问题"
+    "notes": "内建 DEVUI-IPC 外部渲染接口，保留原生状态栏，并支持内容区点击回传与左边缘右滑返回"
   },
   "ui": {
     "version": "0.4.0",

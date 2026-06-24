@@ -370,7 +370,7 @@ esac
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "0.4.1", "asset": "u60pro-devui-aarch64" },
+  "devui": { "version": "1.1.0", "asset": "u60pro-devui-aarch64" },
   "ui":    { "version": "0.4.0", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
 { "schema": 1, "datad": { "version": "0.4.0", "asset": "u60-datad-aarch64" } }
