@@ -491,10 +491,10 @@ esac
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "1.1.1", "asset": "u60pro-devui-aarch64" },
-  "ui":    { "version": "0.4.1", "asset": "ui.tar.gz" } }
+  "devui": { "version": "1.1.2", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.4.2", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
-{ "schema": 1, "datad": { "version": "0.4.1", "asset": "u60-datad-aarch64" } }
+{ "schema": 1, "datad": { "version": "0.4.3", "asset": "u60-datad-aarch64" } }
 ```
 
 - 仓库根目录留了一份 `version.json` 作为**源头**（发版时改它），但插件实际读的是 **release 资产**（`…/releases/latest/download/version.json`），所以**每次发版都要把 `version.json` 连同二进制/`ui.tar.gz` 一起传到 release**。
@@ -545,3 +545,19 @@ esac
   - 已杀掉 `/tmp` 测试进程
   - 已删除 `/tmp/u60-datad.zigtest`、`/tmp/html-poc.zigtest`、`/tmp/codex-*`
   - 已恢复正式 `/data/u60pro/u60-datad -i 1000` 与 `/data/u60pro/u60pro-devui`
+
+## 2026-06-25 设置页新增“数据刷新间隔”补记
+
+- 系统页新增一张“数据刷新”卡片，放在开关区域下方。
+- 交互复用自动熄屏的 segmented control 风格，选项为：`停止 / 0.5s / 1s / 2s / 5s`。
+- 配置项持久化到 `/data/u60pro/devui.conf` 的 `refresh_ms=`。
+- 语义约定：
+  - `refresh_ms > 0`：按该间隔检查 `state.json` mtime，并在状态变化时重绘页面
+  - `refresh_ms = 0`：暂停状态轮询，但分钟级时钟仍继续刷新
+- 这样用户可以在“更实时”和“更省资源/更稳”之间自己取舍。
+
+## 2026-06-25 锁频页短距离左滑回弹后混入图表页残影
+
+- 现象：在 `04-lock.html` 上向左小幅拖动，触发“预览下一页（05-charts）但未达到翻页阈值”，随后页面自动回弹到锁频页；回弹后，监控图表页的原生图表绘制会残留在锁频页上。
+- 根因：这条路径里 framebuffer 在拖动/回弹动画阶段已经被“当前页 + 下一页预览”改写过，但回弹结束后当前页路径并没有变化，`render()` 仍可能命中 HTML 复用缓存，导致没有强制整页重绘。图表页的 native draw 内容因此被带回了锁频页。
+- 修正：在 page swipe 的“提交翻页 / 回弹归位”结束后统一调用 `invalidate_render_html_cache()`，强制下一帧完整重绘当前页，避免邻页的 native 内容残留。

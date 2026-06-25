@@ -2,6 +2,43 @@
 
 记录时间：2026-06-25
 
+## v1.1.2 发布状态
+
+- 本次发布 tag：`v1.1.2`
+- 前端仓库：`33333s/u60pro-devui`
+- 本次为**devui + ui 双补丁版**：`devui` 升到 `1.1.2`，`ui` 升到 `0.4.2`
+
+## v1.1.2 本次发布内容
+
+这次发布围绕“AMBR 新旧格式兼容后的前端交互补完”和“翻页回弹残影修复”展开，重点如下：
+
+- `src/htmlmain.c`：系统页新增“数据刷新间隔”分段控件，支持 `停止 / 0.5s / 1s / 2s / 5s` 五档，并把 `refresh_ms` 持久化到 `/data/u60pro/devui.conf`。
+- `src/htmlmain.c`：页面短距离翻页回弹后主动失效 HTML 复用缓存，避免邻页的 native draw 内容残留到当前页。
+- `ui/06-system.html`：设置页新增“数据刷新”卡片，布局与自动息屏卡片保持统一风格。
+- `CHANGELOG.md`、`README.md`、`docs/DEVELOPMENT.md`：同步更新版本示例和本次发版说明。
+
+## v1.1.2 实机验证结论
+
+- 已把新二进制和 `06-system.html` 推到设备，`u60-datad` / `u60pro-devui` 均可正常拉起。
+- 设备侧 `qos` 状态正常，`QCI / AMBR` 可读。
+- 截图链路已打开 `/tmp/u60-dumpfb`，便于继续跟进屏幕残影类问题。
+
+## v1.1.2 本次发布文件
+
+- `src/htmlmain.c`
+- `ui/06-system.html`
+- `version.json`
+- `CHANGELOG.md`
+- `README.md`
+- `docs/DEVELOPMENT.md`
+- `docs/LOCAL-CHANGES.md`
+
+## v1.1.2 Release 资产
+
+- `u60pro-devui-aarch64`
+- `ui.tar.gz`
+- `version.json`
+
 ## v1.1.1 发布状态
 
 - 本次发布 tag：`v1.1.1`

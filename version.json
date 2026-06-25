@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "devui": {
-    "version": "1.1.1",
+    "version": "1.1.2",
     "asset": "u60pro-devui-aarch64",
-    "notes": "修复 litehtml 重建后的内存增长与熄屏/CSS 重载缓存失效，并收紧启动接管链路"
+    "notes": "修复短距离翻页回弹后的邻页残影，并新增数据刷新间隔分段控件"
   },
   "ui": {
-    "version": "0.4.1",
+    "version": "0.4.2",
     "asset": "ui.tar.gz",
-    "notes": "短信页改按短信 ID 打开，配合样式与系统页更新，修复列表/正文错读风险"
+    "notes": "设置页新增数据刷新间隔卡片，提供停止/0.5s/1s/2s/5s 五档切换"
   }
 }

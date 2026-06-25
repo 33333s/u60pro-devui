@@ -94,6 +94,7 @@ static int  g_charge_boot; /* power-off charging boot: full-screen charging UI *
 static int  g_scroll;     /* current page vertical scroll offset */
 static int  g_page_h;     /* last rendered page content height */
 static int  g_autooff_ms; /* auto screen-off timeout, 0 = never */
+static int  g_refresh_ms = 1000; /* state refresh interval, 0 = paused */
 static int  g_saved_bright = -1; /* persisted backlight level, -1 = none yet */
 static long long g_state_mtime_ns = -1;      /* /tmp/u60-datad/state.json mtime (ns) */
 static uint32_t g_last_state_render_ms;
@@ -697,7 +698,7 @@ static void enter_lock(int setup)
     g_pin_entry[0] = 0; g_lock_err = 0; g_scroll = 0;
 }
 
-/* ---- persisted UI settings (theme / speed unit / double-tap / auto-off).
+/* ---- persisted UI settings (theme / speed unit / auto-off / refresh interval).
  * Stored next to the binary in /data/u60pro so they survive reinstalling the
  * binary and re-pushing UI files (the PIN persists separately in .lockpin). */
 #define CONF_FILE "/data/u60pro/devui.conf"
@@ -711,6 +712,7 @@ static void load_conf(void)
         else if (sscanf(line, "speed_bits=%d", &v) == 1) g_speed_bits = !!v;
         else if (sscanf(line, "show_batpct=%d", &v) == 1) g_show_batpct = !!v;
         else if (sscanf(line, "autooff=%d", &v) == 1)    g_autooff_ms = v;
+        else if (sscanf(line, "refresh_ms=%d", &v) == 1) g_refresh_ms = v;
         else if (sscanf(line, "bright=%d", &v) == 1)     g_saved_bright = v;
     }
     fclose(fp);
@@ -719,8 +721,8 @@ static void save_conf(void)
 {
     FILE *fp = fopen(CONF_FILE, "w");
     if (!fp) return;
-    fprintf(fp, "theme=%d\nspeed_bits=%d\nshow_batpct=%d\nautooff=%d\nbright=%d\n",
-            g_theme, g_speed_bits, g_show_batpct, g_autooff_ms, backlight_get());
+    fprintf(fp, "theme=%d\nspeed_bits=%d\nshow_batpct=%d\nautooff=%d\nrefresh_ms=%d\nbright=%d\n",
+            g_theme, g_speed_bits, g_show_batpct, g_autooff_ms, g_refresh_ms, backlight_get());
     fclose(fp);
 }
 
@@ -1171,6 +1173,8 @@ static const struct { const char *v, *lab; } g_netmodes[4] = {
 static const struct { int ms; const char *lab; } g_autooffs[6] = {
     { 0, "关" }, { 30000, "30秒" }, { 60000, "1分" },
     { 120000, "2分" }, { 300000, "5分" }, { 600000, "10分" } };
+static const struct { int ms; const char *lab; } g_refresh_rates[5] = {
+    { 0, "停止" }, { 500, "0.5s" }, { 1000, "1s" }, { 2000, "2s" }, { 5000, "5s" } };
 /* escape &,<,> for safe litehtml parsing of arbitrary SMS text */
 static void html_esc(char *dst, size_t cap, const char *src)
 {
@@ -1520,7 +1524,7 @@ static int build_kv(struct kv *t)
 
     /* ---- system extras: usage, temps, version, imei, brightness, auto-off ---- */
     static char s_cusage[8], s_ctemp[8], s_btemp[8], s_swver[80], s_imei[24], s_spu[8], s_bright[8];
-    static char s_memdet[24], s_upshort[16], s_autooff[420];
+    static char s_memdet[24], s_upshort[16], s_autooff[420], s_refreshseg[360];
     { int bmax = backlight_max(); if (bmax <= 0) bmax = 255;
       snprintf(s_bright, sizeof s_bright, "%d", clampi(backlight_get() * 100 / bmax, 0, 100)); }
     { long mt = d.mem_total, ma = d.mem_avail;
@@ -1545,6 +1549,17 @@ static int build_kv(struct kv *t)
                 "<a href='act:autooff:%d' class='segc%s'>%s</a>",
                 g_autooffs[k].ms, k == hl ? " seg-on" : "", g_autooffs[k].lab);
         snprintf(s_autooff + o, sizeof s_autooff - o, "</div>");
+    }
+    {   /* refresh segmented control (#refreshseg), same UI as auto-off */
+        int active = 0;
+        for (int k = 0; k < 5; k++) if (g_refresh_rates[k].ms == g_refresh_ms) active = k;
+        int hl = g_segdrag == 3 ? -1 : active;
+        int o = snprintf(s_refreshseg, sizeof s_refreshseg, "<div id='refreshseg' class='seg seg5'>");
+        for (int k = 0; k < 5; k++)
+            o += snprintf(s_refreshseg + o, sizeof s_refreshseg - o,
+                "<a href='act:refreshms:%d' class='segc%s'>%s</a>",
+                g_refresh_rates[k].ms, k == hl ? " seg-on" : "", g_refresh_rates[k].lab);
+        snprintf(s_refreshseg + o, sizeof s_refreshseg - o, "</div>");
     }
     snprintf(s_cusage, sizeof s_cusage, "%ld", d.cpu_usage < 0 ? 0 : d.cpu_usage);
     snprintf(s_ctemp, sizeof s_ctemp, "%ld", d.cpu_temp);
@@ -1678,6 +1693,7 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "IMEI", s_imei };
     t[i++] = (struct kv){ "IMEIBTN", g_show_imei ? "隐藏" : "显示" };
     t[i++] = (struct kv){ "BRIGHT", s_bright };   t[i++] = (struct kv){ "AUTOOFF", s_autooff };
+    t[i++] = (struct kv){ "REFRESHSEG", s_refreshseg };
     t[i++] = (struct kv){ "MEMDETAIL", s_memdet }; t[i++] = (struct kv){ "UPSHORT", s_upshort };
     t[i++] = (struct kv){ "CHGV", s_chgv };       t[i++] = (struct kv){ "CHGI", s_chgi };
     t[i++] = (struct kv){ "BATV", s_batv };       t[i++] = (struct kv){ "BATI", s_bati };
@@ -2118,7 +2134,7 @@ int main(void)
     float scroll_v = 0.0f, scroll_pos = 0.0f;
     int sliding = 0, bar_x = 0, bar_w = 0;   /* brightness slider drag */
     int segging = 0, seg_x = 0, seg_y = 0, seg_w = 0, seg_h = 0;   /* segmented control drag */
-    int seg_which = 0, seg_n = 4;   /* 1 = net mode (4 cells), 2 = auto-off (6) */
+    int seg_which = 0, seg_n = 4;   /* 1 = net mode, 2 = auto-off, 3 = refresh */
     const int W = disp.width, H = disp.height;
     devui_ext_t ext;
     memset(&ext, 0, sizeof ext);
@@ -2380,12 +2396,14 @@ int main(void)
                     x >= bx && x < bx + bw && y >= by - 5 && y < by + bh + 5) {
                     sliding = 1; bar_x = bx; bar_w = bw;
                     set_bright_x(x, bx, bw); render(&disp, CUR_PATH); animating = 1;
-                } else {   /* segmented controls: net mode (#netseg) or auto-off (#autoseg) */
+                } else {   /* segmented controls: net mode / auto-off / refresh */
                     int which = 0, n = 4;
                     if (html_view_rect("#netseg", &bx, &by, &bw, &bh) &&
                         x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 1; n = 4; }
                     else if (html_view_rect("#autoseg", &bx, &by, &bw, &bh) &&
                              x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 2; n = 6; }
+                    else if (html_view_rect("#refreshseg", &bx, &by, &bw, &bh) &&
+                             x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 3; n = 5; }
                     if (which) {
                         segging = 1; seg_which = which; seg_n = n;
                         seg_x = bx; seg_y = by; seg_w = bw; seg_h = bh;
@@ -2455,8 +2473,14 @@ int main(void)
                             "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1 &", g_netmodes[c].v);
                         system(cmd);
                         snprintf(g_net_pending, sizeof g_net_pending, "%s", g_netmodes[c].v);
-                    } else {
+                    } else if (seg_which == 2) {
                         g_autooff_ms = g_autooffs[c].ms; last_act = now; save_conf();
+                    } else {
+                        g_refresh_ms = g_refresh_rates[c].ms;
+                        g_state_mtime_ns = -1;
+                        g_last_state_render_ms = 0;
+                        last_data = 0;
+                        save_conf();
                     }
                     g_segdrag = 0; need_render = 1;
                 }
@@ -2467,6 +2491,11 @@ int main(void)
                     if (o_now < 0) o_now = 0; if (o_now > W) o_now = W;
                     anim_o(&disp, o_now, drag_dir > 0 ? (commit ? W : 0) : (commit ? 0 : W));
                     if (commit) { g_cur = drag_target; g_scroll = 0; }
+                    /* After a page-swipe preview or snap-back, the on-screen pixels no
+                     * longer match the cached HTML of the current page. Force a full
+                     * re-render so native-drawn content from the neighbor page (for
+                     * example charts) cannot leak onto the restored page. */
+                    invalidate_render_html_cache();
                     need_render = 1;
                 } else if (dragging && scroll_dir != 0) {   /* scroll settled */
                     uint32_t gdt = (drag_down_ms && now > drag_down_ms) ? (now - drag_down_ms) : 0;
@@ -2664,6 +2693,14 @@ int main(void)
                         else if (!strncmp(a, "autooff:", 8)) {   /* preset select */
                             g_autooff_ms = atoi(a + 8); last_act = now; save_conf(); need_render = 1;
                         }
+                        else if (!strncmp(a, "refreshms:", 10)) {   /* preset select */
+                            g_refresh_ms = atoi(a + 10);
+                            g_state_mtime_ns = -1;
+                            g_last_state_render_ms = 0;
+                            last_data = 0;
+                            save_conf();
+                            need_render = 1;
+                        }
                         else if (!strcmp(a, "locktoggle")) {   /* on->off clears PIN; off->on opens setup pad */
                             if (lock_enabled()) clear_pin();
                             else                enter_lock(1);
@@ -2745,39 +2782,42 @@ action_done:
             }
         }
 
-        /* periodic state clock/snapshot check (not mid-drag), once per second */
-        if (!dragging && !scroll_inertia && now - last_data >= 1000) {
-            time_t now_t = time(NULL);
-            int state_changed = 0;
-            int clock_changed = 0;
-            int state_render = 0;
-            int cur_min = (int)(now_t / 60);
-            if (cur_min != g_last_clock_min) {
-                g_last_clock_min = cur_min;
-                clock_changed = 1;
-                need_render = 1;   /* update HH:MM and any minute-level derived tokens */
-            }
-
-            struct stat st;
-            if (stat(DEVUI_STATE_FILE, &st) == 0) {
-                long long cur_mtime = (long long)st.st_mtime * 1000000000LL + (long long)st.st_mtim.tv_nsec;
-                if (g_state_mtime_ns < 0 || cur_mtime != g_state_mtime_ns) {
-                    g_state_mtime_ns = cur_mtime;
-                    state_changed = 1;
+        /* periodic clock/state check (not mid-drag). refresh=0 pauses state polling
+         * but still lets the minute clock update once per second. */
+        {
+            uint32_t poll_ms = g_refresh_ms > 0 ? (uint32_t)g_refresh_ms : 1000;
+            if (!dragging && !scroll_inertia && now - last_data >= poll_ms) {
+                time_t now_t = time(NULL);
+                int state_changed = 0;
+                int clock_changed = 0;
+                int state_render = 0;
+                int cur_min = (int)(now_t / 60);
+                if (cur_min != g_last_clock_min) {
+                    g_last_clock_min = cur_min;
+                    clock_changed = 1;
+                    need_render = 1;   /* update HH:MM and any minute-level derived tokens */
                 }
-            }
-            if (state_changed) {
-                uint32_t throttle_ms = STATE_RENDER_THROTTLE_MS;
-                if (now - last_act > 5000) throttle_ms = STATE_RENDER_IDLE_THROTTLE_MS;
-                if (g_last_state_render_ms == 0 || now - g_last_state_render_ms >= throttle_ms) {
+
+                if (g_refresh_ms > 0) {
+                    struct stat st;
+                    if (stat(DEVUI_STATE_FILE, &st) == 0) {
+                        long long cur_mtime = (long long)st.st_mtime * 1000000000LL + (long long)st.st_mtim.tv_nsec;
+                        if (g_state_mtime_ns < 0 || cur_mtime != g_state_mtime_ns) {
+                            g_state_mtime_ns = cur_mtime;
+                            state_changed = 1;
+                        }
+                    }
+                }
+                if (state_changed && g_refresh_ms > 0) {
                     state_render = 1;
                     g_last_state_render_ms = now;
                 }
+                if (state_render) need_render = 1;
+                if (ext_ok && devui_ext_active(&ext) && !g_lock_state &&
+                    (clock_changed || (g_refresh_ms > 0 && state_changed)))
+                    refresh_status_cache();
+                last_data = now;
             }
-            if (state_render) need_render = 1;
-            if (ext_ok && devui_ext_active(&ext) && !g_lock_state && (state_changed || clock_changed))
-                refresh_status_cache();
-            last_data = now;
         }
 
         /* reconcile page-2 WiFi switch states from uci/iw on a slow throttle */
