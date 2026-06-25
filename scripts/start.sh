@@ -8,11 +8,28 @@
 # SPDX-License-Identifier: MIT
 DEVUI_DIR=/data/plugins/u60pro-devui
 DATAD_DIR=/data/plugins/zwrt-datad
+UI_DIR=$DEVUI_DIR/ui
+LEGACY_UI_DIR=/data/ui
 DEVUI_BIN=$DEVUI_DIR/u60pro-devui
 DATAD_BIN=$DATAD_DIR/zwrt-datad
 MODE="${1:-legacy}"
 
-mkdir -p "$DEVUI_DIR" "$DATAD_DIR"
+mkdir -p "$DEVUI_DIR" "$DATAD_DIR" "$UI_DIR"
+
+count_ui_pages() {
+    find "$1" -maxdepth 1 -type f -name '*.html' 2>/dev/null | wc -l | tr -d ' '
+}
+
+migrate_legacy_ui() {
+    [ -d "$LEGACY_UI_DIR" ] || return 0
+    [ -f "$LEGACY_UI_DIR/.lockpin" ] && [ ! -f "$UI_DIR/.lockpin" ] \
+        && cp -af "$LEGACY_UI_DIR/.lockpin" "$UI_DIR/.lockpin" 2>/dev/null
+    old_count=$(count_ui_pages "$LEGACY_UI_DIR")
+    new_count=$(count_ui_pages "$UI_DIR")
+    if [ "$new_count" -le 0 ] && [ "$old_count" -gt 0 ]; then
+        cp -af "$LEGACY_UI_DIR"/. "$UI_DIR"/ 2>/dev/null || true
+    fi
+}
 
 read_mode_main_state() {
     awk -F"'" '/option mode_main_state/ { print $2; exit }' /etc/config/zwrt_zte_mc_tmp 2>/dev/null
@@ -88,6 +105,7 @@ case "$mode_main_state" in
         ;;
 esac
 boot_trace
+migrate_legacy_ui
 
 case "$MODE" in
     procd)

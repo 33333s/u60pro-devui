@@ -72,7 +72,7 @@ static FT_Face    g_face;
 struct ft_font { int size; int ascent, descent, height; };
 
 /* UI base dir (for <link> CSS / images) and last-clicked anchor href. */
-static std::string g_ui_dir = "/data/ui";
+static std::string g_ui_dir = "/data/plugins/u60pro-devui/ui";
 static std::string g_clicked;
 
 static long long css_file_mtime_ns(const std::string &path)

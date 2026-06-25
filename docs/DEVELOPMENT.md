@@ -95,27 +95,27 @@
 核心设计原则有两条：
 
 1. **UI 与后端解耦**：所有 ubus 访问集中在后端，UI 只读一个本机 HTTP/SSE 接口，便于审计、分享、独立重建。
-2. **程序与界面解耦**：二进制本身是固定的“框架”，**实际界面是 `/data/ui` 目录里的 HTML/CSS**。用户改界面只需要改 HTML，不必重新编译。开源发布时二进制保持不变，界面完全可由用户自定义。
+2. **程序与界面解耦**：二进制本身是固定的“框架”，**实际界面是 `/data/plugins/u60pro-devui/ui` 目录里的 HTML/CSS**。用户改界面只需要改 HTML，不必重新编译。开源发布时二进制保持不变，界面完全可由用户自定义。
 
 ## 架构总览
 
 ```text
 ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u60pro-devui ──▶ DRM framebuffer
                                                                    │
-                                                            渲染 /data/ui/*.html
+                                              渲染 /data/plugins/u60pro-devui/ui/*.html
 ```
 
 - 渲染引擎：**litehtml**（C++ HTML/CSS 排版）+ **FreeType**（含 CJK 字形）→ 直接画进 RGB565 dumb buffer。
 - 没有浏览器、没有 JavaScript；状态只通过本机 `127.0.0.1:9460` 的 HTTP/SSE 读取，界面本身不直接访问外网。
 - 全部静态链接（liblitehtml.a + libfreetype.a + musl），单文件可直接拷到设备运行。
 
-### `/data/ui` 界面模型
+### `/data/plugins/u60pro-devui/ui` 界面模型
 
 - 每个 `NN-name.html` 是一页，按文件名排序，可左右滑动切换。`menu.html` 是电源长按弹出的覆盖层，不计入翻页。
-- 所有页面用 `<link rel="stylesheet" href="style.css">` 共享一份样式（容器的 `import_css` 从 `/data/ui/` 读取）。
+- 所有页面用 `<link rel="stylesheet" href="style.css">` 共享一份样式（容器的 `import_css` 从 `/data/plugins/u60pro-devui/ui/` 读取）。
 - HTML 里的 `{{TOKEN}}` 在渲染前由 C 宿主替换成实时数据（见“模板令牌”）。
 - `href="act:xxx"` 的链接是**动作**：点击后 UI 不跳转，而是执行对应动作（翻页指示、揭示密码、切主题、切 USB-C 模式等）。
-- 每次渲染都**重新读取**页面文件 = 改完 HTML 直接 `adb push` 到 `/data/ui` 即可热生效，不必重启进程。
+- 每次渲染都**重新读取**页面文件 = 改完 HTML 直接 `adb push` 到 `/data/plugins/u60pro-devui/ui` 即可热生效，不必重启进程。
 
 当前六页（左右滑动，底部圆点指示；`menu.html` 为电源长按覆盖层）。**页面按文件名编号排序**——v0.3.5 在信号页后插入短信页，其余顺延，所以编号从 v0.3.4 的 `02-wifi/03-lock/04-charts/05-system` 改成了下面这套（**改名是后面那个「插件更新残留」坑的根因**，见版本机制一节）：
 
@@ -130,12 +130,12 @@ ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u
 
 ### `DEVUI-IPC` 外部内容区（内建接口）
 
-这套项目现在除了 `/data/ui/*.html` 页面流，还内建了一条“别的本机进程借用屏幕”的渲染通道，代码在 `src/devui_ext.c` / `include/devui_ext.h`，对外正式文档见 [DEVUI-IPC.md](DEVUI-IPC.md)。
+这套项目现在除了 `/data/plugins/u60pro-devui/ui/*.html` 页面流，还内建了一条“别的本机进程借用屏幕”的渲染通道，代码在 `src/devui_ext.c` / `include/devui_ext.h`，对外正式文档见 [DEVUI-IPC.md](DEVUI-IPC.md)。
 
 - 通信方式：本地 Unix Domain Socket `/tmp/u60-devui.sock`
 - 事件回传：JSON Lines 文件 `/tmp/u60-devui-events.log`
 - 当前命令：`PING`、`CLOSE`、`FRAME`、`IMAGE`、`DRAW`、`TEXT`
-- 典型用途：让别的本机程序把像素帧、图片、轻量绘图脚本或纯文字页直接送进 DevUI，而不用接管 DRM，也不用改原来的 `/data/ui`
+- 典型用途：让别的本机程序把像素帧、图片、轻量绘图脚本或纯文字页直接送进 DevUI，而不用接管 DRM，也不用改原来的 `/data/plugins/u60pro-devui/ui`
 
 当前集成方式不是“整屏覆盖”，而是**保留 DevUI 自己的状态栏，把外部内容放到下面的内容区**：
 
@@ -226,7 +226,7 @@ ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u
 4 位数字 PIN 的屏幕锁，状态全在 `htmlmain.c`：
 
 - **状态**：`g_pin`（已设密码，`""`=未启用）、`g_lock_state`（0 正常 / 1 解锁键盘 / 2 设置键盘）、`g_pin_entry`（当前已输入）、`g_lock_err`（显示「密码错误」）。`CUR_PATH` 在 `g_lock_state` 非 0 时优先指向 `lockscreen.html`，覆盖电源菜单与普通页。
-- **持久化**：PIN 存 `/data/ui/.lockpin`（点文件，`UI_DIR` 必存在、不被 `adb push *.html` 覆盖）。`load_pin/save_pin/clear_pin`。**开机若已设密码直接进入解锁键盘**。忘记密码 `adb shell rm /data/ui/.lockpin`。
+- **持久化**：PIN 存 `/data/plugins/u60pro-devui/ui/.lockpin`（点文件，`UI_DIR` 必存在、不被 `adb push *.html` 覆盖）。`load_pin/save_pin/clear_pin`。**开机若已设密码直接进入解锁键盘**。忘记密码 `adb shell rm /data/plugins/u60pro-devui/ui/.lockpin`。
 - **触发锁屏**：`screen_off` 的两个入口——电源键短按、自动息屏超时——之后若 `lock_enabled()` 即 `enter_lock(0)`。开机同理。
 - **键盘交互**（主循环 `g_lock_state` 分支，仅处理 tap）：`act:pin:<0-9>` 累加，满 4 位**自动提交**（无确认键）；设置键盘存盘并开启，解锁键盘比对——正确 `g_lock_state=0` 回到界面，错误置 `g_lock_err` 并清空。`act:pin:del` 退格，`act:lockcancel` 放弃设置。
 - 第五页 `act:locktoggle`：开→关 `clear_pin()`；关→开 `enter_lock(1)` 进设置键盘（输满 4 位才真正开启）。锁定时电源键长按不再开电源菜单。
@@ -275,7 +275,7 @@ litehtml 没有 canvas/SVG/滚动/圆角绘制，这些都由宿主补：
 - **圆角靠容器实现**：`border-radius` 只是把半径传给容器，真画矩形还是圆角全看 `draw_solid_fill`/`draw_borders` 怎么写。本项目现已实现圆角填充与等宽圆角描边（见上）；但**复杂边框（四边不等宽/不同色）仍回退直角**。
 - **WiFi 开关只能用 `ifconfig`**：本固件厂商把标准 `wifi reload` 禁了（日志 `zte test skip the wifi_load_legacy`），uci `disabled` 不控制实际射频；`ubus zwrt_wlan reload` 会把射频**拆掉不重建**（需重启恢复）。可靠的运行时控制是 `ifconfig wlanN up/down`（wlan0=主2.4G、wlan2=主5G、wlan1/3=访客），开/关状态读 `/sys/class/net/wlanN/operstate`。**注意**：纯 ifconfig 是运行时的，重启后厂商按自身配置恢复；访客接口未启用时不存在，纯 ifconfig 开不出来（故未做访客开关）。
 - **节能（PSM）= `iw set power_save` + hotplug 持久化**：`power_save` 只在 ifup 时被应用，所以要持久就得有个 `/etc/hotplug.d/iface/*` 脚本在每次 ifup 重设。本设备上是 `99-disable-powersave`（强制 off）。**开关现在自己把该脚本 echo 到 `/etc/hotplug.d/iface/99-disable-powersave`**（按所选模式写 on/off），功能自包含、不依赖预装脚本；同时清掉旧版遗留的 `psm` 文件（旧版用过那名字，且它排序在 `99-` 之后会反盖）。**实测开机时序**（标记法 + 重启验证）：早期的 `lan` ifup 在 ~15s 触发，那时 wlan0/wlan2 还不存在、`iw set` 静默失败；真正生效靠 **专门的 `ifup INTERFACE=wlan0/wlan2` 事件（~65s，Kiwi 驱动把电台拉起来那一刻）**。所以纯 hotplug 足够、**不需要往 rc.local 加命令**（rc.local 跑得更早，那时 wlanX 不存在，`iw` 一样报 No such device）。
-- **UI 设置持久化**：主题/速率单位/双击点亮/自动息屏存 `/data/plugins/u60pro-devui/devui.conf`（`load_conf`/`save_conf`，改动即写）；锁屏 PIN 存 `/data/ui/.lockpin`。这些都是内存态，不落盘则重启/重装即丢。
+- **UI 设置持久化**：主题/速率单位/双击点亮/自动息屏存 `/data/plugins/u60pro-devui/devui.conf`（`load_conf`/`save_conf`，改动即写）；锁屏 PIN 存 `/data/plugins/u60pro-devui/ui/.lockpin`。这些都是内存态，不落盘则重启/重装即丢。
 - **DHCP 地址池别信后端前缀**：UI 直接由 uci `network.lan.ipaddr` + `dhcp.lan.start/limit` 现算池范围，跟随实际网段（后端那份可能是写死前缀的）。
 
 ## 构建
@@ -306,10 +306,10 @@ bash zwrt-datad/scripts/build.sh       # → zwrt-datad(.stripped)
 ```sh
 # 杀掉旧实例再推，否则可能 "Text file busy" 并悄悄保留旧二进制
 adb shell "killall -9 u60pro-devui zwrt-datad u60-datad"
-adb shell "mkdir -p /data/plugins/u60pro-devui /data/plugins/zwrt-datad"
+adb shell "mkdir -p /data/plugins/u60pro-devui/ui /data/plugins/zwrt-datad"
 adb push html-poc.stripped        /data/plugins/u60pro-devui/u60pro-devui
 adb push zwrt-datad.stripped      /data/plugins/zwrt-datad/zwrt-datad
-adb push ui/*.html ui/*.css       /data/ui/
+adb push ui/*.html ui/*.css       /data/plugins/u60pro-devui/ui/
 adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
            nohup /data/plugins/zwrt-datad/zwrt-datad -i 1000 >/tmp/zwrt-datad.log 2>&1 & \
            sleep 1; nohup /data/plugins/u60pro-devui/u60pro-devui >/tmp/devui.log 2>&1 &"
@@ -319,7 +319,7 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 
 - 要完全接管面板，先 `/etc/init.d/zte_topsw_devui stop`；单纯 `killall` 不够，procd 会把它拉起来。
 - Busybox 无 `setsid`，后台运行用 `nohup ... &`。
-- **本机 shell 注意**：仓库在 Windows 盘，交叉编译在 **WSL**（`wsl -- bash -lc '... /mnt/d/...'`）；而 `adb` 在 **MSYS/Git-Bash** 里会把 `/data`、`/tmp` 这类参数当本地路径“翻译”坏掉（`adb push ui/. /data/ui/` 会卡死）。**adb 命令一律走 PowerShell 工具**，或在路径上加 MSYS 的转义。
+- **本机 shell 注意**：仓库在 Windows 盘，交叉编译在 **WSL**（`wsl -- bash -lc '... /mnt/d/...'`）；而 `adb` 在 **MSYS/Git-Bash** 里会把 `/data`、`/tmp` 这类参数当本地路径“翻译”坏掉（`adb push ui/. /data/plugins/u60pro-devui/ui/` 会卡死）。**adb 命令一律走 PowerShell 工具**，或在路径上加 MSYS 的转义。
 - Windows 检出的 `.sh` 可能是 CRLF，WSL 里 `bash` 会报 `set: invalid option` / `$'\r'`；先 `sed -i 's/\r$//'`。
 
 ## 开机自启
@@ -489,7 +489,7 @@ esac
 
 - **datad** — 后端二进制（仓库 [zwrt-datad](https://github.com/33333s/zwrt-datad)，资产 `zwrt-datad-aarch64`）。
 - **devui** — 渲染器二进制（本仓库，资产 `u60pro-devui-aarch64`）。
-- **ui** — 界面模板（本仓库，资产 `ui.tar.gz`，装到 `/data/ui`）。
+- **ui** — 界面模板（本仓库，资产 `ui.tar.gz`，装到 `/data/plugins/u60pro-devui/ui`）。
 
 `version.json` **按仓库分散**：本仓库的含 `devui` + `ui` 两项，datad 仓库的只含 `datad`。
 
@@ -504,7 +504,7 @@ esac
 
 - 仓库根目录留了一份 `version.json` 作为**源头**（发版时改它），但插件实际读的是 **release 资产**（`…/releases/latest/download/version.json`），所以**每次发版都要把 `version.json` 连同二进制/`ui.tar.gz` 一起传到 release**。
 - 插件把远端各组件版本与本地记录（localStorage）比对，标“可更新”；可单独更新某个组件，也可一键更新全部。二进制更新先下到 `*.new` 再 `mv` 覆盖（避开运行中可执行文件的 `ETXTBSY`），devui 更新后校验失败自动回退原厂。
-- **彻底卸载**清 `/data/plugins/u60pro-devui`、`/data/plugins/zwrt-datad`、历史残留 `/data/u60pro` 与 `/data/ui`，删掉 `/etc/rc.local` 里的 `u60pro_devui` 自启行；如果设备上还残留过实验版 `/etc/init.d/u60pro-devui` / `/etc/init.d/zwrt-datad` / `/etc/init.d/u60-datad` 或对应 rc.d 软链接，也一并删除；最后重新启用 `/etc/init.d/zte_topsw_devui`。
+- **彻底卸载**清 `/data/plugins/u60pro-devui`、`/data/plugins/zwrt-datad`、历史残留 `/data/u60pro` 与旧 `/data/ui`，删掉 `/etc/rc.local` 里的 `u60pro_devui` 自启行；如果设备上还残留过实验版 `/etc/init.d/u60pro-devui` / `/etc/init.d/zwrt-datad` / `/etc/init.d/u60-datad` 或对应 rc.d 软链接，也一并删除；最后重新启用 `/etc/init.d/zte_topsw_devui`。
 
 ### 更新源：GitHub release
 
@@ -515,7 +515,7 @@ esac
 - datad 仓库资产：`zwrt-datad-aarch64`、`version.json`
 
 **发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`；改了 `ui/*.html` / `style.css` 这类界面文件就也要升 `ui`；两边都改就两项都升）→ 传 `version.json` + 资产到 GitHub release。若你在仓库外另做镜像，直接镜像 GitHub release 的同名文件即可；本仓库不再维护手动网盘同步脚本。
-> **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
+> **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/plugins/u60pro-devui/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量；如果设备还遗留旧 `/data/ui`，则先迁移再删除。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
 > **坑：`ui.tar.gz` 的打包结构必须和旧版保持一致。** 设备侧更新逻辑默认期望的是“**顶层平铺页面文件**”的 tar 包：只有 `01-signal.html`、`02-sms.html`、…、`style.css`，**没有** `ui/` 目录、**没有** `./` 前缀、**没有** macOS 产生的 `._*` AppleDouble 文件。用 macOS 自带打包工具直接打整个目录时，容易把这些额外条目也塞进去，导致 UI 更新失败。打包时应显式关闭资源叉（如 `COPYFILE_DISABLE=1`），并直接列出页面文件名生成 tar。
 
 ## 仓库约定
@@ -534,10 +534,10 @@ esac
   - `u60pro-devui/html-poc.zigtest`
 - 推送方式：设备侧没有 `scp`，改用 `ssh` stdin 直接写入 `/tmp/u60-datad.zigtest` 和 `/tmp/html-poc.zigtest`
 - 测试步骤：
-  - 停掉正式 `/data/u60pro/u60-datad -i 1000` 与 `/data/u60pro/u60pro-devui`
+  - 停掉正式 `/data/plugins/zwrt-datad/zwrt-datad -i 1000` 与 `/data/plugins/u60pro-devui/u60pro-devui`
   - 启动 `/tmp/u60-datad.zigtest -i 1000`
   - 启动 `/tmp/html-poc.zigtest`
-  - 连续 `touch /data/ui/style.css` 6 轮，观察 UI 进程在重复 CSS reload 下的 RSS / VSZ
+  - 连续 `touch /data/plugins/u60pro-devui/ui/style.css` 6 轮，观察 UI 进程在重复 CSS reload 下的 RSS / VSZ
 - 设备侧观测：
   - UI 启动日志正常：DRM / touch / power key 均成功初始化
   - UI RSS：`5272 KB -> 5296 KB -> 5296 KB -> 5452 KB -> 5912 KB -> 5912 KB -> 5968 KB`

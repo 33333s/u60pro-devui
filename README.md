@@ -12,20 +12,20 @@
 
 ## 核心理念：程序固定，界面是数据
 
-程序本身不内置任何画面。它在运行时去 `/data/ui` 读取你写的 **HTML/CSS** 并渲染到屏幕。想改界面，**完全不用重新编译**——改 HTML、推到设备、约 1 秒内自动生效。
+程序本身不内置任何画面。它在运行时去 `/data/plugins/u60pro-devui/ui` 读取你写的 **HTML/CSS** 并渲染到屏幕。想改界面，**完全不用重新编译**——改 HTML、推到设备、约 1 秒内自动生效。
 
 👉 **想自己写界面，看这份教程：[docs/UI-GUIDE.md](docs/UI-GUIDE.md)**
 
 ```text
 后端 zwrt-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
                                                                   ├─▶ u60pro-devui ──▶ 屏幕（DRM/KMS）
-你写的 /data/ui/*.html + style.css ───────────────────────────────┘
+你写的 /data/plugins/u60pro-devui/ui/*.html + style.css ───────────┘
 ```
 
 - **渲染**：[litehtml](https://github.com/litehtml/litehtml)（HTML/CSS 排版）+ FreeType（含 CJK 字体）→ 直接画进 RGB565 framebuffer。无浏览器、无 JavaScript；状态只经本机 `127.0.0.1` 的 HTTP/SSE 读取。
 - **显示**：[src/drm_disp.c](src/drm_disp.c) 打开 `/dev/dri/card0`，运行时枚举面板/crtc/mode，映射 RGB565 dumb framebuffer，通过 `DIRTYFB` 提交。
 - **触摸**：[src/touch_input.c](src/touch_input.c) 自动探测触摸屏并缩放坐标；电源键短按息屏、长按菜单。
-- **界面**：`/data/ui` 下每个 `NN-名字.html` 一页，`style.css` 共享样式。HTML 里的 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
+- **界面**：`/data/plugins/u60pro-devui/ui` 下每个 `NN-名字.html` 一页，`style.css` 共享样式。HTML 里的 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
 - **外部接口**：内建本地 `DEVUI-IPC`，保留原生状态栏；其他进程可直接把内容投到状态栏下方的内容区，并通过点击事件日志驱动自己的交互逻辑。
 - **后端**：配套 `zwrt-datad`（[github.com/33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)），轮询 `ubus` 后通过 `GET /state` 和 `SSE /events` 提供完整 JSON 快照；UI 只读这个本机接口，自己从不碰 ubus。
 
@@ -55,7 +55,8 @@ bash scripts/_build_htmlpoc.sh
 
 ```sh
 # 推送界面文件
-adb push ui/*.html ui/*.css /data/ui/
+adb shell 'mkdir -p /data/plugins/u60pro-devui/ui'
+adb push ui/*.html ui/*.css /data/plugins/u60pro-devui/ui/
 
 # 推送并运行（先停原厂 UI 释放面板）
 adb shell 'mkdir -p /data/plugins/u60pro-devui'
@@ -65,9 +66,9 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
            nohup /data/plugins/u60pro-devui/u60pro-devui >/tmp/devui.log 2>&1 &'
 ```
 
-> Windows 下用 Git-Bash 跑 `adb push /data/...` 可能因路径翻译卡住，建议用 PowerShell 跑 adb。
+> Windows 下用 Git-Bash 跑 `adb push /data/...` 可能因路径翻译卡住，建议用 PowerShell 跑 adb。旧版如果还把页面放在 `/data/ui`，新版 `start.sh` 和安装脚本会在首次启动时自动迁到新目录。
 
-开机自启：把 `devui` 放到 `/data/plugins/u60pro-devui/`，把后端 `zwrt-datad` 放到 `/data/plugins/zwrt-datad/`，再用 `scripts/install-autostart.sh` 安装当前验证过的稳定链路：保留原厂 `zte_topsw_devui` 做早期屏幕/触摸 bring-up，再由 `rc.local -> /data/plugins/u60pro-devui/start.sh legacy` 晚接管。它也会顺手清理旧的 `/data/u60pro` 残留文件、重复钩子和实验性 `procd` 软链接。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+开机自启：把 `devui` 放到 `/data/plugins/u60pro-devui/`，把后端 `zwrt-datad` 放到 `/data/plugins/zwrt-datad/`，再用 `scripts/install-autostart.sh` 安装当前验证过的稳定链路：保留原厂 `zte_topsw_devui` 做早期屏幕/触摸 bring-up，再由 `rc.local -> /data/plugins/u60pro-devui/start.sh legacy` 晚接管。它也会顺手迁移旧版 `/data/ui` 到 `/data/plugins/u60pro-devui/ui`，并清理旧的 `/data/u60pro` 残留文件、重复钩子和实验性 `procd` 软链接。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 ## 版本清单与更新
 

@@ -1,5 +1,6 @@
 /*
- * htmlmain.c - HTML UI shell. The program is fixed; the UI lives in /data/ui
+ * htmlmain.c - HTML UI shell. The program is fixed; the UI lives in
+ * /data/plugins/u60pro-devui/ui
  * as plain HTML/CSS. Each *.html (except menu.html) is a swipeable page;
  * {{TOKENS}} are filled from the zwrt-datad snapshot. Touch swipes pages and
  * taps fire anchor actions (href="act:..."). Power key: short = backlight,
@@ -48,7 +49,7 @@ extern int         html_view_render_overlay(const char *html);
 static void        maybe_dump_fb(drm_disp_t *d);
 
 #ifndef UI_DIR
-#define UI_DIR "/data/ui"
+#define UI_DIR "/data/plugins/u60pro-devui/ui"
 #endif
 #define UI_FONT "/usr/ui/fonts/ZTEZhengYuan.ttf"
 

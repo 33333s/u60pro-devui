@@ -1,6 +1,6 @@
 # 自定义界面教程（写自己的 UI）
 
-`u60pro-devui` 的设计是：**程序固定，界面是数据**。二进制本身不内置任何画面，它在运行时去 `/data/ui` 目录读取你写的 **HTML/CSS** 并渲染到屏幕。所以你想改界面，**完全不用重新编译**——改 HTML、推到设备、即时生效。
+`u60pro-devui` 的设计是：**程序固定，界面是数据**。二进制本身不内置任何画面，它在运行时去 `/data/plugins/u60pro-devui/ui` 目录读取你写的 **HTML/CSS** 并渲染到屏幕。所以你想改界面，**完全不用重新编译**——改 HTML、推到设备、即时生效。
 
 这份文档教你从零写一套自己的界面。
 
@@ -11,10 +11,10 @@
 ```text
 后端 zwrt-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
                                                                   ├─▶ u60pro-devui ──▶ 屏幕
-你写的 /data/ui/*.html + style.css ───────────────────────────────┘
+你写的 /data/plugins/u60pro-devui/ui/*.html + style.css ───────────┘
 ```
 
-- 程序把 `/data/ui` 下每个 `*.html` 当作**一页**，左右滑动切换。
+- 程序把 `/data/plugins/u60pro-devui/ui` 下每个 `*.html` 当作**一页**，左右滑动切换。
 - 渲染前，程序会把 HTML 里的 `{{令牌}}` 替换成实时数据（电量、信号、WiFi 密码……）。
 - 点击带 `href="act:xxx"` 的链接会触发**动作**（翻页、切主题、显示密码等），而不是跳转网页。
 - HTML / CSS 仍然按文件热加载，所以 `adb push` 完不用重启，约 1 秒内自动生效；状态数据则来自本机 HTTP/SSE 缓存。
@@ -29,7 +29,7 @@
 - 目录结构：
 
 ```text
-/data/ui/
+/data/plugins/u60pro-devui/ui/
 ├── 01-signal.html    # 第 1 页（按文件名排序）：信号 / 载波
 ├── 02-sms.html       # 第 2 页：短信列表（只读）
 ├── 03-wifi.html      # 第 3 页：WiFi / 设备 / DHCP
@@ -46,6 +46,7 @@
 - `lockscreen.html` 是特殊页：开启锁屏后，超时/电源键锁屏时全屏显示 PIN 键盘（解锁正确才回到界面）；系统页锁屏开关从关→开时也用它设置新密码。
 - 特殊页按全屏覆盖层处理，不继承普通页面的竖向滚动位置。
 - 所有页面用 `<link rel="stylesheet" href="style.css">` 共享同一份样式。
+- 旧版若还残留 `/data/ui`，新版安装脚本会自动把它迁移到这里。
 
 ---
 
@@ -210,15 +211,16 @@ body.light .card { background: #ffffff; }
 
 ```sh
 # 推送你的界面（程序会自动热重载，无需重启）
-adb push 你的页面.html /data/ui/
-adb push style.css     /data/ui/
+adb shell 'mkdir -p /data/plugins/u60pro-devui/ui'
+adb push 你的页面.html /data/plugins/u60pro-devui/ui/
+adb push style.css     /data/plugins/u60pro-devui/ui/
 ```
 
-注意（Windows 用户）：用 Git-Bash/MSYS 跑 `adb push` 时，`/data/ui/` 这种路径可能被错误地翻译成本地路径导致卡住。**建议用 PowerShell 跑 adb**，或一个文件一个文件地推。
+注意（Windows 用户）：用 Git-Bash/MSYS 跑 `adb push` 时，`/data/plugins/u60pro-devui/ui/` 这种路径可能被错误地翻译成本地路径导致卡住。**建议用 PowerShell 跑 adb**，或一个文件一个文件地推。
 
 调试技巧：
 
-- 改完看不到效果？确认推到的是 `/data/ui/`，并且程序在运行（`pidof u60pro-devui`）。
+- 改完看不到效果？确认推到的是 `/data/plugins/u60pro-devui/ui/`，并且程序在运行（`pidof u60pro-devui`）。
 - 排版乱 / 下面看不到？先确认页面高度和底部留白是否合理；长页面可以竖向滚动，但内容特别多时仍建议精简或拆页。
 - 出现豆腐块 □？是字体缺这个符号字形，换中文或 CSS 画。
 - 想从零做：复制现成的 `01-signal.html` 改，是最快的起点。
@@ -227,7 +229,7 @@ adb push style.css     /data/ui/
 
 ## 9. 一个完整示例：加一页"关于"
 
-新建 `/data/ui/04-about.html`：
+新建 `/data/plugins/u60pro-devui/ui/04-about.html`：
 
 ```html
 <!DOCTYPE html>
@@ -253,7 +255,7 @@ adb push style.css     /data/ui/
 ```
 
 ```sh
-adb push 04-about.html /data/ui/
+adb push 04-about.html /data/plugins/u60pro-devui/ui/
 ```
 
 滑到第 4 页就能看到，圆点也自动变 4 个。完成。

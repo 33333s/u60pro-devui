@@ -1,4 +1,4 @@
-/* Shared styles for /data/ui. 320x480, litehtml (no grid/JS/animation).
+/* Shared styles for /data/plugins/u60pro-devui/ui. 320x480, litehtml (no grid/JS/animation).
    Theme via <body class="{{THEME}}">  (dark | light). */
 
 html, body { margin: 0; padding: 0; }

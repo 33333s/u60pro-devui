@@ -1,9 +1,9 @@
 /*
  * devui_ext.h - optional external display channel for u60pro-devui.
  *
- * The normal /data/ui page flow remains the owner of the screen until a local
- * client submits an external frame. External content is held in a logical
- * RGB565 canvas and can be closed explicitly or by TTL.
+ * The normal /data/plugins/u60pro-devui/ui page flow remains the owner of the
+ * screen until a local client submits an external frame. External content is
+ * held in a logical RGB565 canvas and can be closed explicitly or by TTL.
  *
  * SPDX-License-Identifier: MIT
  */
