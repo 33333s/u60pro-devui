@@ -696,9 +696,9 @@ static void enter_lock(int setup)
 }
 
 /* ---- persisted UI settings (theme / speed unit / auto-off / refresh interval).
- * Stored next to the binary in /data/u60pro so they survive reinstalling the
+ * Stored next to the binary in /data/plugins/u60pro-devui so they survive reinstalling the
  * binary and re-pushing UI files (the PIN persists separately in .lockpin). */
-#define CONF_FILE "/data/u60pro/devui.conf"
+#define CONF_FILE "/data/plugins/u60pro-devui/devui.conf"
 static void load_conf(void)
 {
     FILE *fp = fopen(CONF_FILE, "r");
@@ -2567,7 +2567,7 @@ int main(void)
                         else if (!strcmp(a, "revealcell")) { g_show_cellid = !g_show_cellid; need_render = 1; }
                         else if (!strcmp(a, "revealimei")) { g_show_imei = !g_show_imei; need_render = 1; }
                         else if (!strcmp(a, "refreshambr")) {
-                            system("(kill -USR1 $(pidof u60-datad 2>/dev/null) >/dev/null 2>&1) || true");
+                            system("(kill -USR1 $(pidof zwrt-datad 2>/dev/null) >/dev/null 2>&1) || true");
                             snprintf(g_toast, sizeof g_toast, "已请求刷新 AMBR");
                             g_toast_until = now + 1600;
                             need_render = 1;

@@ -1,7 +1,7 @@
 /*
  * ui.c - U60Pro multi-page dashboard (LVGL tileview).
  *
- * Pages swipe horizontally: [Home] [Network]. Live values come from u60-datad
+ * Pages swipe horizontally: [Home] [Network]. Live values come from zwrt-datad
  * via data.c, refreshed at 1 Hz. Power key: short = backlight on/off,
  * long = power menu. No ubus here.
  *

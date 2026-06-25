@@ -1,5 +1,24 @@
 # 更新日志
 
+> 当前正式命名与安装路径已经统一为：`zwrt-datad`、`/data/plugins/zwrt-datad/zwrt-datad`、`/data/plugins/u60pro-devui/`。历史条目里如果出现 `u60-datad` 或 `/data/u60pro`，表示当时版本记录。
+
+## v1.2.1 - 2026-06-26
+
+### 变更
+
+- **安装目录统一迁移到 `/data/plugins/`**：`devui` 固定安装到 `/data/plugins/u60pro-devui/`，后端固定安装到 `/data/plugins/zwrt-datad/`，并统一清理旧 `/data/u60pro` 残留。
+- **`rc.local` 自启链路切到新路径**：稳定启动入口统一收敛到 `/data/plugins/u60pro-devui/start.sh`，后端进程名统一改为 `zwrt-datad`。
+- **设备侧调试脚本同步到 HTTP/SSE**：辅助脚本不再依赖旧的 `state.json` 文件路径，统一以本机 `GET /state` 为准。
+
+### 文档
+
+- **README / 开发文档 / 更新日志补齐新目录规范**：当前安装方式、发布资产名和卸载说明全部统一到 `zwrt-datad` 与 `/data/plugins/...`。
+
+### 验证
+
+- 已在实机上完成目录迁移验证：正式运行路径改为 `/data/plugins/zwrt-datad/zwrt-datad` 与 `/data/plugins/u60pro-devui/u60pro-devui`。
+- 已确认新版 `start.sh`、`install-autostart.sh` 与插件目录布局一致，旧 `/data/u60pro` 可在安装时被清理。
+
 ## v1.2.0 - 2026-06-26
 
 ### 变更
@@ -14,9 +33,9 @@
 
 ### 验证
 
-- 已在实机上完成联调：正式 `/data/u60pro/u60-datad` 与 `/data/u60pro/u60pro-devui` 已替换为新版本。
+- 已在实机上完成联调：正式 `zwrt-datad` 与 `u60pro-devui` 已替换为新版本。
 - 已实测：`GET /state` 正常返回完整 JSON，`GET /events` 正常推送 `event: state`。
-- 已实测：正式 `u60pro-devui` 与 `u60-datad` 在设备侧建立本机长连接，UI 正在消费 `127.0.0.1:9460` 的 SSE。
+- 已实测：正式 `u60pro-devui` 与 `zwrt-datad` 在设备侧建立本机长连接，UI 正在消费 `127.0.0.1:9460` 的 SSE。
 
 ## v1.1.3 - 2026-06-25
 

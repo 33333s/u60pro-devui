@@ -1,5 +1,5 @@
 /*
- * data.c - read device state from the u60-datad HTTP/SSE backend.
+ * data.c - read device state from the zwrt-datad HTTP/SSE backend.
  *
  * SPDX-License-Identifier: MIT
  */

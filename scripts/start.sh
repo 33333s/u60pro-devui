@@ -1,12 +1,18 @@
 #!/bin/sh
-# Boot launcher for the U60Pro screen UI. Installed at /data/u60pro/start.sh
+# Boot launcher for the U60Pro screen UI. Installed at
+# /data/plugins/u60pro-devui/start.sh
 # and invoked either by the procd init service or by the legacy rc.local hook.
 # In procd mode it execs the foreground UI process. In legacy mode it keeps the
 # old nohup-based launch path for manual installs and older plugins.
 #
 # SPDX-License-Identifier: MIT
-DIR=/data/u60pro
+DEVUI_DIR=/data/plugins/u60pro-devui
+DATAD_DIR=/data/plugins/zwrt-datad
+DEVUI_BIN=$DEVUI_DIR/u60pro-devui
+DATAD_BIN=$DATAD_DIR/zwrt-datad
 MODE="${1:-legacy}"
+
+mkdir -p "$DEVUI_DIR" "$DATAD_DIR"
 
 read_mode_main_state() {
     awk -F"'" '/option mode_main_state/ { print $2; exit }' /etc/config/zwrt_zte_mc_tmp 2>/dev/null
@@ -17,7 +23,7 @@ read_reboot_reason_code() {
 }
 
 boot_trace() {
-    LOG="$DIR/boot-trace.log"
+    LOG="$DEVUI_DIR/boot-trace.log"
     {
         echo "=== $(date '+%Y-%m-%d %H:%M:%S') ==="
         echo "mode_main_state=$mode_main_state"
@@ -60,9 +66,10 @@ stop_vendor_ui() {
 
 start_datad_legacy() {
     [ "$BOOTMODE" = normal ] || return 0
-    [ -x "$DIR/u60-datad" ] || return 0
-    pidof u60-datad >/dev/null 2>&1 && return 0
-    nohup "$DIR/u60-datad" -i 1000 >/tmp/u60-datad.log 2>&1 </dev/null &
+    [ -x "$DATAD_BIN" ] || return 0
+    pidof zwrt-datad >/dev/null 2>&1 && return 0
+    killall -9 u60-datad 2>/dev/null
+    nohup "$DATAD_BIN" -i 1000 >/tmp/zwrt-datad.log 2>&1 </dev/null &
     sleep 1
 }
 
@@ -85,8 +92,8 @@ boot_trace
 case "$MODE" in
     procd)
         stop_vendor_ui
-        [ -x "$DIR/u60pro-devui" ] || exit 1
-        exec "$DIR/u60pro-devui"
+        [ -x "$DEVUI_BIN" ] || exit 1
+        exec "$DEVUI_BIN"
         ;;
     legacy)
         stop_vendor_ui
@@ -94,7 +101,7 @@ case "$MODE" in
         # For charge-only boots the full-screen charging UI can fall back to
         # sysfs, so there is no need to wake extra polling daemons.
         start_datad_legacy
-        [ -x "$DIR/u60pro-devui" ] && nohup "$DIR/u60pro-devui" >/tmp/u60pro-devui.log 2>&1 </dev/null &
+        [ -x "$DEVUI_BIN" ] && nohup "$DEVUI_BIN" >/tmp/u60pro-devui.log 2>&1 </dev/null &
         ;;
     *)
         echo "usage: $0 [procd|legacy]" >&2

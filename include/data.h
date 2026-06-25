@@ -1,7 +1,7 @@
 /*
- * data.h - device state consumed from the u60-datad backend.
+ * data.h - device state consumed from the zwrt-datad backend.
  *
- * Reads the u60-datad HTTP/SSE backend snapshot.
+ * Reads the zwrt-datad HTTP/SSE backend snapshot.
  * The GUI never calls ubus directly. If the backend isn't running, refresh
  * returns 0 and the UI shows placeholders.
  *

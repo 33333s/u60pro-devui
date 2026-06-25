@@ -9,7 +9,7 @@
 ## 1. 它是怎么跑起来的
 
 ```text
-后端 u60-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
+后端 zwrt-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
                                                                   ├─▶ u60pro-devui ──▶ 屏幕
 你写的 /data/ui/*.html + style.css ───────────────────────────────┘
 ```

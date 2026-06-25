@@ -17,7 +17,7 @@
 👉 **想自己写界面，看这份教程：[docs/UI-GUIDE.md](docs/UI-GUIDE.md)**
 
 ```text
-后端 u60-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
+后端 zwrt-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
                                                                   ├─▶ u60pro-devui ──▶ 屏幕（DRM/KMS）
 你写的 /data/ui/*.html + style.css ───────────────────────────────┘
 ```
@@ -27,7 +27,7 @@
 - **触摸**：[src/touch_input.c](src/touch_input.c) 自动探测触摸屏并缩放坐标；电源键短按息屏、长按菜单。
 - **界面**：`/data/ui` 下每个 `NN-名字.html` 一页，`style.css` 共享样式。HTML 里的 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
 - **外部接口**：内建本地 `DEVUI-IPC`，保留原生状态栏；其他进程可直接把内容投到状态栏下方的内容区，并通过点击事件日志驱动自己的交互逻辑。
-- **后端**：配套 `u60-datad`（[github.com/33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)），轮询 `ubus` 后通过 `GET /state` 和 `SSE /events` 提供完整 JSON 快照；UI 只读这个本机接口，自己从不碰 ubus。
+- **后端**：配套 `zwrt-datad`（[github.com/33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)），轮询 `ubus` 后通过 `GET /state` 和 `SSE /events` 提供完整 JSON 快照；UI 只读这个本机接口，自己从不碰 ubus。
 
 自带的示例界面（[ui/](ui/)）含六页：信号、短信、WiFi、选网/锁频、图表、系统设置。系统页包含亮度/息屏/锁屏、USB-C 供电方向、USB 网络共享、速率单位和主题等开关。
 
@@ -58,15 +58,16 @@ bash scripts/_build_htmlpoc.sh
 adb push ui/*.html ui/*.css /data/ui/
 
 # 推送并运行（先停原厂 UI 释放面板）
-adb push html-poc.stripped /data/u60pro/u60pro-devui
+adb shell 'mkdir -p /data/plugins/u60pro-devui'
+adb push html-poc.stripped /data/plugins/u60pro-devui/u60pro-devui
 adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
-           chmod 755 /data/u60pro/u60pro-devui;
-           nohup /data/u60pro/u60pro-devui >/tmp/devui.log 2>&1 &'
+           chmod 755 /data/plugins/u60pro-devui/u60pro-devui;
+           nohup /data/plugins/u60pro-devui/u60pro-devui >/tmp/devui.log 2>&1 &'
 ```
 
 > Windows 下用 Git-Bash 跑 `adb push /data/...` 可能因路径翻译卡住，建议用 PowerShell 跑 adb。
 
-开机自启：把二进制和后端放到持久化的 `/data/u60pro/`，用 `scripts/install-autostart.sh` 安装当前验证过的稳定链路：保留原厂 `zte_topsw_devui` 做早期屏幕/触摸 bring-up，再由 `rc.local -> /data/u60pro/start.sh legacy` 晚接管。它也会顺手清理旧的重复钩子和实验性 `procd` 软链接。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+开机自启：把 `devui` 放到 `/data/plugins/u60pro-devui/`，把后端 `zwrt-datad` 放到 `/data/plugins/zwrt-datad/`，再用 `scripts/install-autostart.sh` 安装当前验证过的稳定链路：保留原厂 `zte_topsw_devui` 做早期屏幕/触摸 bring-up，再由 `rc.local -> /data/plugins/u60pro-devui/start.sh legacy` 晚接管。它也会顺手清理旧的 `/data/u60pro` 残留文件、重复钩子和实验性 `procd` 软链接。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 ## 版本清单与更新
 
@@ -77,7 +78,7 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 ```jsonc
 // 本仓库 version.json
 { "schema": 1,
-  "devui": { "version": "1.2.0", "asset": "u60pro-devui-aarch64" },
+  "devui": { "version": "1.2.1", "asset": "u60pro-devui-aarch64" },
   "ui":    { "version": "0.4.3", "asset": "ui.tar.gz" } }
 ```
 

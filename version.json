@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "devui": {
-    "version": "1.2.0",
+    "version": "1.2.1",
     "asset": "u60pro-devui-aarch64",
-    "notes": "DevUI 改为直连 u60-datad 的 HTTP/SSE 接口，并以 live snapshot + 提交节流方式驱动页面刷新"
+    "notes": "DevUI 启动链路和持久化路径统一迁移到 /data/plugins/u60pro-devui，并配套 zwrt-datad 新目录布局"
   },
   "ui": {
     "version": "0.4.3",
