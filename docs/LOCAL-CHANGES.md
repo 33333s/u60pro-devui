@@ -2,6 +2,53 @@
 
 记录时间：2026-06-25
 
+## v1.1.1 发布状态
+
+- 本次发布 tag：`v1.1.1`
+- 前端仓库：`33333s/u60pro-devui`
+- 本次为**devui + ui 双补丁版**：`devui` 升到 `1.1.1`，`ui` 升到 `0.4.1`
+
+## v1.1.1 本次发布内容
+
+这次发布围绕“修复短信读不到 / 点错内容”和“压住 litehtml 页面重建后的内存增长”展开，重点如下：
+
+- `src/html_view.cpp`：重建页面前先释放旧 document / container 状态，避免频繁重排后 RSS 持续抬升。
+- `src/htmlmain.c`：页面重绘由 `state.json` mtime 和分钟跳变驱动；短信点击动作从序号切到短信 ID；熄屏时主动清理页面 HTML 复用缓存，并把 `style.css` mtime 纳入复用判定。
+- `scripts/install-autostart.sh`、`scripts/start.sh`：把默认启动策略收敛回“vendor bring-up + `rc.local` 晚接管”的已验证稳定链路，同时保留 `start.sh procd` 作为手动实验入口。
+- `ui/06-system.html`：同步调整系统页与说明文案，配合本次界面版本更新。
+- `CHANGELOG.md`、`README.md`、`docs/DEVELOPMENT.md`：把 GitHub release 资产、`version.json` 示例和打包约束更新到本次真实版本。
+
+## v1.1.1 实机验证结论
+
+已在设备上以 `/tmp` 临时测试二进制做 smoke test：
+
+- `/tmp/html-poc.zigtest` 可正常启动并接管 DRM / 触摸。
+- 连续 6 轮 CSS reload 后，UI RSS 约从 `5272 KB` 升到 `5968 KB`，未复现早期“几十 MB 很快冲到 200 MB”的失控增长。
+- 配合 `/tmp/u60-datad.zigtest` 运行时，设备侧 `state.json` 可命中 `sms` 相关字段，确认短信状态链路是通的。
+
+## v1.1.1 本次发布文件
+
+- `src/htmlmain.c`
+- `src/html_view.cpp`
+- `src/json.c`
+- `src/data.c`
+- `include/data.h`
+- `ui/06-system.html`
+- `scripts/install-autostart.sh`
+- `scripts/start.sh`
+- `version.json`
+- `README.md`
+- `CHANGELOG.md`
+- `docs/DEVELOPMENT.md`
+- `docs/UI-GUIDE.md`
+- `docs/LOCAL-CHANGES.md`
+
+## v1.1.1 Release 资产
+
+- `u60pro-devui-aarch64`
+- `ui.tar.gz`
+- `version.json`
+
 ## v1.1.0 发布状态
 
 - 本次发布 tag：`v1.1.0`

@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <sys/stat.h>
 
 using namespace litehtml;
 
@@ -73,6 +74,85 @@ struct ft_font { int size; int ascent, descent, height; };
 /* UI base dir (for <link> CSS / images) and last-clicked anchor href. */
 static std::string g_ui_dir = "/data/ui";
 static std::string g_clicked;
+
+static long long css_file_mtime_ns(const std::string &path)
+{
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return -1;
+    return (long long)st.st_mtime * 1000000000LL + (long long)st.st_mtim.tv_nsec;
+}
+
+struct css_cache_entry {
+    std::string path;
+    std::string text;
+    long long mtime = -1;
+    bool used = false;
+};
+
+static css_cache_entry g_css_cache[4];
+static int g_css_cache_next;
+
+static int read_file_text(const char *path, std::string &out)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    long n;
+    int ok = 0;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        n = ftell(f);
+        if (n >= 0) {
+            if (n > 0) {
+                out.resize((size_t)n);
+                fseek(f, 0, SEEK_SET);
+                ok = (fread(&out[0], 1, (size_t)n, f) == (size_t)n);
+            } else {
+                out.clear();
+                ok = 1;
+            }
+        }
+    }
+    fclose(f);
+    if (!ok) out.clear();
+    return ok;
+}
+
+static void css_get_cached(std::string &out, const std::string &path)
+{
+    long long mtime = css_file_mtime_ns(path);
+    if (mtime < 0) return;
+
+    for (int i = 0; i < 4; i++) {
+        css_cache_entry &e = g_css_cache[i];
+        if (!e.used || e.path != path) continue;
+        if (e.mtime == mtime && !e.text.empty()) {
+            out = e.text;
+            return;
+        }
+        if (read_file_text(path.c_str(), e.text)) {
+            e.mtime = mtime;
+            out = e.text;
+            return;
+        }
+        out = e.text;
+        return;
+    }
+
+    css_cache_entry *e = nullptr;
+    for (int i = 0; i < 4; i++) {
+        if (!g_css_cache[i].used) { e = &g_css_cache[i]; break; }
+    }
+    if (!e) {
+        e = &g_css_cache[g_css_cache_next];
+        g_css_cache_next = (g_css_cache_next + 1) % 4;
+    }
+    std::string next;
+    if (!read_file_text(path.c_str(), next)) return;
+    e->path = path;
+    e->text = std::move(next);
+    e->mtime = mtime;
+    e->used = true;
+    out = e->text;
+}
 
 static unsigned utf8_next(const char *&s)
 {
@@ -264,6 +344,7 @@ public:
 
     void set_clip(const position &pos, const border_radiuses &) override { m_clip.push_back(pos); }
     void del_clip() override { if (!m_clip.empty()) m_clip.pop_back(); }
+    void reset_state() { m_clip.clear(); }
 
     void get_viewport(position &v) const override { v = position(0, 0, (pixel_t)g_w, (pixel_t)g_h); }
     void get_media_features(media_features &m) const override {
@@ -284,11 +365,7 @@ public:
     void transform_text(string &, text_transform) override {}
     void import_css(string &text, const string &url, string &) override {
         std::string path = g_ui_dir + "/" + url;
-        FILE *f = fopen(path.c_str(), "rb");
-        if (!f) return;
-        fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
-        if (n > 0) { text.resize(n); if (fread(&text[0], 1, n, f) != (size_t)n) text.clear(); }
-        fclose(f);
+        css_get_cached(text, path);
     }
     element::ptr create_element(const char *, const string_map &, const std::shared_ptr<document> &) override { return nullptr; }
 };
@@ -310,8 +387,13 @@ extern "C" void html_view_init(uint16_t *fb, int w, int h, int pitch_px, int rot
 /* Parse + lay out + paint an HTML string into the framebuffer. Returns height. */
 extern "C" int html_view_render_html(const char *html)
 {
-    g_doc = document::createFromString(html, g_container);
-    if (!g_doc) return -1;
+    if (!html || !g_container) return -1;
+    g_container->reset_state();
+    g_doc.reset();
+    document::ptr doc = document::createFromString(html, g_container);
+    if (!doc) return -1;
+
+    g_doc = doc;
     g_doc->render((pixel_t)g_w);
     for (int i = 0; i < g_pitch_px * g_h; i++) g_fb[i] = 0;
     position clip(0, 0, (pixel_t)g_w, (pixel_t)g_h);
@@ -325,8 +407,13 @@ extern "C" int html_view_render_html(const char *html)
  * hit it. Used for modal dialogs. */
 extern "C" int html_view_render_overlay(const char *html)
 {
-    g_doc = document::createFromString(html, g_container);
-    if (!g_doc) return -1;
+    if (!html || !g_container) return -1;
+    g_container->reset_state();
+    g_doc.reset();
+    document::ptr doc = document::createFromString(html, g_container);
+    if (!doc) return -1;
+
+    g_doc = doc;
     g_doc->render((pixel_t)g_w);
     position clip(0, 0, (pixel_t)g_w, (pixel_t)g_h);
     g_doc->draw((uint_ptr)0, 0, 0, &clip);

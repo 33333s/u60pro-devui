@@ -1,10 +1,12 @@
 #!/bin/sh
 # Boot launcher for the U60Pro screen UI. Installed at /data/u60pro/start.sh
-# and invoked from /etc/rc.local. Stops the vendor UI, then starts the data
-# backend and our UI from the persistent install dir.
+# and invoked either by the procd init service or by the legacy rc.local hook.
+# In procd mode it execs the foreground UI process. In legacy mode it keeps the
+# old nohup-based launch path for manual installs and older plugins.
 #
 # SPDX-License-Identifier: MIT
 DIR=/data/u60pro
+MODE="${1:-legacy}"
 
 read_mode_main_state() {
     awk -F"'" '/option mode_main_state/ { print $2; exit }' /etc/config/zwrt_zte_mc_tmp 2>/dev/null
@@ -48,6 +50,22 @@ boot_trace() {
     tail -n 160 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
 }
 
+stop_vendor_ui() {
+    had_vendor=0
+    pidof zte_topsw_devui >/dev/null 2>&1 && had_vendor=1
+    /etc/init.d/zte_topsw_devui stop 2>/dev/null
+    killall -9 zte_topsw_devui 2>/dev/null
+    [ "$had_vendor" -eq 1 ] && sleep 1
+}
+
+start_datad_legacy() {
+    [ "$BOOTMODE" = normal ] || return 0
+    [ -x "$DIR/u60-datad" ] || return 0
+    pidof u60-datad >/dev/null 2>&1 && return 0
+    nohup "$DIR/u60-datad" -i 1000 >/tmp/u60-datad.log 2>&1 </dev/null &
+    sleep 1
+}
+
 # Power-off charging boots do not expose silent_boot.mode=nonsilent. We still
 # start DevUI there now, but only in its own full-screen charging mode.
 BOOTMODE=charge
@@ -64,16 +82,22 @@ case "$mode_main_state" in
 esac
 boot_trace
 
-# Release the panel from the vendor UI.
-/etc/init.d/zte_topsw_devui stop 2>/dev/null
-killall -9 zte_topsw_devui 2>/dev/null
-sleep 1
-
-# Data aggregator first on normal boots (the UI reads its snapshot). For
-# charge-only boots the full-screen charging UI can fall back to sysfs, so
-# there is no need to wake extra polling daemons.
-if [ "$BOOTMODE" = normal ] && [ -x "$DIR/u60-datad" ]; then
-    nohup "$DIR/u60-datad" -i 1000 >/tmp/u60-datad.log 2>&1 </dev/null &
-    sleep 1
-fi
-[ -x "$DIR/u60pro-devui" ] && nohup "$DIR/u60pro-devui" >/tmp/u60pro-devui.log 2>&1 </dev/null &
+case "$MODE" in
+    procd)
+        stop_vendor_ui
+        [ -x "$DIR/u60pro-devui" ] || exit 1
+        exec "$DIR/u60pro-devui"
+        ;;
+    legacy)
+        stop_vendor_ui
+        # Data aggregator first on normal boots (the UI reads its snapshot).
+        # For charge-only boots the full-screen charging UI can fall back to
+        # sysfs, so there is no need to wake extra polling daemons.
+        start_datad_legacy
+        [ -x "$DIR/u60pro-devui" ] && nohup "$DIR/u60pro-devui" >/tmp/u60pro-devui.log 2>&1 </dev/null &
+        ;;
+    *)
+        echo "usage: $0 [procd|legacy]" >&2
+        exit 2
+        ;;
+esac

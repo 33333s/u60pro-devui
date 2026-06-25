@@ -2,6 +2,88 @@
 
 这份文档记录项目当前最重要的开发事实，方便后续维护、移植，也便于随仓库版本化后公开分享。目标是让关键经验不只停留在本地记忆里，而是和代码一起长期保存。
 
+## 2026-06-25 历史 Review 记录（修复前）
+
+这段保留的是修复前的本地 review 记录，主要作为问题来历备忘；当前状态以后面的“修复后复查补记”和实际代码为准。范围主要看：
+
+- `u60pro-devui/src/htmlmain.c`
+- `u60pro-devui/src/data.c`
+- `u60pro-devui/src/json.c`
+- `u60pro-devui/src/html_view.cpp`
+- `zwrt-datad-u60pro/src/main.c`
+
+当前已经确认的结论：
+
+- **短信“读不到”有一个很硬的根因：当前 `zwrt-datad-u60pro/src/main.c` 源码根本没有产出 `sms` 段。**
+  证据：`build_snapshot()` 里当前只拼了 `net` / `battery` / `clients` / `traffic` / `qos` / `wlan` / `nfc` / `dhcp` / `system`，[`zwrt-datad-u60pro/src/main.c:340`](/Users/y/Documents/devui-workspace/zwrt-datad-u60pro/src/main.c:340) 到 [`zwrt-datad-u60pro/src/main.c:470`](/Users/y/Documents/devui-workspace/zwrt-datad-u60pro/src/main.c:470) 之间没有任何 `zwrt_wms`、`sms`、`zte_libwms_get_sms_data` 或 `"sms":{...}` 输出逻辑。也就是说，如果设备跑的是这份源码编出来的后端，前端的短信页天然只能拿到空数据。
+
+- **前端短信消费链仍然假设后端会提供 `sms`。**
+  `data_refresh()` 会从快照里读 `sms` 并解析列表，见 [`u60pro-devui/src/data.c:118`](/Users/y/Documents/devui-workspace/u60pro-devui/src/data.c:118) 到 [`u60pro-devui/src/data.c:143`](/Users/y/Documents/devui-workspace/u60pro-devui/src/data.c:143)。这说明“短信页空白”不是前端根本没接，而是“消费端在等、生产端没产出”。
+
+- **即便后端把短信段补回，当前 `u60-datad` 的快照缓冲也偏小，长短信/多短信时有高概率直接截断 JSON。**
+  现在 `RAW_MAX` 只有 `8192`，见 [`zwrt-datad-u60pro/src/main.c:33`](/Users/y/Documents/devui-workspace/zwrt-datad-u60pro/src/main.c:33)，主循环最终写出的整份快照缓冲也只有 `char snap[RAW_MAX * 2]`，也就是 16KB，见 [`zwrt-datad-u60pro/src/main.c:564`](/Users/y/Documents/devui-workspace/zwrt-datad-u60pro/src/main.c:564)。这和文档里“最多 32 条短信、每条正文解码后进入 JSON”的目标不匹配；短信一旦恢复，快照很可能先被截断，然后前端再表现成“短信读不到/偶发解析失败”。
+
+- **短信解析还有一个结构性风险：当前 `json_get()` 不是严格 JSON parser，会命中字符串内容里的伪 key。**
+  `find_key()` 只是从头找下一个 `"`，然后比较后面的字面量 key，完全不跳过字符串和转义，见 [`u60pro-devui/src/json.c:13`](/Users/y/Documents/devui-workspace/u60pro-devui/src/json.c:13) 到 [`u60pro-devui/src/json.c:25`](/Users/y/Documents/devui-workspace/u60pro-devui/src/json.c:25)。这在短信场景尤其危险，因为 `text` 是任意用户内容；如果正文里出现形如 `\"unread\":0`、`\"date\":\"...\"` 这样的片段，后续对同一对象取 `unread` / `date` / `text` 都有机会拿错位置。
+
+- **短信点击动作目前绑定的是“列表下标”，不是稳定消息 ID，和 1Hz 刷新组合起来有竞态。**
+  列表生成时把每条短信渲染成 `act:sms:N`，这里的 `N` 只是当前页下标，见 [`u60pro-devui/src/htmlmain.c:1490`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:1490) 到 [`u60pro-devui/src/htmlmain.c:1508`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:1508)。点击后又会重新 `data_refresh()` 一次，再按 `sd.sms[idx]` 取正文，见 [`u60pro-devui/src/htmlmain.c:2555`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:2555) 到 [`u60pro-devui/src/htmlmain.c:2570`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:2570)。如果两次之间后端列表顺序变化（新短信插入、列表被重刷、条目数变化），就可能出现“点开的是另一条”或者“这次直接点不开”。
+
+- **前端短信正文和单对象解析也有固定上限，超长短信会被静默截断。**
+  当前前端每条短信正文只有 `text[700]`，见 [`u60pro-devui/include/data.h:47`](/Users/y/Documents/devui-workspace/u60pro-devui/include/data.h:47)；而解析单个短信对象时，中间缓冲也只有 `obj[1400]`，见 [`u60pro-devui/src/data.c:126`](/Users/y/Documents/devui-workspace/u60pro-devui/src/data.c:126) 到 [`u60pro-devui/src/data.c:136`](/Users/y/Documents/devui-workspace/u60pro-devui/src/data.c:136)。这不会制造常驻泄漏，但会让长正文表现成“只能读到前半截”甚至“对象后半段字段丢失”。
+
+- **目前没在我们自己的 C/C++ 代码里看到一个足以解释 `40MB -> 200MB` 的简单常驻泄漏点。**
+  已检查的动态分配路径主要在模板读取、外部内容通道、DRM 初始化和 litehtml 渲染壳层；C 侧大多都有对应 `free()` / `munmap()`。目前更像是“高频重建页面对象造成的 allocator high-water 增长”，不太像几行漏掉 `free()` 就能解释的线性泄漏。
+
+- **更可疑的内存增长来源，是主循环每秒都强制整页重渲染。**
+  主循环里只要不在拖动，就每秒 `need_render = 1`，见 [`u60pro-devui/src/htmlmain.c:2607`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:2607) 到 [`u60pro-devui/src/htmlmain.c:2612`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:2612)。每次重渲染都会：
+  1. 重新读一遍 HTML 模板文件，见 [`u60pro-devui/src/htmlmain.c:1647`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:1647) 到 [`u60pro-devui/src/htmlmain.c:1655`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:1655)
+  2. 重新 `document::createFromString(...)`
+  3. 重新 layout / draw 整个 litehtml 文档，见 [`u60pro-devui/src/html_view.cpp:311`](/Users/y/Documents/devui-workspace/u60pro-devui/src/html_view.cpp:311) 到 [`u60pro-devui/src/html_view.cpp:320`](/Users/y/Documents/devui-workspace/u60pro-devui/src/html_view.cpp:320)
+
+补充判断：
+
+- 我们自己这边的**静态常驻内存**并不大，肉眼可见的大块主要是几张离屏缓冲和滚动缓冲，量级大约几 MB，不足以单独解释额外一百多 MB 的上涨。
+- 所以如果现场看到 RSS 从约 40MB 长到约 200MB，优先怀疑的是“反复解析 HTML / 构建 litehtml DOM / allocator 不归还高水位”，而不是短信数组、JSON 缓冲这种固定大小对象。
+- 这个判断目前仍然是**静态代码审查推断**，不是运行时 heap profile 结论；要把“高水位”与“真泄漏”彻底区分开，还需要补一次实机采样（比如定时看 `VmRSS` / `VmData`，或者给渲染周期打更细的内存日志）。
+
+后续如果继续修，优先级建议是：
+
+- 先把 `u60-datad` 的短信生产链补回或核对清楚，否则前端再怎么修，部分用户仍会“完全看不到短信”。
+- 把短信点击从“下标寻址”改成“消息 ID 寻址”。
+- 把 `json_get()` 至少修到“不会命中字符串内部的转义引号”。
+- 评估把“每秒整页重建 DOM”改成“数据变化时再重建”，或至少缓存模板文本，减少反复分配。
+
+### 2026-06-25 修复后复查补记
+
+后续又做了一轮“修复后的代码 + 文档”复查，当前结论更新如下：
+
+- **短信生产链、快照缓冲、JSON key 扫描、短信按 ID 打开，这几项代码已经补上。**
+  当前仓库里：
+  - `zwrt-datad-u60pro/src/main.c` 已重新产出 `sms` 段，并缓存未读数和列表
+  - `RAW_MAX/SNAP_MAX` 等缓冲已显著放大
+  - `u60pro-devui/src/json.c` / `zwrt-datad-u60pro/src/json.c` 的 `find_key()` 已改成跳过字符串内容
+  - `u60pro-devui/src/htmlmain.c` 的短信列表与点击动作已从 `act:sms:N` 改成 `act:sms:ID`
+  - `u60pro-devui/src/html_view.cpp` 里已在新建 `litehtml::document` 前先 `g_doc.reset()`
+
+- **当前剩下最值得优先处理的代码风险，是页面 HTML 渲染缓存和息屏/唤醒流程之间的交互。**
+  `render()` 里如果判定 `reuse`，会直接跳过 `html_view_render_html()`，见 [`u60pro-devui/src/htmlmain.c:1850`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:1850) 到 [`u60pro-devui/src/htmlmain.c:1874`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:1874)。但 `screen_off()` 会先把整块 framebuffer 清黑，见 [`u60pro-devui/src/htmlmain.c:2044`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:2044) 到 [`u60pro-devui/src/htmlmain.c:2048`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:2048)；随后 `screen_on()` 只是再次调用 `render()`，见 [`u60pro-devui/src/htmlmain.c:2053`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:2053) 到 [`u60pro-devui/src/htmlmain.c:2057`](/Users/y/Documents/devui-workspace/u60pro-devui/src/htmlmain.c:2057)。如果此时命中 `reuse`，页面主体有机会不重画，只剩状态栏 / 原生覆盖层被补上。这个点更像是新增缓存带来的显示回归，需要实机确认并大概率要在唤醒前主动失效缓存。
+
+- **文档现在有几处明显过期，已经和当前代码不一致。**
+  主要是：
+  - 本文件开头这段“本地 Review 记录（内存 / 短信）”仍保留了修复前结论，例如“后端没有 `sms` 段”“短信仍按下标打开”“每秒强制整页重渲染”等，这些都已经不再准确。
+  - 本文件“短信（只读）”章节仍写的是 `act:sms:N`，见 [`u60pro-devui/docs/DEVELOPMENT.md:416`](/Users/y/Documents/devui-workspace/u60pro-devui/docs/DEVELOPMENT.md:416)。
+  - `u60pro-devui/docs/UI-GUIDE.md` 里的 `{{SMSLIST}}` 说明也仍写 `act:sms:N`，见 [`u60pro-devui/docs/UI-GUIDE.md:108`](/Users/y/Documents/devui-workspace/u60pro-devui/docs/UI-GUIDE.md:108)。
+
+- **当前“状态变化才重渲染”的思路已经落地，但也连带改变了“前端热更新”的行为边界。**
+  `render()` 现在会按 HTML 内容做复用，而模板/CSS 本身又各自带 mtime 缓存；这样虽然明显减少了无意义重建，但 `style.css` 改动如果没有伴随 HTML/状态变化，可能不会立刻反映到屏幕上。这个更像行为变化，不一定是 bug，但文档如果还宣传“改完样式立即热生效”，就需要同步说清楚实际触发条件。
+
+- **随后又补了一层缓存失效：息屏清黑后会主动清空页面 HTML 复用缓存，并把 `style.css` 的 mtime 也纳入复用判定。**
+  这样做是为了避免两类回归：
+  - 亮屏时正文误命中旧缓存，导致黑屏后只补画状态栏
+  - 只改 `style.css`、HTML 本身没变时，页面长期不触发重排
+  当前实现位置在 `u60pro-devui/src/htmlmain.c` 的 `invalidate_render_html_cache()`、`render()` 和 `screen_off()`。
+
 ## 项目目标
 
 `u60pro-devui` 是 ZTE U60Pro 前面板屏幕 UI 的一个 clean-room 开源替代实现。目标形态是一份单独的静态 `aarch64` 二进制，只依赖标准 Linux/OpenWRT 接口，不链接 ZTE 私有库，也不提交任何专有资源。
@@ -40,7 +122,7 @@ ubus 服务 ──▶ u60-datad ──▶ /tmp/u60-datad/state.json ──▶ u6
 - **03-wifi.html — WiFi**：SSID、密码（默认打码）、加密；WiFi 总开关 / 2.4G / 5G / 节能(PSM) / NFC 开关；已连接设备列表（在线过滤）；DHCP 信息（地址池实时由 uci 算）。
 - **04-lock.html — 锁频**：选网方式分段控件 + 5G SA / 5G NSA / 4G 三张锁频卡（点开二级弹窗，频段芯片一行四个）+ 恢复默认。
 - **05-charts.html — 图表**：CPU 占用+温度 / 内存 / 网速 / 电池(功率+温度) 四张原生折线图。
-- **06-system.html — 系统/设置**：CPU/内存占用、温度、充电器/电池电压电流、版本号、IMEI(打码)；屏幕亮度滑条、自动息屏分段控件、锁屏 / 电源直供电(DPS) / USB-C 供电方向 / USB 网络共享 / 速率单位 / 主题 开关。可竖向滚动。
+- **06-system.html — 系统/设置**：CPU/内存占用、温度、充电器/电池电压电流、版本号、IMEI(打码)、QCI/AMBR 缓存；屏幕亮度滑条、自动息屏分段控件、锁屏 / 电源直供电(DPS) / USB-C 供电方向 / USB 网络共享 / 速率单位 / 主题 开关，并提供“刷新 AMBR 缓存”按钮。可竖向滚动。
 - **lockscreen.html — 锁屏键盘**：特殊页（同 `menu.html`，不计入翻页）。开启锁屏后由宿主在 `g_lock_state` 非 0 时全屏显示，4 位 PIN 数字键盘 + 删除键。状态栏（含未读短信信封图标）一并显示。详见下方「屏幕锁（PIN）」。
 - **menu.html — 电源菜单**：电源键长按弹出。三个竖排大圆形按键（关机/重启/取消），圆盘和图标原生绘制，下方文字标签，二次确认。详见下方「电源菜单（原生圆形按键）」。
 
@@ -176,6 +258,7 @@ litehtml 没有 canvas/SVG/滚动/圆角绘制，这些都由宿主补：
 - **多边形填充**：`html_view_fill_poly`（扫描线奇偶规则）画 litehtml/CSS 画不出的形状，如充电闪电。
 - **整页高度**：`document::render()` **返回的是内容宽度不是高度**（坑！），用 `root()->get_placement().height` 拿真实高度，否则滚动永远不触发。
 - **竖向滚动**：`doc->draw(0,0,-scrollY)` 上移内容；点击命中按 `y+scroll` 修正。拖动时预渲染整页到缓冲、每帧窗口贴图。滚动帧只搬动 26px 状态栏下方的内容区，固定状态栏沿用上一帧，不要在每帧滚动中重复画状态栏原生图标。`menu.html`、`lockscreen.html` 是全屏特殊页，渲染时必须强制 `scroll=0`，否则会继承当前长页面滚动偏移，出现电源菜单被卷到屏幕外的问题。
+- **整页重建与内存水位**：实机排查过一次“手动刷新 AMBR 后内存持续上涨”的问题，结论是 **AMBR 读取本身不是根因**。真正触发上涨的是前端在页面 HTML 发生变化后反复整页重建 `litehtml::document`；如果先创建新文档、再覆盖全局 `g_doc`，旧 DOM 会在新 DOM 分配完成前继续占住内存，musl 下容易把堆高水位一步步抬上去。现已在 `src/html_view.cpp` 的 `html_view_render_html()` / `html_view_render_overlay()` 中先 `g_doc.reset()`，再 `document::createFromString(...)`，实机现象已从“每次刷新继续爬升”收敛为“首次大页面重建有一次性抬升，随后稳定”。后续如果再遇到“某字段一刷新就涨内存”，优先先查是否又走到了未释放旧文档的整页重建路径，而不要先怀疑 `qos/ambr` 解析逻辑。
 - **覆盖层（modal）**：`html_view_render_overlay` 不清屏、在已渲染画面上叠加（body 透明只画弹窗框）；先 `fill_rect` 把页面压暗。二级弹窗交互用整屏快照 + 重绘弹窗层（避免每次重排整页）。
 - **分段控件滑动高亮**：拖动开始整页快照一次，之后每帧在快照上贴一个半透明蓝框跟手；松手吸附到最近格再应用。
 - `html_view_fill_rect`：直接填矩形（压暗背景、画高亮框等）。
@@ -246,21 +329,41 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 /data/u60pro/start.sh        # 正常开机才停原厂 UI → nohup 拉起后端 + UI
 ```
 
-`scripts/install-autostart.sh` 用 awk 在 `/etc/rc.local` 的 `exit 0` 前**幂等**插一行：
+**当前稳定方案（2026-06-25 实机回归后确认）** 仍然是 **vendor 早期 bring-up + `rc.local` 晚接管**：
 
 ```sh
-[ -x /data/u60pro/start.sh ] && sh /data/u60pro/start.sh >/tmp/u60pro-boot.log 2>&1 &
+[ -x /data/u60pro/start.sh ] && sh /data/u60pro/start.sh >/tmp/u60pro-boot.log 2>&1 & # u60pro_devui
 ```
 
-开机时原厂 UI 可能先起来，rc.local 较晚由 `start.sh` 停掉它再接管，会有短暂切换。
+`scripts/install-autostart.sh` 当前做的是：
+
+- 保留并启用原厂 `/etc/init.d/zte_topsw_devui`
+- 清掉旧的 `/etc/init.d/u60pro-devui` / `/etc/init.d/u60-datad` rc.d 软链接（如果之前试过 `procd` 方案）
+- 在 `/etc/rc.local` 的 `exit 0` 前写入上面的 `start.sh` 钩子
+- 安装完成后立即执行一次 `start.sh`，把当前前台切到自定义 DevUI
+
+`start.sh` 在这条稳定路径下的职责是：
+
+- 记录 `mode_main_state` / `reboot_reason_code` / `/proc/cmdline` / 电源与输入设备枚举到 `/data/u60pro/boot-trace.log`
+- 正常开机时停掉原厂 `zte_topsw_devui`
+- 正常开机时拉起单个 `u60-datad`
+- 拉起 `u60pro-devui`
+
+所以当前真实启动顺序是：
+
+```text
+procd -> zte_topsw_devui (早期屏幕/触摸 bring-up) -> rc.local -> /data/u60pro/start.sh -> stop vendor -> start datad + devui
+```
+
+会有一个**短暂的原厂界面闪屏**，但这是目前验证过最稳的方案。
 
 **离线充电现在改为 DevUI 自己接管。** 在这版固件上，“关机插电”并不总会稳定暴露成 `mode_power_off_*` 或缺失 `silent_boot.mode=nonsilent`；实机日志里出现过**明明是关机充电，却同时表现为 `mode_power_on` + `silent_boot.mode=nonsilent`** 的情况，导致单靠启动脚本 guard 无法可靠把屏幕留给原厂，而且落进去的普通 DevUI 还是无触控的。
 
 当前策略改为：
 
-- `start.sh` 始终停原厂 `zte_topsw_devui` 并拉起 `u60pro-devui`。
-- 启动脚本优先读 `/etc/config/zwrt_zte_mc_tmp` 的 `mode_main_state`；明确是 `mode_power_off_*` 时按**充电启动**处理，只启动 `u60pro-devui`，不拉 `u60-datad`。
-- `u60pro-devui` 内部再做一层兜底：若启动时**外部供电存在**且**触控初始化失败**，则强制切到自己的全屏充电页，避免误入普通页面。
+- `start.sh legacy` 是**默认且稳定**的开机路径，会沿用 `nohup` 后台拉起 `u60-datad` + `u60pro-devui`。
+- `start.sh procd` 仍保留在脚本里，但仅供手动实验；**不要**把它当默认自启方案。
+- `u60pro-devui` 内部仍保留“外部供电 + 触控初始化失败 -> 强制切到全屏充电页”的兜底，避免误入普通页面。
 - `start.sh` 会把 `mode_main_state`、`reboot_reason_code`、`/proc/cmdline`、电源状态和输入设备枚举写进 `/data/u60pro/boot-trace.log`，用于继续比对不同开机路径。
 
 已实测：关机状态插电直接进入 DevUI 的全屏充电页；正常开机仍进入普通 DevUI。
@@ -274,7 +377,25 @@ case "$mode_main_state" in
 esac
 ```
 
-> **别让自启重复。** 上面 `start.sh` 是**手动/开发**装法。而**插件**会在 rc.local 里写它自己的一行（带 `# u60pro_devui` 标记，内联停原厂+拉起 datad/devui，不调用 start.sh）。两者**只能留一个**——都在的话每次开机会重复拉起，出现两个 `u60-datad` 抢着写同一份 `state.json`（与「单一聚合器」设计相悖；第二个 `u60pro-devui` 一般抢不到 DRM 自己退）。插件靠 `grep 'u60pro_devui'` 判断自启状态，所以要统一就保留插件那条、删掉 `start.sh` 行（及文件）。
+### `procd` 接管实验记录（2026-06-25）
+
+这天实机尝试过一版“彻底抛弃原厂早期启动”的方案：
+
+- 禁用 `/etc/init.d/zte_topsw_devui`
+- 安装 `/etc/init.d/u60-datad`
+- 安装 `/etc/init.d/u60pro-devui`
+- 让 `u60pro-devui` 直接由 `procd` 在开机阶段接管 DRM
+
+目标是消掉开机先闪原厂界面的过程，但最终**没有通过实机验证**。在干净重启后的真实现象里，出现过：
+
+- `u60pro-devui` / `u60-datad` 服务在 boot 后直接 `inactive`
+- 即使稍后手动拉起 `u60pro-devui`，也会遇到 `drm: SETCRTC failed: Permission denied`
+- 更关键的是 `/dev/input` 有时只剩 `event0` / `event1` / `event2`，**触摸用的 `event3` 不出现**
+- 触摸缺失时，`u60pro-devui` 会按现有兜底逻辑误判成“外部供电 + 无触摸”的充电模式，只进全屏充电页
+
+目前判断：这版固件上，原厂 `zte_topsw_devui` 在早期启动阶段很可能还隐含了屏幕/触摸相关的 bring-up 副作用。单纯把启动顺序前移，不能稳定替代它。
+
+> **别让自启重复。** 当前稳定方案只该保留一条 `rc.local` 钩子。若旧的 `procd` 自启软链接、旧插件写入的重复 `# u60pro_devui` 行，或手工 `nohup` 调试进程同时存在，最常见后果就是两个 `u60-datad` 抢写同一份 `state.json`，以及第二个 `u60pro-devui` 因 DRM 已被占用而退出。
 
 ## 性能说明
 
@@ -322,7 +443,7 @@ esac
 
 第二页只读短信，不做发送。后端解码见上「数据模型 · `sms`」。UI 端：
 
-- 列表是**折叠卡片**（`act:sms:N`），只显示号码/时间 + 一行预览（`utf8_trunc` 按字符边界截断、不切坏多字节）；未读条目红点 + 蓝色号码。
+- 列表是**折叠卡片**（`act:sms:ID`），只显示号码/时间 + 一行预览（`utf8_trunc` 按字符边界截断、不切坏多字节）；未读条目红点 + 蓝色号码。
 - 点卡片：`data_refresh` 取该条全文存进 `g_sms_*`，开二级详情弹窗（复用 modal overlay）；若该条未读则 `ubus call zwrt_wms zwrt_wms_modify_tag '{"id":"<id>;","tag":0}'` 标记已读（`tag:0`=已读，分号分隔多 id）。未读数变化后端立即重读列表，红点/状态栏图标随之消失。
 - 正文含任意字符，渲染前 `html_esc` 转义 `&<>`。
 - **状态栏未读信封图标**：有未读时在时钟右侧原生画一个信封（`draw_sms_icon`，蓝身+白翻盖），位置按固定状态栏坐标和当前时间文字宽度计算，不依赖页面里的占位元素，所以不会跟着长页面滚动；和电池闪电一样翻页时常驻、锁屏也显示。字体没有信封字形所以走原生。
@@ -370,15 +491,15 @@ esac
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "1.1.0", "asset": "u60pro-devui-aarch64" },
-  "ui":    { "version": "0.4.0", "asset": "ui.tar.gz" } }
+  "devui": { "version": "1.1.1", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.4.1", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
-{ "schema": 1, "datad": { "version": "0.4.0", "asset": "u60-datad-aarch64" } }
+{ "schema": 1, "datad": { "version": "0.4.1", "asset": "u60-datad-aarch64" } }
 ```
 
 - 仓库根目录留了一份 `version.json` 作为**源头**（发版时改它），但插件实际读的是 **release 资产**（`…/releases/latest/download/version.json`），所以**每次发版都要把 `version.json` 连同二进制/`ui.tar.gz` 一起传到 release**。
 - 插件把远端各组件版本与本地记录（localStorage）比对，标“可更新”；可单独更新某个组件，也可一键更新全部。二进制更新先下到 `*.new` 再 `mv` 覆盖（避开运行中可执行文件的 `ETXTBSY`），devui 更新后校验失败自动回退原厂。
-- **彻底卸载**清 `/data/u60pro`（二进制）、`/data/ui`（界面）、`/etc/rc.local` 自启行，并恢复原厂。
+- **彻底卸载**清 `/data/u60pro`（二进制）、`/data/ui`（界面）、删掉 `/etc/rc.local` 里的 `u60pro_devui` 自启行；如果设备上还残留过实验版 `/etc/init.d/u60pro-devui` / `/etc/init.d/u60-datad` 或对应 rc.d 软链接，也一并删除；最后重新启用 `/etc/init.d/zte_topsw_devui`。
 
 ### 更新源：GitHub release
 
@@ -388,7 +509,7 @@ esac
 - devui 仓库资产：`u60pro-devui-aarch64`、`ui.tar.gz`、`version.json`
 - datad 仓库资产：`u60-datad-aarch64`、`version.json`
 
-**发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`；改了 `ui/*.html` / `style.css` 这类界面文件就也要升 `ui`）→ 传 `version.json` + 资产到 GitHub release。若你在仓库外另做镜像，直接镜像 GitHub release 的同名文件即可；本仓库不再维护手动网盘同步脚本。
+**发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`；改了 `ui/*.html` / `style.css` 这类界面文件就也要升 `ui`；两边都改就两项都升）→ 传 `version.json` + 资产到 GitHub release。若你在仓库外另做镜像，直接镜像 GitHub release 的同名文件即可；本仓库不再维护手动网盘同步脚本。
 > **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
 > **坑：`ui.tar.gz` 的打包结构必须和旧版保持一致。** 设备侧更新逻辑默认期望的是“**顶层平铺页面文件**”的 tar 包：只有 `01-signal.html`、`02-sms.html`、…、`style.css`，**没有** `ui/` 目录、**没有** `./` 前缀、**没有** macOS 产生的 `._*` AppleDouble 文件。用 macOS 自带打包工具直接打整个目录时，容易把这些额外条目也塞进去，导致 UI 更新失败。打包时应显式关闭资源叉（如 `COPYFILE_DISABLE=1`），并直接列出页面文件名生成 tar。
 
@@ -398,3 +519,29 @@ esac
 - 项目必须能仅靠公开源码和标准接口构建。
 - 新增字体或 UI 资源优先选开源许可证资源；仓库**不打包任何 ZTE 字体**（设备上运行时从 `/usr/ui/fonts/ZTEZhengYuan.ttf` 加载，保持 clean-room）。CJK 字体没有 `↑↓◔` 等符号字形，会显示成豆腐块——状态栏等处用纯文字（如“下/上”）而非箭头符号。
 - 对后续开发有帮助但不适合只留在本地记忆里的经验，写进这里或 [HARDWARE.md](HARDWARE.md)。
+
+## 2026-06-25 设备 Smoke Test 补记（临时推送 / RSS 观察 / 清理完成）
+
+本轮不是替换正式文件，而是把测试二进制先推到设备 `/tmp` 做最小闭环验证，避免污染 `/data/u60pro`。
+
+- 本地构建：
+  - `zwrt-datad-u60pro/u60-datad.zigtest`
+  - `u60pro-devui/html-poc.zigtest`
+- 推送方式：设备侧没有 `scp`，改用 `ssh` stdin 直接写入 `/tmp/u60-datad.zigtest` 和 `/tmp/html-poc.zigtest`
+- 测试步骤：
+  - 停掉正式 `/data/u60pro/u60-datad -i 1000` 与 `/data/u60pro/u60pro-devui`
+  - 启动 `/tmp/u60-datad.zigtest -i 1000`
+  - 启动 `/tmp/html-poc.zigtest`
+  - 连续 `touch /data/ui/style.css` 6 轮，观察 UI 进程在重复 CSS reload 下的 RSS / VSZ
+- 设备侧观测：
+  - UI 启动日志正常：DRM / touch / power key 均成功初始化
+  - UI RSS：`5272 KB -> 5296 KB -> 5296 KB -> 5452 KB -> 5912 KB -> 5912 KB -> 5968 KB`
+  - UI VSZ：`17696 KB -> 17760 KB -> 17760 KB -> 17760 KB -> 18272 KB -> 18272 KB -> 18336 KB`
+  - 这轮 smoke test 下没有复现“几十 MB 很快飙到 200 MB”式增长，CSS 重载后 RSS 只有小幅爬升并保持在约 `5.8 MB`
+- 限制说明：
+  - 这次是 SSH-only 验证，没有直接做屏幕肉眼回读，所以“灭屏后首帧是否会黑屏”没有做人工可视确认
+  - 但至少验证了新二进制能在设备正常起进程，并且在连续 CSS 触发重排时没有出现明显内存失控
+- 清理 / 恢复：
+  - 已杀掉 `/tmp` 测试进程
+  - 已删除 `/tmp/u60-datad.zigtest`、`/tmp/html-poc.zigtest`、`/tmp/codex-*`
+  - 已恢复正式 `/data/u60pro/u60-datad -i 1000` 与 `/data/u60pro/u60pro-devui`

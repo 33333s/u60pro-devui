@@ -18,6 +18,7 @@
 #include <math.h>
 #include <signal.h>
 #include <stdint.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +51,9 @@ static void        maybe_dump_fb(drm_disp_t *d);
 #define UI_DIR "/data/ui"
 #endif
 #define UI_FONT "/usr/ui/fonts/ZTEZhengYuan.ttf"
+#ifndef DEVUI_STATE_FILE
+#define DEVUI_STATE_FILE "/tmp/u60-datad/state.json"
+#endif
 
 static volatile sig_atomic_t g_run = 1;
 static void on_sig(int s) { (void)s; g_run = 0; }
@@ -59,6 +63,19 @@ static uint32_t millis(void)
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
+
+#define TEMPLATE_CACHE_CAP 8
+#define PAGE_HTML_CACHE_CAP 1048576
+
+struct template_cache_entry {
+    char path[320];
+    long long mtime_ns;
+    char *content;
+    int used;
+};
+
+static struct template_cache_entry g_tmpl_cache[TEMPLATE_CACHE_CAP];
+static int g_tmpl_next;
 
 /* ---- pages / theme ---- */
 static char g_pages[24][288];
@@ -78,6 +95,17 @@ static int  g_scroll;     /* current page vertical scroll offset */
 static int  g_page_h;     /* last rendered page content height */
 static int  g_autooff_ms; /* auto screen-off timeout, 0 = never */
 static int  g_saved_bright = -1; /* persisted backlight level, -1 = none yet */
+static long long g_state_mtime_ns = -1;      /* /tmp/u60-datad/state.json mtime (ns) */
+static uint32_t g_last_state_render_ms;
+static int g_last_clock_min = -1;       /* HH:MM changes only once per minute */
+static char g_render_html_cache[PAGE_HTML_CACHE_CAP];
+static size_t g_render_html_cache_len;
+static char g_render_html_cache_path[320];
+static int g_render_html_cache_scroll;
+static int g_render_html_cache_modal;
+static long g_render_html_cache_sms_open;
+static int g_render_html_cache_lock;
+static long long g_render_html_cache_css_mtime = -1;
 
 /* ---- page-2 aux state, cached (-1 = unknown). Like the reference plugin,
  * bands are controlled purely with `ifconfig wlanN up/down` and read back from
@@ -287,7 +315,7 @@ struct kv { const char *k; const char *v; };
 
 static char *apply_template(const char *tmpl, struct kv *t, int n)
 {
-    static char out[32768];
+    static char out[1048576];
     size_t o = 0;
     for (const char *p = tmpl; *p && o < sizeof(out) - 1; ) {
         if (p[0] == '{' && p[1] == '{') {
@@ -299,6 +327,13 @@ static char *apply_template(const char *tmpl, struct kv *t, int n)
                     if ((int)strlen(t[i].k) == kl && strncmp(t[i].k, p + 2, kl) == 0) { v = t[i].v; break; }
                 size_t vl = strlen(v);
                 if (o + vl < sizeof(out) - 1) { memcpy(out + o, v, vl); o += vl; }
+                else {
+                    size_t room = sizeof(out) - 1 - o;
+                    if (room) memcpy(out + o, v, room);
+                    o = sizeof(out) - 1;
+                    out[o] = 0;
+                    break;
+                }
                 p = end + 2;
                 continue;
             }
@@ -330,6 +365,56 @@ static char *read_file(const char *path)
     if (ferror(fp)) { free(buf); fclose(fp); return NULL; }
     buf[n] = 0; fclose(fp);
     return buf;
+}
+
+static long long file_mtime_ns(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (long long)st.st_mtime * 1000000000LL + (long long)st.st_mtim.tv_nsec;
+}
+
+static const char *read_template_cached(const char *path)
+{
+    long long mtime = file_mtime_ns(path);
+    if (mtime < 0) return NULL;
+
+    for (int i = 0; i < TEMPLATE_CACHE_CAP; i++) {
+        struct template_cache_entry *e = &g_tmpl_cache[i];
+        if (!e->used || !e->path[0]) continue;
+        if (strcmp(e->path, path) != 0) continue;
+
+        if (e->mtime_ns == mtime && e->content) return e->content;
+
+        char *next = read_file(path);
+        if (!next) return e->content;   /* keep previous cached copy if read fails */
+        free(e->content);
+        e->content = next;
+        e->mtime_ns = mtime;
+        return e->content;
+    }
+
+    char *tmpl = read_file(path);
+    if (!tmpl) return NULL;
+
+    for (int i = 0; i < TEMPLATE_CACHE_CAP; i++) {
+        if (!g_tmpl_cache[i].used) {
+            snprintf(g_tmpl_cache[i].path, sizeof(g_tmpl_cache[i].path), "%s", path);
+            g_tmpl_cache[i].mtime_ns = mtime;
+            g_tmpl_cache[i].content = tmpl;
+            g_tmpl_cache[i].used = 1;
+            return g_tmpl_cache[i].content;
+        }
+    }
+
+    struct template_cache_entry *e = &g_tmpl_cache[g_tmpl_next];
+    free(e->content);
+    snprintf(e->path, sizeof(e->path), "%s", path);
+    e->mtime_ns = mtime;
+    e->content = tmpl;
+    e->used = 1;
+    g_tmpl_next = (g_tmpl_next + 1) % TEMPLATE_CACHE_CAP;
+    return e->content;
 }
 
 static int usb_pid_is(const char *needle)
@@ -800,9 +885,9 @@ static void draw_lock_icon(void)
 }
 
 /* SMS detail dialog + status-bar envelope state. */
-static int  g_sms_open = -1;   /* index of the opened SMS detail dialog (-1 = none) */
+static long g_sms_open = -1;   /* opened SMS message id for detail dialog (-1 = none) */
 static int  g_sms_unread_now;  /* unread SMS present -> draw the status-bar envelope */
-static char g_sms_num[40], g_sms_date[16], g_sms_text[700];   /* opened message */
+static char g_sms_num[40], g_sms_date[16], g_sms_text[DEVUI_SMS_TEXT_MAX];   /* opened message */
 
 /* Draw a small envelope in the fixed status bar, just right of the clock, when
  * there are unread messages. Native shape; the font has no envelope glyph. */
@@ -911,7 +996,7 @@ struct charge_boot_state {
 
 static void charge_boot_refresh(struct charge_boot_state *s)
 {
-    devui_data_t d;
+    static devui_data_t d;
     char st[32];
     long v;
     memset(s, 0, sizeof *s);
@@ -1119,8 +1204,8 @@ static void utf8_trunc(char *dst, size_t cap, const char *src, int maxb, int *cu
 /* Second-level SMS detail dialog (number + date + full text), overlaid dimmed. */
 static const char *sms_modal_html(void)
 {
-    static char out[5200];
-    static char esc[3600];
+    static char out[DEVUI_SMS_TEXT_MAX * 6 + 1024];
+    static char esc[DEVUI_SMS_TEXT_MAX * 6];
     html_esc(esc, sizeof esc, g_sms_text);
     snprintf(out, sizeof out,
         "<!DOCTYPE html><html><head><meta charset='UTF-8'><link rel='stylesheet' href='style.css'></head>"
@@ -1168,7 +1253,7 @@ static int build_kv(struct kv *t)
     static char s_qci[8], s_ambr[24], s_sbar[640], s_dots[320];
     static char s_nrrows[1500], s_lterows[1700], s_carriers[4000], s_nr_block[2200], s_lte_block[2200], s_sigcards[5000], s_gen[8];
 
-    devui_data_t d;
+    static devui_data_t d;
     if (!data_refresh(&d)) memset(&d, 0, sizeof d);
     g_charging = d.charger_connect;
     snprintf(s_page, sizeof s_page, "%d", g_cur + 1);
@@ -1488,21 +1573,29 @@ static int build_kv(struct kv *t)
     }
 
     /* ---- sms list (read-only page): collapsed cards, newest first. Each card is
-     * a tap target (act:sms:N) that opens the full message in a dialog. ---- */
-    static char s_smslist[10000];
+     * a tap target (act:sms:ID) that opens the full message in a dialog. ---- */
+    static char s_smslist[131072];
     {
         int o = 0;
         for (int si = 0; si < d.sms_n; si++) {
             char prev[80]; int cut;
             utf8_trunc(prev, sizeof prev, d.sms[si].text, 40, &cut);
-            char esc[200];
+            char esc[512];
             html_esc(esc, sizeof esc, prev);
-            o += snprintf(s_smslist + o, sizeof s_smslist - o,
-                "<a href='act:sms:%d' class='sms%s'>"
+            if (o >= (int)sizeof(s_smslist)) break;
+            int wr = snprintf(s_smslist + o, sizeof(s_smslist) - o,
+                "<a href='act:sms:%ld' class='sms%s'>"
                 "<div class='smsh'><span class='smsn'>%s</span><span class='smsd'>%s</span></div>"
                 "<div class='smsp'>%s%s</div></a>",
-                si, d.sms[si].unread ? " un" : "", d.sms[si].num, d.sms[si].date,
+                d.sms[si].id, d.sms[si].unread ? " un" : "", d.sms[si].num, d.sms[si].date,
                 esc, cut ? "…" : "");
+            if (wr < 0) wr = 0;
+            if (wr >= (int)(sizeof(s_smslist) - o)) {
+                o = (int)sizeof(s_smslist) - 1;
+                s_smslist[o] = 0;
+                break;
+            }
+            o += wr;
         }
         if (d.sms_n == 0)
             snprintf(s_smslist, sizeof s_smslist, "<div class='sms muted'>暂无短信</div>");
@@ -1646,13 +1739,19 @@ static void refresh_status_cache(void)
 /* Build the data-filled HTML for a page (returns a static buffer). */
 static const char *page_html(const char *path)
 {
-    char *tmpl = read_file(path);   /* re-read each time = live reload */
+    const char *tmpl = read_template_cached(path);   /* cache templates with mtime invalidation */
     if (!tmpl) return NULL;
     struct kv t[160];
     int n = build_kv(t);
     char *html = apply_template(tmpl, t, n);
-    free(tmpl);
     return html;
+}
+
+static void invalidate_render_html_cache(void)
+{
+    g_render_html_cache_len = 0;
+    g_render_html_cache_path[0] = 0;
+    g_render_html_cache_css_mtime = -1;
 }
 
 /* ---- power menu: three large round buttons with native-drawn glyphs
@@ -1753,8 +1852,36 @@ static void render(drm_disp_t *disp, const char *path)
     const char *html = page_html(path);
     if (!html) return;
     int special_page = strstr(path, "menu.html") || strstr(path, "lockscreen.html");
-    html_view_set_scroll(special_page ? 0 : g_scroll);
-    g_page_h = html_view_render_html(html);
+    int scroll = special_page ? 0 : g_scroll;
+    size_t html_len = strlen(html);
+    int has_charts = strstr(path, "charts.html") != NULL;
+    long long css_mtime = file_mtime_ns(UI_DIR "/style.css");
+    int cacheable = html_len > 0 && html_len < sizeof(g_render_html_cache);
+    int reuse = cacheable && !has_charts &&
+                 g_render_html_cache_scroll == scroll &&
+                 g_render_html_cache_modal == g_modal &&
+                 g_render_html_cache_sms_open == g_sms_open &&
+                 g_render_html_cache_lock == g_lock_state &&
+                 g_render_html_cache_css_mtime == css_mtime &&
+                 g_render_html_cache_len == html_len &&
+                 !strcmp(g_render_html_cache_path, path) &&
+                 !strncmp(g_render_html_cache, html, html_len);
+    html_view_set_scroll(scroll);
+    if (!reuse) {
+        g_page_h = html_view_render_html(html);
+        if (cacheable) {
+            memcpy(g_render_html_cache, html, html_len + 1);
+            g_render_html_cache_len = html_len;
+            snprintf(g_render_html_cache_path, sizeof g_render_html_cache_path, "%s", path);
+            g_render_html_cache_scroll = scroll;
+            g_render_html_cache_modal = g_modal;
+            g_render_html_cache_sms_open = g_sms_open;
+            g_render_html_cache_lock = g_lock_state;
+            g_render_html_cache_css_mtime = css_mtime;
+        } else {
+            invalidate_render_html_cache();
+        }
+    }
     draw_charts();      /* native polylines into any #chart-* placeholders */
     draw_native_statusbar();
     draw_sms_icon();    /* native envelope in the status bar when unread SMS */
@@ -1790,38 +1917,57 @@ static void render_ext_view(drm_disp_t *disp, devui_ext_t *ext)
 static uint16_t g_bufA[320 * 480], g_bufB[320 * 480];
 
 /* Status bar stays pinned during a swipe (only the content below slides), so
- * the native status bar, drawn at a fixed spot, lines up with it. g_sbar_src points
- * at the page buffer rendered at scroll 0 (its top rows hold the status bar). */
+ * we keep the already-rendered native status bar rows untouched and only
+ * update the content area beneath it. */
 #define SBAR_H DEVUI_EXT_STATUSBAR_H
-#define DRAG_START_PX 10
-#define DRAG_CANCEL_PX 22
+/* Keep only a tiny hysteresis so page/scroll drags respond immediately,
+ * without turning every resting-finger jitter into a swipe. */
+#define DRAG_START_PX 2
+#define DRAG_CANCEL_PX 8
+#define SCROLL_INERTIA_MIN_V 180.0f
+#define SCROLL_INERTIA_MAX_V 2200.0f
+#define SCROLL_INERTIA_DECEL 3600.0f
+#define STATE_RENDER_THROTTLE_MS 1500
+#define STATE_RENDER_IDLE_THROTTLE_MS 2500
 #define EXT_BACK_EDGE_PX 24
 #define EXT_BACK_COMMIT_PX 56
 #define EXT_BACK_MAX_DY 44
 #define IDLE_SLEEP_ON_US 8000
 #define IDLE_SLEEP_OFF_US 30000
-static const uint16_t *g_sbar_src;
+
+static inline uint16_t *copy_rev_span(uint16_t *dp, const uint16_t *src, int n)
+{
+    for (int i = 0; i < n; i++) *dp-- = src[i];
+    return dp;
+}
+
+static inline void fill_rev_span(uint16_t *dp, uint16_t px, int n)
+{
+    while (n-- > 0) *dp-- = px;
+}
+
+static float clamp_scroll_v(float v)
+{
+    if (v >  SCROLL_INERTIA_MAX_V) return  SCROLL_INERTIA_MAX_V;
+    if (v < -SCROLL_INERTIA_MAX_V) return -SCROLL_INERTIA_MAX_V;
+    return v;
+}
 
 static void compose_frame(drm_disp_t *d, int o)
 {
     const int W = d->width, H = d->height, pp = d->pitch_px;
+    int left;
     if (o < 0) o = 0; if (o > W) o = W;
-    for (int y = 0; y < H; y++) {
+    left = W - o;
+    for (int y = SBAR_H; y < H; y++) {
         uint16_t *dp = d->fb + (size_t)(H - 1 - y) * pp + (W - 1);
         const uint16_t *lr = g_bufA + (size_t)y * W, *rr = g_bufB + (size_t)y * W;
-        if (y < SBAR_H && g_sbar_src) {                 /* pinned status bar */
-            const uint16_t *sb = g_sbar_src + (size_t)y * W;
-            for (int x = 0; x < W; x++) *dp-- = sb[x];
-        } else {                                        /* sliding page content */
-            for (int x = 0; x < W; x++) {
-                int idx = x + o;
-                *dp-- = (idx < W) ? lr[idx] : rr[idx - W];
-            }
-        }
+        if (left > 0) dp = copy_rev_span(dp, lr + o, left);
+        if (o > 0)    copy_rev_span(dp, rr, o);
     }
-    draw_native_statusbar();
-    draw_sms_icon();    /* native envelope over the pinned status bar */
-    drm_disp_dirty(d, 0, 0, W - 1, H - 1);
+    /* Only the content area changes during a horizontal swipe. With the
+     * framebuffer rotated 180 degrees that maps to the top physical rows. */
+    drm_disp_dirty(d, 0, 0, W - 1, H - SBAR_H - 1);
     maybe_dump_fb(d);
 }
 
@@ -1833,11 +1979,9 @@ static void prep_pair(int target, int dir)
     if (dir > 0) {   /* next: left=current, right=target */
         html_view_set_scroll(g_scroll); h = page_html(g_pages[g_cur]);  if (h) html_view_render_to(g_bufA, h);
         html_view_set_scroll(0);        h = page_html(g_pages[target]); if (h) html_view_render_to(g_bufB, h);
-        g_sbar_src = g_bufB;   /* target (scroll 0) holds the status bar at top */
     } else {         /* prev: left=target, right=current */
         html_view_set_scroll(0);        h = page_html(g_pages[target]); if (h) html_view_render_to(g_bufA, h);
         html_view_set_scroll(g_scroll); h = page_html(g_pages[g_cur]);  if (h) html_view_render_to(g_bufB, h);
-        g_sbar_src = g_bufA;
     }
     html_view_set_scroll(g_scroll);
 }
@@ -1863,7 +2007,8 @@ static void scroll_blit(drm_disp_t *d, int scroll)
         int sy = y + scroll;
         const uint16_t *src = (sy >= 0 && sy < g_scroll_h) ? &g_scrollbuf[(size_t)sy * W] : NULL;
         uint16_t *dp = d->fb + (size_t)(Hh - 1 - y) * pp + (W - 1);
-        for (int x = 0; x < W; x++) *dp-- = src ? src[x] : 0;
+        if (src) copy_rev_span(dp, src, W);
+        else     fill_rev_span(dp, 0, W);
     }
     /* The native status bar is pinned; dragging only changes the content below it.
      * With the framebuffer rotated 180 degrees, that content maps to the top
@@ -1909,6 +2054,7 @@ static void set_bright_x(int x, int bx, int bw)
 static void screen_off(drm_disp_t *d)
 {
     backlight_fade_off();
+    invalidate_render_html_cache();
     memset(d->fb, 0, (size_t)d->pitch_px * d->height * sizeof(uint16_t));
     drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
 }
@@ -1965,6 +2111,11 @@ int main(void)
     int menu = 0, prev_press = 0, prev_lock = 0, was_on = 1, down_x = 0, down_y = 0;
     int dragging = 0, drag_dir = 0, drag_target = 0;
     int scroll_dir = 0, scroll_start = 0;
+    int scroll_inertia = 0, scroll_track_valid = 0;
+    int scroll_track_pos = 0;
+    uint32_t drag_down_ms = 0;
+    uint32_t scroll_track_ms = 0;
+    float scroll_v = 0.0f, scroll_pos = 0.0f;
     int sliding = 0, bar_x = 0, bar_w = 0;   /* brightness slider drag */
     int segging = 0, seg_x = 0, seg_y = 0, seg_w = 0, seg_h = 0;   /* segmented control drag */
     int seg_which = 0, seg_n = 4;   /* 1 = net mode (4 cells), 2 = auto-off (6) */
@@ -2012,6 +2163,7 @@ int main(void)
             int ext_changed = devui_ext_poll(&ext, now);
             if (ext_changed) {
                 dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0;
+                scroll_inertia = 0; scroll_track_valid = 0; scroll_v = 0.0f;
                 menu = 0; g_modal = 0; g_sms_open = -1;
                 touch_input_clear_taps(&touch);
                 if (devui_ext_active(&ext)) {
@@ -2030,6 +2182,7 @@ int main(void)
         int ev = key_input_poll(&key, now);
         if (ev == KEY_EV_SHORT || ev == KEY_EV_LONG) last_act = now;
         if (ev == KEY_EV_SHORT) {
+            scroll_inertia = 0; scroll_track_valid = 0; scroll_v = 0.0f;
             if (backlight_is_on()) {
                 screen_off(&disp);
                 if (!g_charge_boot && lock_enabled()) {
@@ -2043,6 +2196,7 @@ int main(void)
                     screen_on(&disp, g_charge_boot ? NULL : CUR_PATH);
             }
         } else if (ev == KEY_EV_LONG) {
+            scroll_inertia = 0; scroll_track_valid = 0; scroll_v = 0.0f;
             if (ext_ok && devui_ext_active(&ext) && !g_lock_state) {
                 if (!backlight_is_on()) screen_on_ext(&disp, &ext);
                 else { devui_ext_deactivate(&ext); need_render = 1; }
@@ -2084,6 +2238,7 @@ int main(void)
              * only way to wake (double-tap-to-wake removed). */
             touch_input_clear_taps(&touch);
             pressed = 0;
+            scroll_inertia = 0; scroll_track_valid = 0; scroll_v = 0.0f;
         } else if (g_lock_state == 1) {
             /* locked preview: page 1 with live data, no actions. A swipe in any
              * direction opens the PIN pad. */
@@ -2152,6 +2307,7 @@ int main(void)
                         devui_ext_handle_tap(&ext, cx, cy, now);
             }
             dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0;
+            scroll_inertia = 0; scroll_track_valid = 0; scroll_v = 0.0f;
         } else if (g_sms_open >= 0) {
             /* SMS detail dialog: any tap (close button or outside) dismisses */
             if (!pressed && prev_press) { g_sms_open = -1; need_render = 1; }
@@ -2188,8 +2344,37 @@ int main(void)
             }
         } else {
             int maxs = g_page_h > H ? g_page_h - H : 0;
+            if (pressed && scroll_inertia) {
+                scroll_inertia = 0;
+                scroll_track_valid = 0;
+                scroll_v = 0.0f;
+            }
+            if (scroll_inertia && !pressed && !dragging && !menu && maxs > 0) {
+                uint32_t dtm = now > scroll_track_ms ? now - scroll_track_ms : 0;
+                if (dtm > 0) {
+                    float dt = dtm / 1000.0f;
+                    float dv = SCROLL_INERTIA_DECEL * dt;
+                    if (scroll_v > 0.0f) {
+                        scroll_v -= dv;
+                        if (scroll_v < 0.0f) scroll_v = 0.0f;
+                    } else if (scroll_v < 0.0f) {
+                        scroll_v += dv;
+                        if (scroll_v > 0.0f) scroll_v = 0.0f;
+                    }
+                    scroll_pos += scroll_v * dt;
+                    int ns = (int)(scroll_pos + (scroll_pos >= 0.0f ? 0.5f : -0.5f));
+                    if (ns < 0) { ns = 0; scroll_pos = 0.0f; scroll_v = 0.0f; }
+                    if (ns > maxs) { ns = maxs; scroll_pos = (float)maxs; scroll_v = 0.0f; }
+                    if (ns != g_scroll) { g_scroll = ns; scroll_blit(&disp, g_scroll); }
+                    if (scroll_v == 0.0f || ns == 0 || ns == maxs) scroll_inertia = 0;
+                    scroll_track_ms = now;
+                    animating = 1;
+                }
+            }
             if (pressed && !prev_press) {
                 down_x = x; down_y = y; dragging = 1; drag_dir = 0; scroll_dir = 0; scroll_start = g_scroll; sliding = 0; segging = 0;
+                drag_down_ms = now;
+                scroll_track_valid = 0; scroll_v = 0.0f;
                 int bx, by, bw, bh;   /* grab the brightness slider / segmented control if pressed on it */
                 if (html_view_rect("#bright-bar", &bx, &by, &bw, &bh) &&
                     x >= bx && x < bx + bw && y >= by - 5 && y < by + bh + 5) {
@@ -2230,6 +2415,10 @@ int main(void)
                         int rh = hp ? html_view_render_tall(g_scrollbuf, hp, bufh) : g_page_h;
                         g_scroll_h = rh > bufh ? bufh : rh;
                         maxs = g_scroll_h > H ? g_scroll_h - H : 0;
+                        scroll_track_pos = g_scroll;
+                        scroll_track_ms = now;
+                        scroll_track_valid = 0;
+                        scroll_v = 0.0f;
                     } else if (ady > DRAG_CANCEL_PX) dragging = 0;
                 }
                 if (drag_dir != 0) {
@@ -2238,7 +2427,19 @@ int main(void)
                 } else if (scroll_dir != 0) {
                     int ns = scroll_start - dy;
                     if (ns < 0) ns = 0; if (ns > maxs) ns = maxs;
-                    if (ns != g_scroll) { g_scroll = ns; scroll_blit(&disp, g_scroll); }
+                    if (ns != g_scroll) {
+                        if (scroll_track_ms && now > scroll_track_ms) {
+                            float inst = (ns - scroll_track_pos) * 1000.0f / (float)(now - scroll_track_ms);
+                            scroll_v = scroll_track_valid ? (scroll_v * 0.65f + inst * 0.35f) : inst;
+                            scroll_v = clamp_scroll_v(scroll_v);
+                            scroll_track_valid = 1;
+                        }
+                        g_scroll = ns;
+                        scroll_pos = (float)g_scroll;
+                        scroll_track_pos = g_scroll;
+                        scroll_track_ms = now;
+                        scroll_blit(&disp, g_scroll);
+                    }
                     animating = 1;
                 }
                 }
@@ -2268,6 +2469,20 @@ int main(void)
                     if (commit) { g_cur = drag_target; g_scroll = 0; }
                     need_render = 1;
                 } else if (dragging && scroll_dir != 0) {   /* scroll settled */
+                    uint32_t gdt = (drag_down_ms && now > drag_down_ms) ? (now - drag_down_ms) : 0;
+                    if (gdt > 0) {
+                        float rel_v = (-(float)(y - down_y)) * 1000.0f / (float)gdt;
+                        if (scroll_track_valid) scroll_v = clamp_scroll_v(scroll_v * 0.55f + rel_v * 0.45f);
+                        else                    scroll_v = clamp_scroll_v(rel_v);
+                    }
+                    if (fabsf(scroll_v) >= SCROLL_INERTIA_MIN_V && maxs > 0) {
+                        scroll_inertia = 1;
+                        scroll_pos = (float)g_scroll;
+                        scroll_track_ms = now;
+                    } else {
+                        scroll_inertia = 0;
+                        scroll_v = 0.0f;
+                    }
                     need_render = 1;
                 } else if (dragging) {                      /* tap -> action */
                     const char *act = html_view_click((float)x, (float)y);
@@ -2288,10 +2503,16 @@ int main(void)
                         else if (!strcmp(a, "revealkey")) { g_show_key = !g_show_key; need_render = 1; }
                         else if (!strcmp(a, "revealcell")) { g_show_cellid = !g_show_cellid; need_render = 1; }
                         else if (!strcmp(a, "revealimei")) { g_show_imei = !g_show_imei; need_render = 1; }
+                        else if (!strcmp(a, "refreshambr")) {
+                            system("(kill -USR1 $(pidof u60-datad 2>/dev/null) >/dev/null 2>&1) || true");
+                            snprintf(g_toast, sizeof g_toast, "已请求刷新 AMBR");
+                            g_toast_until = now + 1600;
+                            need_render = 1;
+                        }
                         else if (!strcmp(a, "spunit"))    { g_speed_bits = !g_speed_bits; save_conf(); need_render = 1; }
                         else if (!strcmp(a, "batpct"))    { g_show_batpct = !g_show_batpct; save_conf(); need_render = 1; }
                         else if (!strcmp(a, "nfc")) {
-                            devui_data_t dd; char cmd[120];
+                            static devui_data_t dd; char cmd[120];
                             int on = (data_refresh(&dd) && dd.nfc_switch) ? 0 : 1;
                             snprintf(cmd, sizeof cmd,
                                 "ubus call zwrt_nfc zwrt_nfc_wifi_set '{\"switch\":%d,\"flag\":2}'", on);
@@ -2354,7 +2575,7 @@ int main(void)
                             need_render = 1;
                         }
                         else if (!strcmp(a, "adb")) {
-                            devui_data_t dd;
+                            static devui_data_t dd;
                             const char *mode = "debug";
                             if (data_refresh(&dd) && !strcmp(dd.usb_mode, "debug") &&
                                 !usb_pid_is("90b1") && !usb_pid_is("90B1"))
@@ -2462,21 +2683,32 @@ int main(void)
                             need_render = 1;
                         }
                         else if (!strncmp(a, "sms:", 4)) {   /* open SMS detail + mark read */
-                            int idx = atoi(a + 4);
-                            devui_data_t sd;
-                            if (data_refresh(&sd) && idx >= 0 && idx < sd.sms_n) {
-                                snprintf(g_sms_num,  sizeof g_sms_num,  "%s", sd.sms[idx].num);
-                                snprintf(g_sms_date, sizeof g_sms_date, "%s", sd.sms[idx].date);
-                                snprintf(g_sms_text, sizeof g_sms_text, "%s", sd.sms[idx].text);
-                                g_sms_open = idx;
-                                if (sd.sms[idx].unread && sd.sms[idx].id > 0) {
-                                    char cmd[128];
-                                    snprintf(cmd, sizeof cmd,
-                                        "ubus call zwrt_wms zwrt_wms_modify_tag '{\"id\":\"%ld;\",\"tag\":0}' >/dev/null 2>&1 &",
-                                        sd.sms[idx].id);
-                                    system(cmd);
+                            const char *id_txt = a + 4;
+                            char *endp = NULL;
+                            long sid = strtol(id_txt, &endp, 10);
+                            static devui_data_t sd;
+                            g_sms_open = -1;
+                            g_sms_num[0] = g_sms_date[0] = g_sms_text[0] = 0;
+                            need_render = 1;
+                            if (id_txt != endp && endp && *endp == '\0' && data_refresh(&sd)) {
+                                if (sid > 0) {
+                                    for (int i = 0; i < sd.sms_n; i++) {
+                                        if (sd.sms[i].id != sid) continue;
+                                        snprintf(g_sms_num,  sizeof g_sms_num,  "%s", sd.sms[i].num);
+                                        snprintf(g_sms_date, sizeof g_sms_date, "%s", sd.sms[i].date);
+                                        snprintf(g_sms_text, sizeof g_sms_text, "%s", sd.sms[i].text);
+                                        g_sms_open = sid;
+                                        if (sd.sms[i].unread && sd.sms[i].id > 0) {
+                                            char cmd[128];
+                                            snprintf(cmd, sizeof cmd,
+                                                "ubus call zwrt_wms zwrt_wms_modify_tag '{\"id\":\"%ld;\",\"tag\":0}' >/dev/null 2>&1 &",
+                                                sd.sms[i].id);
+                                            system(cmd);
+                                        }
+                                        need_render = 1;
+                                        break;
+                                    }
                                 }
-                                need_render = 1;
                             }
                         }
                         else if (!strcmp(a, "resetband")) {
@@ -2488,6 +2720,7 @@ int main(void)
                 }
 action_done:
                 dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0; g_segdrag = 0;
+                scroll_track_valid = 0;
             }
         }
         prev_press = pressed;
@@ -2512,16 +2745,43 @@ action_done:
             }
         }
 
-        /* periodic data refresh (not mid-drag), once per second */
-        if (!dragging && now - last_data >= 1000) {
-            if (ext_ok && devui_ext_active(&ext) && !g_lock_state)
+        /* periodic state clock/snapshot check (not mid-drag), once per second */
+        if (!dragging && !scroll_inertia && now - last_data >= 1000) {
+            time_t now_t = time(NULL);
+            int state_changed = 0;
+            int clock_changed = 0;
+            int state_render = 0;
+            int cur_min = (int)(now_t / 60);
+            if (cur_min != g_last_clock_min) {
+                g_last_clock_min = cur_min;
+                clock_changed = 1;
+                need_render = 1;   /* update HH:MM and any minute-level derived tokens */
+            }
+
+            struct stat st;
+            if (stat(DEVUI_STATE_FILE, &st) == 0) {
+                long long cur_mtime = (long long)st.st_mtime * 1000000000LL + (long long)st.st_mtim.tv_nsec;
+                if (g_state_mtime_ns < 0 || cur_mtime != g_state_mtime_ns) {
+                    g_state_mtime_ns = cur_mtime;
+                    state_changed = 1;
+                }
+            }
+            if (state_changed) {
+                uint32_t throttle_ms = STATE_RENDER_THROTTLE_MS;
+                if (now - last_act > 5000) throttle_ms = STATE_RENDER_IDLE_THROTTLE_MS;
+                if (g_last_state_render_ms == 0 || now - g_last_state_render_ms >= throttle_ms) {
+                    state_render = 1;
+                    g_last_state_render_ms = now;
+                }
+            }
+            if (state_render) need_render = 1;
+            if (ext_ok && devui_ext_active(&ext) && !g_lock_state && (state_changed || clock_changed))
                 refresh_status_cache();
-            need_render = 1;
             last_data = now;
         }
 
         /* reconcile page-2 WiFi switch states from uci/iw on a slow throttle */
-        if (!dragging && now - g_wifi_aux_at >= 4000) { g_wifi_aux_at = now; wifi_aux_refresh(); }
+        if (!dragging && !scroll_inertia && now - g_wifi_aux_at >= 4000) { g_wifi_aux_at = now; wifi_aux_refresh(); }
 
         if (need_render && backlight_is_on()) {
             if (ext_ok && devui_ext_active(&ext) && !g_lock_state)

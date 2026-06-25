@@ -1,5 +1,29 @@
 # 更新日志
 
+## Unreleased
+
+## v1.1.1 - 2026-06-25
+
+### 变更
+
+- **自启安装脚本回到“vendor bring-up + `rc.local` 晚接管”的稳定链路**：`scripts/install-autostart.sh` 现在会清掉旧的重复钩子和实验性 `procd` 软链接，重新启用原厂 `zte_topsw_devui` 做早期屏幕/触摸 bring-up，再由 `/data/u60pro/start.sh` 完成交接。
+- **`start.sh` 明确区分稳定默认路径与实验入口**：默认 `legacy` 模式继续用 `nohup` 拉起 `u60-datad` + `u60pro-devui`；`procd` 模式仍保留在脚本里，但只供手动实验，不再误当成默认发布路径。
+- **页面重绘改为按状态快照变化驱动**：亮屏状态下不再每秒无条件整页重排，而是优先按 `state.json` mtime 变化与分钟跳变触发，减少无效刷新。
+
+### 修复
+
+- **短信列表打开目标改为稳定 ID 而非可变序号**：短信页点击动作从 `act:sms:N` 改成 `act:sms:ID`，避免列表排序、截断或插入新短信后点开错内容。
+- **JSON key 扫描跨字符串误命中**：配套后端改进了 `json_get()` / `find_key()` 的字符串跳过逻辑，降低短信正文里含引号、逗号或类似 key 片段时读错字段的风险。
+- **litehtml 页面重建后 RSS 持续爬升**：重载 HTML 时先 `reset_state()` 并释放旧 document，再创建新 DOM，避免长时间运行或频繁重排后内存一路抬升。
+- **熄屏后首帧复用旧页面缓存**：灭屏时主动失效页面 HTML 复用缓存，避免 framebuffer 清黑后亮屏却因为“HTML 未变”而跳过重绘。
+- **仅改 `style.css` 不触发整页重排**：页面缓存判定现在把 `style.css` mtime 一并纳入，CSS 改动会强制重新布局，不再沿用旧样式树。
+
+### 验证
+
+- 已在设备上以 `/tmp` 临时二进制做 smoke test，`u60pro-devui` 可正常拉起并接管 DRM / 触摸。
+- 连续 `touch /data/ui/style.css` 6 轮时，UI RSS 约 `5272 KB -> 5968 KB`，未复现早期“从几十 MB 快速冲到 200 MB”的失控增长。
+- 配合后端测试版运行时，设备侧 `state.json` 已命中 `sms` 相关字段，确认短信状态链路可以产出并被前端消费。
+
 ## v1.1.0 - 2026-06-25
 
 ### 新增

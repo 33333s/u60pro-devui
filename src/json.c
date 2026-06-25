@@ -4,21 +4,136 @@
  * SPDX-License-Identifier: MIT
  */
 #include "json.h"
+#include <ctype.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 static int is_ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
 
+static const char *skip_json_string(const char *p)
+{
+    if (!p || *p != '"') return NULL;
+
+    int esc = 0;
+    for (p++; *p; p++) {
+        if (esc) { esc = 0; continue; }
+        if (*p == '\\') { esc = 1; continue; }
+        if (*p == '"') return p + 1;
+    }
+    return NULL;
+}
+
+static int hex4(const char **pp, uint32_t *out)
+{
+    const char *p = *pp;
+    uint32_t v = 0;
+    int d;
+    for (int i = 0; i < 4; i++) {
+        if (!p[i]) return 0;
+        unsigned char c = (unsigned char)p[i];
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = 10 + (c - 'a');
+        else if (c >= 'A' && c <= 'F') d = 10 + (c - 'A');
+        else return 0;
+        v = (v << 4) | (uint32_t)d;
+    }
+    *out = v;
+    *pp = p + 4;
+    return 1;
+}
+
+static size_t append_utf8_codepoint_json(char *out, size_t outlen, size_t pos, uint32_t cp)
+{
+    if (cp <= 0x7F) {
+        if (pos + 1 >= outlen) return pos;
+        out[pos++] = (char)cp;
+        return pos;
+    }
+    if (cp <= 0x7FF) {
+        if (pos + 2 >= outlen) return pos;
+        out[pos++] = (char)(0xC0 | (cp >> 6));
+        out[pos++] = (char)(0x80 | (cp & 0x3F));
+        return pos;
+    }
+    if (cp <= 0xFFFF) {
+        if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFDu;
+        if (pos + 3 >= outlen) return pos;
+        out[pos++] = (char)(0xE0 | (cp >> 12));
+        out[pos++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[pos++] = (char)(0x80 | (cp & 0x3F));
+        return pos;
+    }
+    if (cp <= 0x10FFFF) {
+        if (pos + 4 >= outlen) return pos;
+        out[pos++] = (char)(0xF0 | (cp >> 18));
+        out[pos++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        out[pos++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[pos++] = (char)(0x80 | (cp & 0x3F));
+        return pos;
+    }
+    return pos;
+}
+
 /* Return a pointer just past the ':' of "key": , or NULL. */
 static const char *find_key(const char *json, const char *key)
 {
     size_t klen = strlen(key);
+    int obj_depth = 0;
+    int arr_depth = 0;
+    int expect_key = 0;
     const char *p = json;
-    while ((p = strchr(p, '"')) != NULL) {
-        if (strncmp(p + 1, key, klen) == 0 && p[1 + klen] == '"') {
-            const char *q = p + 1 + klen + 1;
-            while (is_ws(*q)) q++;
-            if (*q == ':') return q + 1;
+
+    while (*p) {
+        char c = *p;
+        if (c == '"') {
+            const char *ks = p + 1;
+            const char *kp = skip_json_string(p);
+            if (!kp) return NULL;
+            const char *ke = kp - 1;
+            if (kp > ks && expect_key && obj_depth == 1) {
+                if ((size_t)(ke - ks) == klen && strncmp(ks, key, klen) == 0) {
+                    const char *q = kp;
+                    while (is_ws(*q)) q++;
+                    if (*q == ':') return q + 1;
+                }
+            }
+            p = kp;
+            if (obj_depth == 1 && expect_key) expect_key = 0;
+            continue;
+        }
+        if (c == '{') {
+            obj_depth++;
+            expect_key = (obj_depth == 1);
+            p++;
+            continue;
+        }
+        if (c == '}') {
+            if (obj_depth > 0) obj_depth--;
+            expect_key = (obj_depth == 1);
+            p++;
+            continue;
+        }
+        if (c == '[') {
+            arr_depth++;
+            expect_key = 0;
+            p++;
+            continue;
+        }
+        if (c == ']') {
+            if (arr_depth > 0) arr_depth--;
+            p++;
+            continue;
+        }
+        if (c == ',') {
+            if (obj_depth == 1 && arr_depth == 0) expect_key = 1;
+            p++;
+            continue;
+        }
+        if (c == ':') {
+            expect_key = 0;
+            p++;
+            continue;
         }
         p++;
     }
@@ -36,7 +151,39 @@ int json_get(const char *json, const char *key, char *out, size_t outlen)
     if (*v == '"') {
         v++;
         while (*v && *v != '"' && n < outlen - 1) {
-            if (*v == '\\' && v[1]) v++;   /* keep escaped char literally */
+            if (*v == '\\' && v[1]) {
+                v++;
+                if (*v == '"') out[n++] = '"';
+                else if (*v == '\\') out[n++] = '\\';
+                else if (*v == '/') out[n++] = '/';
+                else if (*v == 'b') out[n++] = '\b';
+                else if (*v == 'f') out[n++] = '\f';
+                else if (*v == 'n') out[n++] = '\n';
+                else if (*v == 'r') out[n++] = '\r';
+                else if (*v == 't') out[n++] = '\t';
+                else if (*v == 'u') {
+                    v++;
+                    uint32_t cp = 0;
+                    const char *q = v;
+                    if (!hex4(&q, &cp)) break;
+                    if (cp >= 0xD800 && cp <= 0xDBFF &&
+                        q[0] == '\\' && q[1] == 'u') {
+                        const char *q2 = q + 2;
+                        uint32_t lo;
+                        if (hex4(&q2, &lo) && lo >= 0xDC00 && lo <= 0xDFFF) {
+                            cp = 0x10000u + ((cp - 0xD800u) << 10) + (lo - 0xDC00u);
+                            q = q2;
+                        }
+                    }
+                    n = append_utf8_codepoint_json(out, outlen, n, cp);
+                    v = q;
+                    continue;
+                } else {
+                    out[n++] = *v;
+                }
+                v++;
+                continue;
+            }
             out[n++] = *v++;
         }
     } else if (*v == '{' || *v == '[') {

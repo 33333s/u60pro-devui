@@ -14,10 +14,23 @@
 #define DEVUI_STATE_FILE "/tmp/u60-datad/state.json"
 #endif
 
+#ifndef DEVUI_SMS_BUF_MAX
+#define DEVUI_SMS_BUF_MAX 1048576
+#endif
+
+#ifndef DEVUI_STATE_BUF_MAX
+#define DEVUI_STATE_BUF_MAX 1048576
+#endif
+
 static void getstr(const char *obj, const char *key, char *dst, size_t n)
 {
     if (!json_get(obj, key, dst, n)) dst[0] = 0;
 }
+
+/* Keep parser buffers large enough for long UTF-8 SMS payloads. */
+#ifndef DEVUI_SMS_OBJECT_MAX
+#define DEVUI_SMS_OBJECT_MAX (DEVUI_SMS_TEXT_MAX + 32768)
+#endif
 
 /* p points at '{' — return the matching '}', skipping braces inside strings. */
 static char *obj_end(char *p)
@@ -34,6 +47,27 @@ static char *obj_end(char *p)
     return NULL;
 }
 
+static char *find_next_object(const char *p)
+{
+    int instr = 0, esc = 0;
+    for (; *p; p++) {
+        char c = *p;
+        if (instr) {
+            if (esc) {
+                esc = 0;
+            } else if (c == '\\') {
+                esc = 1;
+            } else if (c == '"') {
+                instr = 0;
+            }
+        } else {
+            if (c == '"') instr = 1;
+            else if (c == '{') return (char *)p;
+        }
+    }
+    return NULL;
+}
+
 int data_refresh(devui_data_t *d)
 {
     memset(d, 0, sizeof *d);
@@ -42,13 +76,13 @@ int data_refresh(devui_data_t *d)
 
     FILE *fp = fopen(DEVUI_STATE_FILE, "r");
     if (!fp) return 0;
-    static char buf[65536];
+    static char buf[DEVUI_STATE_BUF_MAX];
     size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
     fclose(fp);
     if (n == 0) return 0;
     buf[n] = 0;
 
-    char sec[4096];
+    static char sec[DEVUI_STATE_BUF_MAX];
 
     if (json_get(buf, "net", sec, sizeof sec)) {
         getstr(sec, "type", d->net_type, sizeof d->net_type);
@@ -100,12 +134,19 @@ int data_refresh(devui_data_t *d)
         char list[2048];
         d->client_n = 0;
         if (json_get(sec, "list", list, sizeof list)) {
-            for (char *p = list; (p = strchr(p, '{')) && d->client_n < 16; ) {
-                char *end = strchr(p, '}');
+            char *p = list;
+            while (p && d->client_n < 16) {
+                char *start = find_next_object(p);
+                char *end;
+                if (!start) break;
+                end = obj_end(start);
                 if (!end) break;
-                char obj[160]; size_t L = (size_t)(end - p) + 1;
-                if (L >= sizeof obj) L = sizeof obj - 1;
-                memcpy(obj, p, L); obj[L] = 0;
+                char obj[160]; size_t L = (size_t)(end - start) + 1;
+                if (L >= sizeof obj) {
+                    p = end + 1;
+                    continue;
+                }
+                memcpy(obj, start, L); obj[L] = 0;
                 getstr(obj, "name", d->client[d->client_n].name, sizeof d->client[0].name);
                 getstr(obj, "ip",   d->client[d->client_n].ip,   sizeof d->client[0].ip);
                 getstr(obj, "mac",  d->client[d->client_n].mac,  sizeof d->client[0].mac);
@@ -118,17 +159,22 @@ int data_refresh(devui_data_t *d)
     d->sms_unread = 0;
     d->sms_n = 0;
     {
-        static char smsbuf[49152];
+        static char smsbuf[DEVUI_SMS_BUF_MAX];
+        static char list[DEVUI_SMS_BUF_MAX];
         if (json_get(buf, "sms", smsbuf, sizeof smsbuf)) {
             d->sms_unread = (int)json_get_int(smsbuf, "unread", 0);
-            static char list[49152];
             if (json_get(smsbuf, "list", list, sizeof list)) {
-                for (char *p = list; (p = strchr(p, '{')) && d->sms_n < DEVUI_SMS_MAX; ) {
+                for (char *p = list; p && d->sms_n < DEVUI_SMS_MAX; ) {
+                    p = find_next_object(p);
+                    if (!p) break;
                     char *end = obj_end(p);
                     if (!end) break;
-                    static char obj[1400];
+                    static char obj[DEVUI_SMS_OBJECT_MAX];
                     size_t L = (size_t)(end - p) + 1;
-                    if (L >= sizeof obj) L = sizeof obj - 1;
+                    if (L >= sizeof obj) {
+                        p = end + 1;
+                        continue;
+                    }
                     memcpy(obj, p, L); obj[L] = 0;
                     d->sms[d->sms_n].id = json_get_int(obj, "id", 0);
                     getstr(obj, "num",  d->sms[d->sms_n].num,  sizeof d->sms[0].num);

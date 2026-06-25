@@ -66,7 +66,7 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 
 > Windows 下用 Git-Bash 跑 `adb push /data/...` 可能因路径翻译卡住，建议用 PowerShell 跑 adb。
 
-开机自启：把二进制和后端放到持久化的 `/data/u60pro/`，用 `scripts/install-autostart.sh` 在 `/etc/rc.local` 挂钩 `start.sh`。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+开机自启：把二进制和后端放到持久化的 `/data/u60pro/`，用 `scripts/install-autostart.sh` 安装当前验证过的稳定链路：保留原厂 `zte_topsw_devui` 做早期屏幕/触摸 bring-up，再由 `rc.local -> /data/u60pro/start.sh legacy` 晚接管。它也会顺手清理旧的重复钩子和实验性 `procd` 软链接。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 ## 版本清单与更新
 
@@ -77,13 +77,13 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 ```jsonc
 // 本仓库 version.json
 { "schema": 1,
-  "devui": { "version": "1.1.0", "asset": "u60pro-devui-aarch64" },
-  "ui":    { "version": "0.4.0", "asset": "ui.tar.gz" } }
+  "devui": { "version": "1.1.1", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.4.1", "asset": "ui.tar.gz" } }
 ```
 
 插件读各项目 **latest release** 的 `version.json`，与本地记录比对，支持**单独更新** datad / devui / ui 或一键更新全部。默认更新源就是 GitHub release；如果你自己在外部做镜像，只要保持 `u60pro-devui-aarch64` / `ui.tar.gz` / `version.json` 这些文件名不变即可，本仓库不再维护单独的网盘同步流程。
 
-**发版**：改 `version.json` 里对应组件的版本号（ui 改动只升 `ui`，二进制改动只升 `devui`）→ 把 `version.json`、二进制、`ui.tar.gz` 一起传到 GitHub release。
+**发版**：改 `version.json` 里对应组件的版本号（ui 改动只升 `ui`，二进制改动只升 `devui`，两边都改就两项都升）→ 重新打包**顶层平铺**的 `ui.tar.gz`（不要带 `ui/` 目录、`./` 前缀或 macOS `._*`）→ 把 `version.json`、二进制、`ui.tar.gz` 一起传到 GitHub release。
 
 ## 文档
 
