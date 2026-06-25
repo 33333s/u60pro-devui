@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "devui": {
-    "version": "1.2.1",
+    "version": "1.2.2",
     "asset": "u60pro-devui-aarch64",
     "notes": "DevUI 启动链路和持久化路径统一迁移到 /data/plugins/u60pro-devui，并配套 zwrt-datad 新目录布局"
   },

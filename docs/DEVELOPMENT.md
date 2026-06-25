@@ -496,10 +496,10 @@ esac
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "1.2.0", "asset": "u60pro-devui-aarch64" },
+  "devui": { "version": "1.2.2", "asset": "u60pro-devui-aarch64" },
   "ui":    { "version": "0.4.3", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
-{ "schema": 1, "datad": { "version": "0.6.1", "asset": "zwrt-datad-aarch64" } }
+{ "schema": 1, "datad": { "version": "0.6.2", "asset": "zwrt-datad-aarch64" } }
 ```
 
 - 仓库根目录留了一份 `version.json` 作为**源头**（发版时改它），但插件实际读的是 **release 资产**（`…/releases/latest/download/version.json`），所以**每次发版都要把 `version.json` 连同二进制/`ui.tar.gz` 一起传到 release**。

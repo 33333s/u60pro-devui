@@ -78,7 +78,7 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 ```jsonc
 // 本仓库 version.json
 { "schema": 1,
-  "devui": { "version": "1.2.1", "asset": "u60pro-devui-aarch64" },
+  "devui": { "version": "1.2.2", "asset": "u60pro-devui-aarch64" },
   "ui":    { "version": "0.4.3", "asset": "ui.tar.gz" } }
 ```
 

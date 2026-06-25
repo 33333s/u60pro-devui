@@ -2,7 +2,7 @@
 
 > 当前正式命名与安装路径已经统一为：`zwrt-datad`、`/data/plugins/zwrt-datad/zwrt-datad`、`/data/plugins/u60pro-devui/`。历史条目里如果出现 `u60-datad` 或 `/data/u60pro`，表示当时版本记录。
 
-## v1.2.1 - 2026-06-26
+## v1.2.2 - 2026-06-26
 
 ### 变更
 
