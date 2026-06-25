@@ -1,7 +1,7 @@
 /*
  * data.h - device state consumed from the u60-datad backend.
  *
- * Reads /tmp/u60-datad/state.json (the single ubus aggregator's snapshot).
+ * Reads the u60-datad HTTP/SSE backend snapshot.
  * The GUI never calls ubus directly. If the backend isn't running, refresh
  * returns 0 and the UI shows placeholders.
  *
@@ -9,6 +9,8 @@
  */
 #ifndef U60PRO_DATA_H
 #define U60PRO_DATA_H
+
+#include <stdint.h>
 
 #define DEVUI_SMS_MAX 32
 #define DEVUI_SMS_TEXT_MAX 16384
@@ -71,7 +73,22 @@ typedef struct {
     char model[64], fw[80], sw_version[80], imei[24];
 } devui_data_t;
 
-/* Re-read the snapshot. Returns 1 on success (d->valid set), 0 otherwise. */
+/* Start the backend transport and seed the first visible snapshot if available. */
+int  data_backend_init(void);
+
+/* Drain SSE events and reconnect as needed. Returns 1 when the live snapshot changed. */
+int  data_backend_poll(uint32_t now_ms);
+
+/* Promote the latest live snapshot to the UI-visible snapshot. */
+int  data_backend_commit_latest(void);
+
+/* Close the transport socket. Safe to call during shutdown. */
+void data_backend_close(void);
+
+/* Copy the current UI-visible snapshot. Returns 1 on success. */
 int data_refresh(devui_data_t *d);
+
+/* Copy the latest live snapshot even if UI-visible refresh is paused. */
+int data_refresh_live(devui_data_t *d);
 
 #endif /* U60PRO_DATA_H */

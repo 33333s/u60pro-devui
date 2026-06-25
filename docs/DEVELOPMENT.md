@@ -88,23 +88,23 @@
 
 `u60pro-devui` 是 ZTE U60Pro 前面板屏幕 UI 的一个 clean-room 开源替代实现。目标形态是一份单独的静态 `aarch64` 二进制，只依赖标准 Linux/OpenWRT 接口，不链接 ZTE 私有库，也不提交任何专有资源。
 
-配套后端是 `u60-datad`：单进程数据采集器，轮询 ubus 并把结果归一化成一份 JSON 快照。UI 只读取 `/tmp/u60-datad/state.json`，从不直接调用 ubus。
+配套后端是 `u60-datad`：单进程数据采集器，轮询 ubus 并把结果归一化成一份 JSON 快照，通过本机 `HTTP /state + SSE /events` 暴露。UI 只读这个本机接口，从不直接调用 ubus。
 
 核心设计原则有两条：
 
-1. **UI 与后端解耦**：所有 ubus 访问集中在后端，UI 只读一个文件，便于审计、分享、独立重建。
+1. **UI 与后端解耦**：所有 ubus 访问集中在后端，UI 只读一个本机 HTTP/SSE 接口，便于审计、分享、独立重建。
 2. **程序与界面解耦**：二进制本身是固定的“框架”，**实际界面是 `/data/ui` 目录里的 HTML/CSS**。用户改界面只需要改 HTML，不必重新编译。开源发布时二进制保持不变，界面完全可由用户自定义。
 
 ## 架构总览
 
 ```text
-ubus 服务 ──▶ u60-datad ──▶ /tmp/u60-datad/state.json ──▶ u60pro-devui ──▶ DRM framebuffer
-                                                              │
-                                                       渲染 /data/ui/*.html
+ubus 服务 ──▶ u60-datad ──▶ HTTP /state + SSE /events ──▶ u60pro-devui ──▶ DRM framebuffer
+                                                                   │
+                                                            渲染 /data/ui/*.html
 ```
 
 - 渲染引擎：**litehtml**（C++ HTML/CSS 排版）+ **FreeType**（含 CJK 字形）→ 直接画进 RGB565 dumb buffer。
-- 没有浏览器、没有 JavaScript、没有网络。一切都是本地静态渲染。
+- 没有浏览器、没有 JavaScript；状态只通过本机 `127.0.0.1:9460` 的 HTTP/SSE 读取，界面本身不直接访问外网。
 - 全部静态链接（liblitehtml.a + libfreetype.a + musl），单文件可直接拷到设备运行。
 
 ### `/data/ui` 界面模型
@@ -491,10 +491,10 @@ esac
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "1.1.3", "asset": "u60pro-devui-aarch64" },
+  "devui": { "version": "1.2.0", "asset": "u60pro-devui-aarch64" },
   "ui":    { "version": "0.4.3", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
-{ "schema": 1, "datad": { "version": "0.4.3", "asset": "u60-datad-aarch64" } }
+{ "schema": 1, "datad": { "version": "0.5.0", "asset": "u60-datad-aarch64" } }
 ```
 
 - 仓库根目录留了一份 `version.json` 作为**源头**（发版时改它），但插件实际读的是 **release 资产**（`…/releases/latest/download/version.json`），所以**每次发版都要把 `version.json` 连同二进制/`ui.tar.gz` 一起传到 release**。
@@ -552,8 +552,8 @@ esac
 - 交互复用自动熄屏的 segmented control 风格，选项为：`停止 / 1s / 2s / 5s`。
 - 配置项持久化到 `/data/u60pro/devui.conf` 的 `refresh_ms=`。
 - 语义约定：
-  - `refresh_ms > 0`：按该间隔检查 `state.json` mtime，并在状态变化时重绘页面
-  - `refresh_ms = 0`：暂停状态轮询，但分钟级时钟仍继续刷新
+  - `refresh_ms > 0`：持续接收 SSE 最新快照，但只按该间隔把最新 live 状态提交到页面并触发重绘
+  - `refresh_ms = 0`：暂停把 live 状态刷进页面，但分钟级时钟仍继续刷新
 - 这样用户可以在“更实时”和“更省资源/更稳”之间自己取舍。
 
 ## 2026-06-25 锁频页短距离左滑回弹后混入图表页残影
@@ -564,7 +564,7 @@ esac
 
 ### 2026-06-25 补充：刷新间隔卡片样式 / 运营商中文显示
 - 刷新间隔卡片现已回到 `seg4` 四档布局，并继续保留 `.segc` 的 `white-space: nowrap`，避免分段标签被挤压换行。
-- 中国大陆四家运营商中文显示之前没有走全链路统一：部分页面直接使用 `state.json` 里的英文 `operator`，只在后续某些 HTML 片段里额外覆盖。现改为在 `data_refresh()` 解析 `net` 段时统一正规化 `operator_name`，优先按 `MCC=460 + MNC` 映射；若 PLMN 信息缺失，再兼容 `China Mobile / Unicom / Telecom / Broadnet` 等英文名回退为中文。
+- 中国大陆四家运营商中文显示之前没有走全链路统一：部分页面直接使用后端快照里的英文 `operator`，只在后续某些 HTML 片段里额外覆盖。现改为在 `data_refresh()` 解析 `net` 段时统一正规化 `operator_name`，优先按 `MCC=460 + MNC` 映射；若 PLMN 信息缺失，再兼容 `China Mobile / Unicom / Telecom / Broadnet` 等英文名回退为中文。
 - 载波汇总显示补充：信号页“已连接载波 / 总 MHz”统计现在按**展示出来的载波卡片**计算，未激活但已配置的载波也会计入数量与带宽汇总，并继续保留灰色“未激活”标记。与此同时，`5GA / 5G+ / 5G` 判定仍只使用活跃载波统计，避免因为把未激活载波计入展示汇总而误判制式角标。
 - 更正：`5GA / 5G+ / 5G` 角标也按**展示出来的 NR 载波与带宽**判断，而不只看当前活跃载波。这样像 `SA n78+n78` 但第二个 `n78` 处于未激活状态时，仍然可以按双载波 / 200MHz 能力显示 `5GA`。
-- 刷新间隔卡片后续移除了 `0.5s` 档位，只保留 `停止 / 1s / 2s / 5s`。原因是当前设备上的 `u60-datad` 仍以 `-i 1000` 运行，前端 `0.5s` 只会更频繁地检查 `state.json` 的 mtime，数据源本身没有更快产出，体感与 `1s` 等价。兼容上，旧配置里若残留 `refresh_ms=500`，启动时会自动归一到 `1000`。
+- 刷新间隔卡片后续移除了 `0.5s` 档位，只保留 `停止 / 1s / 2s / 5s`。原因是当前设备上的 `u60-datad` 仍以 `-i 1000` 运行，前端即便切到 SSE，数据源本身默认也只会以秒级节奏产出完整新快照；`0.5s` 只会增加 UI 提交频率，却不会带来更快的真实数据。兼容上，旧配置里若残留 `refresh_ms=500`，启动时会自动归一到 `1000`。

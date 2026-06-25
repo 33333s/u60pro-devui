@@ -51,9 +51,6 @@ static void        maybe_dump_fb(drm_disp_t *d);
 #define UI_DIR "/data/ui"
 #endif
 #define UI_FONT "/usr/ui/fonts/ZTEZhengYuan.ttf"
-#ifndef DEVUI_STATE_FILE
-#define DEVUI_STATE_FILE "/tmp/u60-datad/state.json"
-#endif
 
 static volatile sig_atomic_t g_run = 1;
 static void on_sig(int s) { (void)s; g_run = 0; }
@@ -96,8 +93,6 @@ static int  g_page_h;     /* last rendered page content height */
 static int  g_autooff_ms; /* auto screen-off timeout, 0 = never */
 static int  g_refresh_ms = 1000; /* state refresh interval, 0 = paused */
 static int  g_saved_bright = -1; /* persisted backlight level, -1 = none yet */
-static long long g_state_mtime_ns = -1;      /* /tmp/u60-datad/state.json mtime (ns) */
-static uint32_t g_last_state_render_ms;
 static int g_last_clock_min = -1;       /* HH:MM changes only once per minute */
 static char g_render_html_cache[PAGE_HTML_CACHE_CAP];
 static size_t g_render_html_cache_len;
@@ -2146,6 +2141,8 @@ int main(void)
     int touch_ok = touch_input_init(&touch, disp.width, disp.height) == 0;
     key_input_t key;     key_input_init(&key);
     backlight_init();
+    (void)data_backend_init();
+    (void)data_backend_commit_latest();
 
     if (!g_charge_boot && !touch_ok && boot_has_external_power()) {
         fprintf(stderr, "boot: forcing charge UI (touch missing, external power present)\n");
@@ -2193,10 +2190,13 @@ int main(void)
         render_charge_boot(&disp);
     }
     uint32_t last_data = millis(), last_act = millis();
+    int state_pending = 0;
 
     while (g_run) {
         uint32_t now = millis();
         int need_render = 0, animating = 0;
+        int live_changed = data_backend_poll(now);
+        if (live_changed) state_pending = 1;
 
         if (ext_ok && g_lock_state && devui_ext_active(&ext)) {
             devui_ext_deactivate(&ext);
@@ -2256,6 +2256,10 @@ int main(void)
         }
 
         if (g_charge_boot) {
+            if (live_changed && data_backend_commit_latest()) {
+                state_pending = 0;
+                need_render = 1;
+            }
             touch_input_clear_taps(&touch);
             prev_press = 0;
             if (now - last_data >= 120) { need_render = 1; last_data = now; }
@@ -2505,8 +2509,10 @@ int main(void)
                         g_autooff_ms = g_autooffs[c].ms; last_act = now; save_conf();
                     } else {
                         g_refresh_ms = normalize_refresh_ms(g_refresh_rates[c].ms);
-                        g_state_mtime_ns = -1;
-                        g_last_state_render_ms = 0;
+                        if (g_refresh_ms > 0) {
+                            if (data_backend_commit_latest()) need_render = 1;
+                            state_pending = 0;
+                        }
                         last_data = 0;
                         save_conf();
                     }
@@ -2570,7 +2576,7 @@ int main(void)
                         else if (!strcmp(a, "batpct"))    { g_show_batpct = !g_show_batpct; save_conf(); need_render = 1; }
                         else if (!strcmp(a, "nfc")) {
                             static devui_data_t dd; char cmd[120];
-                            int on = (data_refresh(&dd) && dd.nfc_switch) ? 0 : 1;
+                            int on = (data_refresh_live(&dd) && dd.nfc_switch) ? 0 : 1;
                             snprintf(cmd, sizeof cmd,
                                 "ubus call zwrt_nfc zwrt_nfc_wifi_set '{\"switch\":%d,\"flag\":2}'", on);
                             system(cmd);
@@ -2634,7 +2640,7 @@ int main(void)
                         else if (!strcmp(a, "adb")) {
                             static devui_data_t dd;
                             const char *mode = "debug";
-                            if (data_refresh(&dd) && !strcmp(dd.usb_mode, "debug") &&
+                            if (data_refresh_live(&dd) && !strcmp(dd.usb_mode, "debug") &&
                                 !usb_pid_is("90b1") && !usb_pid_is("90B1"))
                                 mode = "user";
                             g_adb_pending = !strcmp(mode, "debug");
@@ -2723,8 +2729,10 @@ int main(void)
                         }
                         else if (!strncmp(a, "refreshms:", 10)) {   /* preset select */
                             g_refresh_ms = normalize_refresh_ms(atoi(a + 10));
-                            g_state_mtime_ns = -1;
-                            g_last_state_render_ms = 0;
+                            if (g_refresh_ms > 0) {
+                                if (data_backend_commit_latest()) need_render = 1;
+                                state_pending = 0;
+                            }
                             last_data = 0;
                             save_conf();
                             need_render = 1;
@@ -2810,8 +2818,8 @@ action_done:
             }
         }
 
-        /* periodic clock/state check (not mid-drag). refresh=0 pauses state polling
-         * but still lets the minute clock update once per second. */
+        /* periodic clock/state check (not mid-drag). refresh=0 pauses promotion of
+         * live backend updates, but the minute clock still ticks once per second. */
         {
             uint32_t poll_ms = g_refresh_ms > 0 ? (uint32_t)g_refresh_ms : 1000;
             if (!dragging && !scroll_inertia && now - last_data >= poll_ms) {
@@ -2826,19 +2834,10 @@ action_done:
                     need_render = 1;   /* update HH:MM and any minute-level derived tokens */
                 }
 
-                if (g_refresh_ms > 0) {
-                    struct stat st;
-                    if (stat(DEVUI_STATE_FILE, &st) == 0) {
-                        long long cur_mtime = (long long)st.st_mtime * 1000000000LL + (long long)st.st_mtim.tv_nsec;
-                        if (g_state_mtime_ns < 0 || cur_mtime != g_state_mtime_ns) {
-                            g_state_mtime_ns = cur_mtime;
-                            state_changed = 1;
-                        }
-                    }
-                }
-                if (state_changed && g_refresh_ms > 0) {
+                if (g_refresh_ms > 0 && state_pending && data_backend_commit_latest()) {
+                    state_changed = 1;
                     state_render = 1;
-                    g_last_state_render_ms = now;
+                    state_pending = 0;
                 }
                 if (state_render) need_render = 1;
                 if (ext_ok && devui_ext_active(&ext) && !g_lock_state &&
@@ -2862,6 +2861,7 @@ action_done:
     }
 
     if (ext_ok) devui_ext_close(&ext);
+    data_backend_close();
     drm_disp_close(&disp);
     return 0;
 }

@@ -9,17 +9,17 @@
 ## 1. 它是怎么跑起来的
 
 ```text
-后端 u60-datad ──▶ /tmp/u60-datad/state.json ──┐
-                                                ├─▶ u60pro-devui ──▶ 屏幕
-你写的 /data/ui/*.html + style.css ─────────────┘
+后端 u60-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
+                                                                  ├─▶ u60pro-devui ──▶ 屏幕
+你写的 /data/ui/*.html + style.css ───────────────────────────────┘
 ```
 
 - 程序把 `/data/ui` 下每个 `*.html` 当作**一页**，左右滑动切换。
 - 渲染前，程序会把 HTML 里的 `{{令牌}}` 替换成实时数据（电量、信号、WiFi 密码……）。
 - 点击带 `href="act:xxx"` 的链接会触发**动作**（翻页、切主题、显示密码等），而不是跳转网页。
-- **每次刷新都重新读文件**，所以 `adb push` 完不用重启，约 1 秒内自动生效。
+- HTML / CSS 仍然按文件热加载，所以 `adb push` 完不用重启，约 1 秒内自动生效；状态数据则来自本机 HTTP/SSE 缓存。
 
-渲染引擎是 [litehtml](https://github.com/litehtml/litehtml)（一个 C++ 的 HTML/CSS 排版库）+ FreeType 字体。**没有浏览器、没有网络、没有 JavaScript。**
+渲染引擎是 [litehtml](https://github.com/litehtml/litehtml)（一个 C++ 的 HTML/CSS 排版库）+ FreeType 字体。**没有浏览器、没有 JavaScript；状态只读本机 `127.0.0.1` 的 HTTP/SSE。**
 
 ---
 

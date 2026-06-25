@@ -17,17 +17,17 @@
 👉 **想自己写界面，看这份教程：[docs/UI-GUIDE.md](docs/UI-GUIDE.md)**
 
 ```text
-后端 u60-datad ──▶ /tmp/u60-datad/state.json ──┐
-                                                ├─▶ u60pro-devui ──▶ 屏幕（DRM/KMS）
-你写的 /data/ui/*.html + style.css ─────────────┘
+后端 u60-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
+                                                                  ├─▶ u60pro-devui ──▶ 屏幕（DRM/KMS）
+你写的 /data/ui/*.html + style.css ───────────────────────────────┘
 ```
 
-- **渲染**：[litehtml](https://github.com/litehtml/litehtml)（HTML/CSS 排版）+ FreeType（含 CJK 字体）→ 直接画进 RGB565 framebuffer。无浏览器、无 JavaScript、无网络。
+- **渲染**：[litehtml](https://github.com/litehtml/litehtml)（HTML/CSS 排版）+ FreeType（含 CJK 字体）→ 直接画进 RGB565 framebuffer。无浏览器、无 JavaScript；状态只经本机 `127.0.0.1` 的 HTTP/SSE 读取。
 - **显示**：[src/drm_disp.c](src/drm_disp.c) 打开 `/dev/dri/card0`，运行时枚举面板/crtc/mode，映射 RGB565 dumb framebuffer，通过 `DIRTYFB` 提交。
 - **触摸**：[src/touch_input.c](src/touch_input.c) 自动探测触摸屏并缩放坐标；电源键短按息屏、长按菜单。
 - **界面**：`/data/ui` 下每个 `NN-名字.html` 一页，`style.css` 共享样式。HTML 里的 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
 - **外部接口**：内建本地 `DEVUI-IPC`，保留原生状态栏；其他进程可直接把内容投到状态栏下方的内容区，并通过点击事件日志驱动自己的交互逻辑。
-- **后端**：配套 `u60-datad`（[github.com/33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)），轮询 `ubus` 并写出 `/tmp/u60-datad/state.json`，UI 只读快照，自己从不碰 ubus。
+- **后端**：配套 `u60-datad`（[github.com/33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)），轮询 `ubus` 后通过 `GET /state` 和 `SSE /events` 提供完整 JSON 快照；UI 只读这个本机接口，自己从不碰 ubus。
 
 自带的示例界面（[ui/](ui/)）含六页：信号、短信、WiFi、选网/锁频、图表、系统设置。系统页包含亮度/息屏/锁屏、USB-C 供电方向、USB 网络共享、速率单位和主题等开关。
 
@@ -77,7 +77,7 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 ```jsonc
 // 本仓库 version.json
 { "schema": 1,
-  "devui": { "version": "1.1.3", "asset": "u60pro-devui-aarch64" },
+  "devui": { "version": "1.2.0", "asset": "u60pro-devui-aarch64" },
   "ui":    { "version": "0.4.3", "asset": "ui.tar.gz" } }
 ```
 
