@@ -107,6 +107,7 @@ static int g_render_html_cache_modal;
 static long g_render_html_cache_sms_open;
 static int g_render_html_cache_lock;
 static long long g_render_html_cache_css_mtime = -1;
+static int normalize_refresh_ms(int ms);
 
 /* ---- page-2 aux state, cached (-1 = unknown). Like the reference plugin,
  * bands are controlled purely with `ifconfig wlanN up/down` and read back from
@@ -683,6 +684,7 @@ static void load_pin(void)
     g_pin[o] = 0;
     if (o != 4) g_pin[0] = 0;   /* ignore anything malformed */
     fclose(fp);
+    g_refresh_ms = normalize_refresh_ms(g_refresh_ms);
 }
 static void save_pin(const char *pin)
 {
@@ -712,7 +714,7 @@ static void load_conf(void)
         else if (sscanf(line, "speed_bits=%d", &v) == 1) g_speed_bits = !!v;
         else if (sscanf(line, "show_batpct=%d", &v) == 1) g_show_batpct = !!v;
         else if (sscanf(line, "autooff=%d", &v) == 1)    g_autooff_ms = v;
-        else if (sscanf(line, "refresh_ms=%d", &v) == 1) g_refresh_ms = v;
+        else if (sscanf(line, "refresh_ms=%d", &v) == 1) g_refresh_ms = normalize_refresh_ms(v);
         else if (sscanf(line, "bright=%d", &v) == 1)     g_saved_bright = v;
     }
     fclose(fp);
@@ -746,6 +748,11 @@ static int car_row(char *buf, int o, int cap, const char *band, const char *bw,
         inactive ? " off" : "", band, (bw && bw[0]) ? bw : "-", tag,
         al, (arfcn && arfcn[0]) ? arfcn : "-", (pci && pci[0]) ? pci : "-",
         rq, (rsrp && rsrp[0]) ? rsrp : "-", sq, (sinr && sinr[0]) ? sinr : "-");
+}
+
+static int carrier_is_inactive(const char *rsrp)
+{
+    return atof((rsrp && rsrp[0]) ? rsrp : "") <= -140.0;
 }
 
 /* Split a CA group "f0,f1,..." into fields[] (returns count). */
@@ -1173,8 +1180,21 @@ static const struct { const char *v, *lab; } g_netmodes[4] = {
 static const struct { int ms; const char *lab; } g_autooffs[6] = {
     { 0, "关" }, { 30000, "30秒" }, { 60000, "1分" },
     { 120000, "2分" }, { 300000, "5分" }, { 600000, "10分" } };
-static const struct { int ms; const char *lab; } g_refresh_rates[5] = {
-    { 0, "停止" }, { 500, "0.5s" }, { 1000, "1s" }, { 2000, "2s" }, { 5000, "5s" } };
+static const struct { int ms; const char *lab; } g_refresh_rates[4] = {
+    { 0, "停止" }, { 1000, "1s" }, { 2000, "2s" }, { 5000, "5s" } };
+static int normalize_refresh_ms(int ms)
+{
+    switch (ms) {
+    case 0:
+    case 1000:
+    case 2000:
+    case 5000:
+        return ms;
+    case 500:
+    default:
+        return 1000;
+    }
+}
 /* escape &,<,> for safe litehtml parsing of arbitrary SMS text */
 static void html_esc(char *dst, size_t cap, const char *src)
 {
@@ -1318,7 +1338,8 @@ static int build_kv(struct kv *t)
     int is_lte  = !is_nsa && !is_sa && (strstr(d.net_type, "LTE") || strstr(d.net_type, "4G"));
     int show_nr  = is_sa || is_nsa || is_endc;
     int show_lte = is_nsa || is_endc || is_lte;
-    int nr_cc = 0, nr_bw = 0, lte_cc = 0, lte_bw = 0, no = 0, lo = 0;
+    int nr_cc = 0, nr_bw = 0, lte_cc = 0, lte_bw = 0;
+    int nr_show_cc = 0, nr_show_bw = 0, lte_show_cc = 0, lte_show_bw = 0, no = 0, lo = 0;
     char rp[12], pc[12], ac[16];
     const char *nr_band = d.nr_band[0] ? d.nr_band : d.band;
 
@@ -1328,7 +1349,8 @@ static int build_kv(struct kv *t)
         snprintf(rp, sizeof rp, "%d", d.nr_rsrp); snprintf(pc, sizeof pc, "%d", d.nr_pci);
         snprintf(ac, sizeof ac, "%ld", d.nr_channel);
         no = car_row(s_nrrows, no, sizeof s_nrrows, nr_band, d.nr_bw, ac, pc, rp, d.nr_snr);
-        nr_cc = 1; nr_bw = atoi(d.nr_bw);
+        nr_show_cc = 1; nr_show_bw = atoi(d.nr_bw);
+        if (!carrier_is_inactive(rp)) { nr_cc = 1; nr_bw = atoi(d.nr_bw); }
     }
     if (show_nr) {
         char nrca[256]; strncpy(nrca, d.nrca, sizeof nrca - 1); nrca[sizeof nrca - 1] = 0;
@@ -1340,6 +1362,8 @@ static int build_kv(struct kv *t)
                 char bn[12]; snprintf(bn, sizeof bn, "n%s", f[3]);
                 no = car_row(s_nrrows, no, sizeof s_nrrows, bn, f[5], nf > 4 ? f[4] : "-",
                              nf > 1 ? f[1] : "-", nf > 7 ? f[7] : "-", nf > 9 ? f[9] : "-");
+                nr_show_cc++;
+                nr_show_bw += atoi(f[5]);
                 if (rpv > -140.0) { nr_cc++; nr_bw += atoi(f[5]); }
             }
         }
@@ -1380,7 +1404,6 @@ static int build_kv(struct kv *t)
             if ((!f_rp || !f_rp[0]) && sig_rp_buf[0]) f_rp = sig_rp_buf;
             if ((!f_sn || !f_sn[0]) && sig_sn_buf[0]) f_sn = sig_sn_buf;
             if (f_bw && atoi(f_bw) > 0) {
-                double rpv = (f_rp && f_rp[0]) ? atof(f_rp) : -139.0;
                 char bn[12];
                 if (f_band && (f_band[0] == 'B' || f_band[0] == 'b')) snprintf(bn, sizeof bn, "%s", f_band);
                 else snprintf(bn, sizeof bn, "B%s", (f_band && f_band[0]) ? f_band : "-");
@@ -1393,26 +1416,29 @@ static int build_kv(struct kv *t)
                 }
                 lo = car_row(s_lterows, lo, sizeof s_lterows, bn, f_bw, f_arfcn ? f_arfcn : "-",
                              f_pci ? f_pci : "-", lr, ls);
-                if (rpv > -140.0) { lte_cc++; lte_bw += atoi(f_bw); }
+                lte_show_cc++;
+                lte_show_bw += atoi(f_bw);
+                if (!carrier_is_inactive(lr)) { lte_cc++; lte_bw += atoi(f_bw); }
             }
         }
     }
     (void)no; (void)lo; (void)pc; (void)ac;
 
-    /* total bandwidth per NSA/ENDC rules; header label */
-    int total_bw; const char *cmode;
-    if (is_endc)     { total_bw = nr_bw + lte_bw; cmode = "EN-DC"; }
-    else if (is_nsa) { total_bw = nr_bw + lte_bw; cmode = "5G NSA"; }
-    else if (is_sa)  { total_bw = nr_bw; cmode = "5G SA"; }
-    else if (is_lte) { total_bw = lte_bw; cmode = "4G LTE"; }
-    else             { total_bw = 0; cmode = d.net_type[0] ? d.net_type : "No Service"; }
+    /* Display summary includes inactive/configured carriers; generation badge
+     * still uses active carrier stats above. */
+    int total_bw, total_show_bw; const char *cmode;
+    if (is_endc)     { total_bw = nr_bw + lte_bw; total_show_bw = nr_show_bw + lte_show_bw; cmode = "EN-DC"; }
+    else if (is_nsa) { total_bw = nr_bw + lte_bw; total_show_bw = nr_show_bw + lte_show_bw; cmode = "5G NSA"; }
+    else if (is_sa)  { total_bw = nr_bw;          total_show_bw = nr_show_bw;               cmode = "5G SA"; }
+    else if (is_lte) { total_bw = lte_bw;         total_show_bw = lte_show_bw;              cmode = "4G LTE"; }
+    else             { total_bw = 0;              total_show_bw = 0;                         cmode = d.net_type[0] ? d.net_type : "No Service"; }
     { char cnt[48];
-      if (lte_cc && nr_cc) snprintf(cnt, sizeof cnt, "%d LTE + %d NR 载波", lte_cc, nr_cc);
-      else if (nr_cc)      snprintf(cnt, sizeof cnt, "%d NR 载波", nr_cc);
-      else if (lte_cc)     snprintf(cnt, sizeof cnt, "%d LTE 载波", lte_cc);
+      if (lte_show_cc && nr_show_cc) snprintf(cnt, sizeof cnt, "%d LTE + %d NR 载波", lte_show_cc, nr_show_cc);
+      else if (nr_show_cc)           snprintf(cnt, sizeof cnt, "%d NR 载波", nr_show_cc);
+      else if (lte_show_cc)          snprintf(cnt, sizeof cnt, "%d LTE 载波", lte_show_cc);
       else                 snprintf(cnt, sizeof cnt, "无载波");
       snprintf(s_carriers, sizeof s_carriers, "<div class='sec'>%s · %s · %d MHz</div>%s%s",
-               cmode, cnt, total_bw, s_nrrows, s_lterows); }
+               cmode, cnt, total_show_bw, s_nrrows, s_lterows); }
     if ((is_endc || is_nsa) && s_nrrows[0] && s_lterows[0]) {
         snprintf(s_nr_block, sizeof s_nr_block,
                  "<div class='card'>"
@@ -1421,11 +1447,11 @@ static int build_kv(struct kv *t)
                  "<div class='sec'>%s · %d LTE + %d NR 载波 · %d MHz</div>"
                  "<div class='ctitle'>NR</div>%s"
                  "</div>",
-                 s_oper, d.net_type, s_qci, s_ambr, cmode, lte_cc, nr_cc, total_bw, s_nrrows);
+                 s_oper, d.net_type, s_qci, s_ambr, cmode, lte_show_cc, nr_show_cc, total_show_bw, s_nrrows);
         snprintf(s_lte_block, sizeof s_lte_block,
                  "<div class='card'><div class='ctitle'>LTE</div>"
                  "<div class='sec'>%d LTE 载波 · %d MHz</div>%s</div>",
-                 lte_cc, lte_bw, s_lterows);
+                 lte_show_cc, lte_show_bw, s_lterows);
         snprintf(s_sigcards, sizeof s_sigcards, "%s%s", s_nr_block, s_lte_block);
     } else {
         snprintf(s_sigcards, sizeof s_sigcards,
@@ -1438,6 +1464,8 @@ static int build_kv(struct kv *t)
     }
 
     /* generation badge: 5GA / 5G+ / 5G / 4G / LTE / 3G */
+    int gen_nr_cc = nr_show_cc;
+    int gen_nr_bw = nr_show_bw;
     int op = 0;   /* 1 mobile, 2 unicom, 3 telecom, 4 broadnet, 5 other-mainland */
     if (d.mcc == 460) {
         int m = d.mnc;
@@ -1454,9 +1482,9 @@ static int build_kv(struct kv *t)
     }
     const char *gen = "--";
     if (is_sa) {
-        if ((op == 1 || op == 4) && nr_cc >= 3) gen = "5GA";
-        else if ((op == 2 || op == 3) && nr_bw >= 200) gen = "5GA";
-        else if (nr_bw > 100) gen = "5G+";
+        if ((op == 1 || op == 4) && gen_nr_cc >= 3) gen = "5GA";
+        else if ((op == 2 || op == 3) && gen_nr_bw >= 200) gen = "5GA";
+        else if (gen_nr_bw > 100) gen = "5G+";
         else gen = "5G";
     } else if (is_nsa || is_endc) gen = "5G";
     else if (is_lte) gen = (d.mcc == 460) ? "4G" : "LTE";
@@ -1552,10 +1580,10 @@ static int build_kv(struct kv *t)
     }
     {   /* refresh segmented control (#refreshseg), same UI as auto-off */
         int active = 0;
-        for (int k = 0; k < 5; k++) if (g_refresh_rates[k].ms == g_refresh_ms) active = k;
+        for (int k = 0; k < 4; k++) if (g_refresh_rates[k].ms == g_refresh_ms) active = k;
         int hl = g_segdrag == 3 ? -1 : active;
-        int o = snprintf(s_refreshseg, sizeof s_refreshseg, "<div id='refreshseg' class='seg seg5'>");
-        for (int k = 0; k < 5; k++)
+        int o = snprintf(s_refreshseg, sizeof s_refreshseg, "<div id='refreshseg' class='seg seg4'>");
+        for (int k = 0; k < 4; k++)
             o += snprintf(s_refreshseg + o, sizeof s_refreshseg - o,
                 "<a href='act:refreshms:%d' class='segc%s'>%s</a>",
                 g_refresh_rates[k].ms, k == hl ? " seg-on" : "", g_refresh_rates[k].lab);
@@ -2403,7 +2431,7 @@ int main(void)
                     else if (html_view_rect("#autoseg", &bx, &by, &bw, &bh) &&
                              x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 2; n = 6; }
                     else if (html_view_rect("#refreshseg", &bx, &by, &bw, &bh) &&
-                             x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 3; n = 5; }
+                             x >= bx && x < bx + bw && y >= by - 4 && y < by + bh + 4) { which = 3; n = 4; }
                     if (which) {
                         segging = 1; seg_which = which; seg_n = n;
                         seg_x = bx; seg_y = by; seg_w = bw; seg_h = bh;
@@ -2476,7 +2504,7 @@ int main(void)
                     } else if (seg_which == 2) {
                         g_autooff_ms = g_autooffs[c].ms; last_act = now; save_conf();
                     } else {
-                        g_refresh_ms = g_refresh_rates[c].ms;
+                        g_refresh_ms = normalize_refresh_ms(g_refresh_rates[c].ms);
                         g_state_mtime_ns = -1;
                         g_last_state_render_ms = 0;
                         last_data = 0;
@@ -2694,7 +2722,7 @@ int main(void)
                             g_autooff_ms = atoi(a + 8); last_act = now; save_conf(); need_render = 1;
                         }
                         else if (!strncmp(a, "refreshms:", 10)) {   /* preset select */
-                            g_refresh_ms = atoi(a + 10);
+                            g_refresh_ms = normalize_refresh_ms(atoi(a + 10));
                             g_state_mtime_ns = -1;
                             g_last_state_render_ms = 0;
                             last_data = 0;

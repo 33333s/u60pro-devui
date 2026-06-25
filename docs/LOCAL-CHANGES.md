@@ -2,6 +2,49 @@
 
 记录时间：2026-06-25
 
+## v1.1.3 发布状态
+
+- 本次发布 tag：`v1.1.3`
+- 前端仓库：`33333s/u60pro-devui`
+- 本次为**devui + ui 双补丁版**：`devui` 升到 `1.1.3`，`ui` 升到 `0.4.3`
+
+## v1.1.3 本次发布内容
+
+这次发布围绕“信号显示口径统一”和“刷新间隔选项收敛”展开，重点如下：
+
+- `src/data.c`：读取 `state.json` 时统一把中国大陆四大运营商正规化为中文显示，并兼容英文运营商名回退到中文。
+- `src/htmlmain.c`：信号页载波汇总改为按展示出来的载波卡片统计，未激活但已配置的载波也会计入数量与总带宽；`5GA / 5G+ / 5G` 角标同步按这套展示能力判断。
+- `src/htmlmain.c`：设置页刷新间隔移除无效的 `0.5s` 选项，只保留 `停止 / 1s / 2s / 5s`，并把旧的 `refresh_ms=500` 自动归一到 `1000`。
+- `ui/style.css`：修正刷新间隔 segmented control 的布局，回到四档等分样式并保留不换行策略。
+- `CHANGELOG.md`、`README.md`、`docs/DEVELOPMENT.md`：同步更新版本示例、发布说明与这次行为调整的背景。
+
+## v1.1.3 实机验证结论
+
+- 已把新二进制和 `style.css` 推到设备，`u60pro-devui` 可正常拉起并接管前屏。
+- 设备侧当前运行版本文件时间为 `2026-06-25 21:26`，进程可正常启动。
+- 设置页刷新间隔现已去掉 `0.5s`，便于用户只看到真实有效的档位。
+
+## v1.1.3 本次发布文件
+
+- `src/data.c`
+- `src/htmlmain.c`
+- `ui/style.css`
+- `version.json`
+- `CHANGELOG.md`
+- `README.md`
+- `docs/DEVELOPMENT.md`
+- `docs/LOCAL-CHANGES.md`
+
+## v1.1.3 Release 资产
+
+- `u60pro-devui-aarch64`
+- `ui.tar.gz`
+- `version.json`
+
+# 发布与本地修复记录
+
+记录时间：2026-06-25
+
 ## v1.1.2 发布状态
 
 - 本次发布 tag：`v1.1.2`

@@ -147,7 +147,7 @@ body.light .aoff { background: #d3d9e2; color: #2a2f38; }
 body.dark  .seg { background: #2c2f37; }
 body.light .seg { background: #d3d9e2; }
 .segc { display: table-cell; text-align: center; font-size: 15px; padding: 12px 0;
-        text-decoration: none; }
+        text-decoration: none; white-space: nowrap; }
 .seg4 .segc { width: 25%; }            /* explicit widths = equal cells */
 .seg6 { margin-top: 5px; }
 .seg6 .segc { width: 16.66%; font-size: 13px; padding: 11px 0; }

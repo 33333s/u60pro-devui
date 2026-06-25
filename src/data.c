@@ -27,6 +27,23 @@ static void getstr(const char *obj, const char *key, char *dst, size_t n)
     if (!json_get(obj, key, dst, n)) dst[0] = 0;
 }
 
+static const char *mainland_operator_cn(int mcc, int mnc, const char *raw)
+{
+    if (mcc == 460) {
+        if (mnc == 0 || mnc == 2 || mnc == 4 || mnc == 7 || mnc == 8) return "中国移动";
+        if (mnc == 1 || mnc == 6 || mnc == 9) return "中国联通";
+        if (mnc == 3 || mnc == 5 || mnc == 11) return "中国电信";
+        if (mnc == 15) return "中国广电";
+    }
+    if (!raw || !raw[0]) return NULL;
+    if (!strcmp(raw, "China Mobile") || !strcmp(raw, "CMCC")) return "中国移动";
+    if (!strcmp(raw, "China Unicom") || !strcmp(raw, "CUCC")) return "中国联通";
+    if (!strcmp(raw, "China Telecom") || !strcmp(raw, "CTCC")) return "中国电信";
+    if (!strcmp(raw, "China Broadnet") ||
+        !strcmp(raw, "China Broadcasting Network")) return "中国广电";
+    return NULL;
+}
+
 /* Keep parser buffers large enough for long UTF-8 SMS payloads. */
 #ifndef DEVUI_SMS_OBJECT_MAX
 #define DEVUI_SMS_OBJECT_MAX (DEVUI_SMS_TEXT_MAX + 32768)
@@ -113,6 +130,10 @@ int data_refresh(devui_data_t *d)
         d->nr_pci   = (int)json_get_int(sec, "nr_pci", 0);
         d->nr_cell_id = json_get_int(sec, "nr_cell_id", 0);
         d->nr_channel = json_get_int(sec, "nr_channel", 0);
+        {
+            const char *cn = mainland_operator_cn(d->mcc, d->mnc, d->operator_name);
+            if (cn) snprintf(d->operator_name, sizeof d->operator_name, "%s", cn);
+        }
     }
 
     if (json_get(buf, "battery", sec, sizeof sec)) {

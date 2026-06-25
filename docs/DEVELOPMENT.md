@@ -491,8 +491,8 @@ esac
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "1.1.2", "asset": "u60pro-devui-aarch64" },
-  "ui":    { "version": "0.4.2", "asset": "ui.tar.gz" } }
+  "devui": { "version": "1.1.3", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.4.3", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
 { "schema": 1, "datad": { "version": "0.4.3", "asset": "u60-datad-aarch64" } }
 ```
@@ -549,7 +549,7 @@ esac
 ## 2026-06-25 设置页新增“数据刷新间隔”补记
 
 - 系统页新增一张“数据刷新”卡片，放在开关区域下方。
-- 交互复用自动熄屏的 segmented control 风格，选项为：`停止 / 0.5s / 1s / 2s / 5s`。
+- 交互复用自动熄屏的 segmented control 风格，选项为：`停止 / 1s / 2s / 5s`。
 - 配置项持久化到 `/data/u60pro/devui.conf` 的 `refresh_ms=`。
 - 语义约定：
   - `refresh_ms > 0`：按该间隔检查 `state.json` mtime，并在状态变化时重绘页面
@@ -561,3 +561,10 @@ esac
 - 现象：在 `04-lock.html` 上向左小幅拖动，触发“预览下一页（05-charts）但未达到翻页阈值”，随后页面自动回弹到锁频页；回弹后，监控图表页的原生图表绘制会残留在锁频页上。
 - 根因：这条路径里 framebuffer 在拖动/回弹动画阶段已经被“当前页 + 下一页预览”改写过，但回弹结束后当前页路径并没有变化，`render()` 仍可能命中 HTML 复用缓存，导致没有强制整页重绘。图表页的 native draw 内容因此被带回了锁频页。
 - 修正：在 page swipe 的“提交翻页 / 回弹归位”结束后统一调用 `invalidate_render_html_cache()`，强制下一帧完整重绘当前页，避免邻页的 native 内容残留。
+
+### 2026-06-25 补充：刷新间隔卡片样式 / 运营商中文显示
+- 刷新间隔卡片现已回到 `seg4` 四档布局，并继续保留 `.segc` 的 `white-space: nowrap`，避免分段标签被挤压换行。
+- 中国大陆四家运营商中文显示之前没有走全链路统一：部分页面直接使用 `state.json` 里的英文 `operator`，只在后续某些 HTML 片段里额外覆盖。现改为在 `data_refresh()` 解析 `net` 段时统一正规化 `operator_name`，优先按 `MCC=460 + MNC` 映射；若 PLMN 信息缺失，再兼容 `China Mobile / Unicom / Telecom / Broadnet` 等英文名回退为中文。
+- 载波汇总显示补充：信号页“已连接载波 / 总 MHz”统计现在按**展示出来的载波卡片**计算，未激活但已配置的载波也会计入数量与带宽汇总，并继续保留灰色“未激活”标记。与此同时，`5GA / 5G+ / 5G` 判定仍只使用活跃载波统计，避免因为把未激活载波计入展示汇总而误判制式角标。
+- 更正：`5GA / 5G+ / 5G` 角标也按**展示出来的 NR 载波与带宽**判断，而不只看当前活跃载波。这样像 `SA n78+n78` 但第二个 `n78` 处于未激活状态时，仍然可以按双载波 / 200MHz 能力显示 `5GA`。
+- 刷新间隔卡片后续移除了 `0.5s` 档位，只保留 `停止 / 1s / 2s / 5s`。原因是当前设备上的 `u60-datad` 仍以 `-i 1000` 运行，前端 `0.5s` 只会更频繁地检查 `state.json` 的 mtime，数据源本身没有更快产出，体感与 `1s` 等价。兼容上，旧配置里若残留 `refresh_ms=500`，启动时会自动归一到 `1000`。
