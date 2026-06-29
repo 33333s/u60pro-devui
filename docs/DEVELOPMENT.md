@@ -4,6 +4,11 @@
 
 > 当前正式命名与安装路径已经统一为：`zwrt-datad`、`/data/plugins/zwrt-datad/zwrt-datad`、`/data/plugins/u60pro-devui/`。下文历史章节里如果出现 `u60-datad` 或 `/data/u60pro`，表示当时版本记录，不再是当前安装规范。
 
+## 2026-06-29 现场协作记录（用于上下文接续）
+- 经过最近一轮采样（见 [`agents.md`](./agents.md)）结论：`u60pro-devui` 与 `zwrt-datad` 的 RSS 在持续采样窗口内未见显著持续上升；`ufi-tools-u60pro` 常驻内存偏高属于组件自身行为，内存问题按“样本窗口对比”继续复核。
+- 编译链路确认：`ubuntu`（`y@directhk.ericsfj.com:322`）是这条内网 Ubuntu 编译机，`server` 非编译机器且本条链路不再使用；本地代码通过 `rsync` 到 `ubuntu` 再编译、再回灌 u60。
+- 已固定 SSH 信息：`u60`、`mbb`（g5pro）共用同一把密钥，`mbb` 对应 `direct.mbb.ericsfj.com`，`u60` 与 `mbb` 的调试、同步与诊断命令优先以 `agents.md` 为准。
+
 ## 2026-06-25 历史 Review 记录（修复前）
 
 这段保留的是修复前的本地 review 记录，主要作为问题来历备忘；当前状态以后面的“修复后复查补记”和实际代码为准。范围主要看：
@@ -286,7 +291,7 @@ litehtml 没有 canvas/SVG/滚动/圆角绘制，这些都由宿主补：
 bash scripts/_setup_toolchain.sh      # 一次性
 bash scripts/_build_freetype.sh       # → ~/freetype-musl/lib/libfreetype.a
 bash scripts/_build_litehtml.sh       # → ~/litehtml-musl/lib/liblitehtml.a
-bash scripts/_build_htmlpoc.sh        # → html-poc(.stripped)  即 UI 二进制
+bash scripts/build.sh                 # → u60pro-devui(.stripped)  即正式 UI 二进制
 ```
 
 后端：
@@ -307,7 +312,7 @@ bash zwrt-datad/scripts/build.sh       # → zwrt-datad(.stripped)
 # 杀掉旧实例再推，否则可能 "Text file busy" 并悄悄保留旧二进制
 adb shell "killall -9 u60pro-devui zwrt-datad u60-datad"
 adb shell "mkdir -p /data/plugins/u60pro-devui/ui /data/plugins/zwrt-datad"
-adb push html-poc.stripped        /data/plugins/u60pro-devui/u60pro-devui
+adb push u60pro-devui.stripped    /data/plugins/u60pro-devui/u60pro-devui
 adb push zwrt-datad.stripped      /data/plugins/zwrt-datad/zwrt-datad
 adb push ui/*.html ui/*.css       /data/plugins/u60pro-devui/ui/
 adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
@@ -496,8 +501,8 @@ esac
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "1.2.2", "asset": "u60pro-devui-aarch64" },
-  "ui":    { "version": "0.4.3", "asset": "ui.tar.gz" } }
+  "devui": { "version": "1.2.3", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.4.4", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
 { "schema": 1, "datad": { "version": "0.6.2", "asset": "zwrt-datad-aarch64" } }
 ```
@@ -514,7 +519,12 @@ esac
 - devui 仓库资产：`u60pro-devui-aarch64`、`ui.tar.gz`、`version.json`
 - datad 仓库资产：`zwrt-datad-aarch64`、`version.json`
 
-**发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`；改了 `ui/*.html` / `style.css` 这类界面文件就也要升 `ui`；两边都改就两项都升）→ 传 `version.json` + 资产到 GitHub release。若你在仓库外另做镜像，直接镜像 GitHub release 的同名文件即可；本仓库不再维护手动网盘同步脚本。
+**发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`；改了 `ui/*.html` / `style.css` 这类界面文件就也要升 `ui`；两边都改就两项都升）→ `bash scripts/build.sh` 生成 `u60pro-devui.stripped` → 发布前把它重命名成 `u60pro-devui-aarch64` → 打包顶层平铺的 `ui.tar.gz` → 把 `version.json` + 资产传到 GitHub release。若你在仓库外另做镜像，直接镜像 GitHub release 的同名文件即可；本仓库不再维护手动网盘同步脚本。
+```sh
+bash scripts/build.sh
+cp u60pro-devui.stripped u60pro-devui-aarch64
+(cd ui && COPYFILE_DISABLE=1 tar -czf ../ui.tar.gz -- *.html *.css)
+```
 > **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/plugins/u60pro-devui/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量；如果设备还遗留旧 `/data/ui`，则先迁移再删除。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
 > **坑：`ui.tar.gz` 的打包结构必须和旧版保持一致。** 设备侧更新逻辑默认期望的是“**顶层平铺页面文件**”的 tar 包：只有 `01-signal.html`、`02-sms.html`、…、`style.css`，**没有** `ui/` 目录、**没有** `./` 前缀、**没有** macOS 产生的 `._*` AppleDouble 文件。用 macOS 自带打包工具直接打整个目录时，容易把这些额外条目也塞进去，导致 UI 更新失败。打包时应显式关闭资源叉（如 `COPYFILE_DISABLE=1`），并直接列出页面文件名生成 tar。
 

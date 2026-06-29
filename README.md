@@ -43,8 +43,8 @@ bash scripts/_setup_toolchain.sh
 bash scripts/_build_freetype.sh
 bash scripts/_build_litehtml.sh
 
-# 编译 UI 二进制 -> ./html-poc(.stripped)
-bash scripts/_build_htmlpoc.sh
+# 编译正式 UI 二进制 -> ./u60pro-devui(.stripped)
+bash scripts/build.sh
 ```
 
 产物是单个**静态 AArch64 ELF**，无动态依赖，直接拷到设备运行。
@@ -60,7 +60,7 @@ adb push ui/*.html ui/*.css /data/plugins/u60pro-devui/ui/
 
 # 推送并运行（先停原厂 UI 释放面板）
 adb shell 'mkdir -p /data/plugins/u60pro-devui'
-adb push html-poc.stripped /data/plugins/u60pro-devui/u60pro-devui
+adb push u60pro-devui.stripped /data/plugins/u60pro-devui/u60pro-devui
 adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
            chmod 755 /data/plugins/u60pro-devui/u60pro-devui;
            nohup /data/plugins/u60pro-devui/u60pro-devui >/tmp/devui.log 2>&1 &'
@@ -79,13 +79,21 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 ```jsonc
 // 本仓库 version.json
 { "schema": 1,
-  "devui": { "version": "1.2.2", "asset": "u60pro-devui-aarch64" },
-  "ui":    { "version": "0.4.3", "asset": "ui.tar.gz" } }
+  "devui": { "version": "1.2.3", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.4.4", "asset": "ui.tar.gz" } }
 ```
 
 插件读各项目 **latest release** 的 `version.json`，与本地记录比对，支持**单独更新** datad / devui / ui 或一键更新全部。默认更新源就是 GitHub release；如果你自己在外部做镜像，只要保持 `u60pro-devui-aarch64` / `ui.tar.gz` / `version.json` 这些文件名不变即可，本仓库不再维护单独的网盘同步流程。
 
-**发版**：改 `version.json` 里对应组件的版本号（ui 改动只升 `ui`，二进制改动只升 `devui`，两边都改就两项都升）→ 重新打包**顶层平铺**的 `ui.tar.gz`（不要带 `ui/` 目录、`./` 前缀或 macOS `._*`）→ 把 `version.json`、二进制、`ui.tar.gz` 一起传到 GitHub release。
+**发版**：改 `version.json` 里对应组件的版本号（ui 改动只升 `ui`，二进制改动只升 `devui`，两边都改就两项都升）→ 用 `bash scripts/build.sh` 产出 `u60pro-devui.stripped`，发布时重命名成 `u60pro-devui-aarch64` → 重新打包**顶层平铺**的 `ui.tar.gz`（不要带 `ui/` 目录、`./` 前缀或 macOS `._*`）→ 把 `version.json`、`u60pro-devui-aarch64`、`ui.tar.gz` 一起传到 GitHub release。
+
+可直接照抄这一组命令准备 release 资产：
+
+```sh
+bash scripts/build.sh
+cp u60pro-devui.stripped u60pro-devui-aarch64
+(cd ui && COPYFILE_DISABLE=1 tar -czf ../ui.tar.gz -- *.html *.css)
+```
 
 ## 文档
 

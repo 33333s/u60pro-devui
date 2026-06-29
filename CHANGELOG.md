@@ -2,6 +2,23 @@
 
 > 当前正式命名与安装路径已经统一为：`zwrt-datad`、`/data/plugins/zwrt-datad/zwrt-datad`、`/data/plugins/u60pro-devui/`、`/data/plugins/u60pro-devui/ui`。历史条目里如果出现 `u60-datad`、`/data/u60pro` 或 `/data/ui`，表示当时版本记录。
 
+## v1.2.3 - 2026-06-29
+
+### 变更
+
+- **图表页功率改读电池而不是充电器**：历史功率曲线现在统一按 `battery.bat_uv * abs(battery.bat_ua)` 计算，避免插电场景下只看到充电器输入功率、却看不到电池真实充放电状态。
+- **图表页功率卡片文案收敛**：右上角功率卡片直接显示 `充电/放电 4.3w` 这类最终语义，曲线本身不再额外依赖正负号区分。
+- **构建脚本收敛到当前正式入口**：`scripts/build.sh` 现在直接产出 `u60pro-devui(.stripped)`，并按当前 HTML 渲染链路链接 `litehtml` / `FreeType`，不再把测试工具源文件一起误编进正式二进制。
+
+### 文档
+
+- **README / 开发文档同步当前发布产物**：构建、部署和发版说明统一改成 `bash scripts/build.sh`、`u60pro-devui.stripped` 与 release 资产 `u60pro-devui-aarch64`，不再沿用过时的 `html-poc` 表述。
+
+### 验证
+
+- 已在 ubuntu 编译机重新完成正式构建，产出新的 `u60pro-devui.stripped`。
+- 已将新二进制和 `ui/05-charts.html` 推到设备 `/data/plugins/u60pro-devui/`，并确认设备侧进程已切换到新文件重启运行。
+
 ## v1.2.2 - 2026-06-26
 
 ### 变更

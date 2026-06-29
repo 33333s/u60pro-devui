@@ -805,10 +805,10 @@ static long   h_rx[HIST], h_tx[HIST];
 static time_t h_last;
 
 /* charge (charger input) or discharge (battery) power, in milliwatts. */
+/* Battery power in milliwatts (use battery_voltage * |battery_current|). */
 static int power_mw(const devui_data_t *d)
 {
-    double w = d->charger_connect ? (d->chg_uv / 1e6) * (d->chg_ua / 1e6)
-                                  : (d->bat_uv / 1e6) * (labs(d->bat_ua) / 1e6);
+    double w = (d->bat_uv / 1e6) * (labs(d->bat_ua) / 1e6);
     return (int)(w * 1000);
 }
 
@@ -1262,8 +1262,9 @@ static const char *modal_html(void)
     return out;
 }
 /* Fill a kv table from the current device state. Buffers are static. */
-static int build_kv(struct kv *t)
+static int build_kv(struct kv *t, const char *path)
 {
+    int is_charts = path && strstr(path, "charts.html") != NULL;
     g_phase++;
 
     static char s_time[8], s_bat[8], s_rsrp[12], s_rsrq[12], s_sinr[12], s_bw[12];
@@ -1553,7 +1554,7 @@ static int build_kv(struct kv *t)
       snprintf(s_bright, sizeof s_bright, "%d", clampi(backlight_get() * 100 / bmax, 0, 100)); }
     { long mt = d.mem_total, ma = d.mem_avail;
       snprintf(s_memdet, sizeof s_memdet, "%ld/%ld MB", mt ? (mt - ma) / 1048576 : 0, mt / 1048576); }
-    static char s_chgv[8], s_chgi[10], s_batv[8], s_bati[10], s_pwr[10];
+    static char s_chgv[8], s_chgi[10], s_batv[8], s_bati[10], s_pwr[10], s_batpwr[10], s_batpwrlbl[8];
     snprintf(s_chgv, sizeof s_chgv, "%.2f", d.chg_uv / 1e6);
     snprintf(s_chgi, sizeof s_chgi, "%ld", d.chg_ua / 1000);
     snprintf(s_batv, sizeof s_batv, "%.2f", d.bat_uv / 1e6);
@@ -1562,6 +1563,11 @@ static int build_kv(struct kv *t)
     { double pw = d.charger_connect ? (d.chg_uv / 1e6) * (d.chg_ua / 1e6)
                                     : (d.bat_uv / 1e6) * (labs(d.bat_ua) / 1e6);
       snprintf(s_pwr, sizeof s_pwr, "%.1f", pw); }
+    {
+        double bat_pw = (d.bat_uv / 1e6) * (labs(d.bat_ua) / 1e6);
+        snprintf(s_batpwr, sizeof s_batpwr, "%.1f", bat_pw);
+        snprintf(s_batpwrlbl, sizeof s_batpwrlbl, "%s", d.bat_ua >= 0 ? "充电" : "放电");
+    }
     fmt_uptime_s(s_upshort, sizeof s_upshort, d.uptime);
     {   /* auto-off segmented control (#autoseg), same UI as net mode */
         int active = 0;
@@ -1722,6 +1728,13 @@ static int build_kv(struct kv *t)
     t[i++] = (struct kv){ "CHGV", s_chgv };       t[i++] = (struct kv){ "CHGI", s_chgi };
     t[i++] = (struct kv){ "BATV", s_batv };       t[i++] = (struct kv){ "BATI", s_bati };
     t[i++] = (struct kv){ "PWR", s_pwr };         t[i++] = (struct kv){ "PWRLBL", d.charger_connect ? "充电" : "放电" };
+    if (is_charts) {
+        t[i++] = (struct kv){ "BATPWR", s_batpwr };
+        t[i++] = (struct kv){ "BATPWRLBL", s_batpwrlbl };
+    } else {
+        t[i++] = (struct kv){ "BATPWR", "" };
+        t[i++] = (struct kv){ "BATPWRLBL", "" };
+    }
     t[i++] = (struct kv){ "NETSEG", s_netseg };   t[i++] = (struct kv){ "TOAST", s_toast };
     t[i++] = (struct kv){ "PWROFFLBL",  g_pwr_confirm == 1 ? "再按一次" : "关机" };
     t[i++] = (struct kv){ "PWROFFCLS",  g_pwr_confirm == 1 ? "armed" : "" };
@@ -1773,7 +1786,7 @@ static int build_kv(struct kv *t)
 static void refresh_status_cache(void)
 {
     struct kv t[160];
-    (void)build_kv(t);
+    (void)build_kv(t, NULL);
 }
 
 /* Build the data-filled HTML for a page (returns a static buffer). */
@@ -1782,7 +1795,7 @@ static const char *page_html(const char *path)
     const char *tmpl = read_template_cached(path);   /* cache templates with mtime invalidation */
     if (!tmpl) return NULL;
     struct kv t[160];
-    int n = build_kv(t);
+    int n = build_kv(t, path);
     char *html = apply_template(tmpl, t, n);
     return html;
 }

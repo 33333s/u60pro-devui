@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "devui": {
-    "version": "1.2.2",
+    "version": "1.2.3",
     "asset": "u60pro-devui-aarch64",
-    "notes": "DevUI 启动链路和 UI 目录统一迁移到 /data/plugins/u60pro-devui，并兼容搬运旧 /data/ui"
+    "notes": "图表页功率曲线与功率卡片统一改读电池数据，发布构建说明同步收敛到当前 build.sh 产物"
   },
   "ui": {
-    "version": "0.4.3",
+    "version": "0.4.4",
     "asset": "ui.tar.gz",
-    "notes": "UI 模板正式安装到 /data/plugins/u60pro-devui/ui，旧 /data/ui 将在安装时迁移清理"
+    "notes": "图表页右上角功率文案直接显示充电或放电，曲线不再依赖正负号区分"
   }
 }

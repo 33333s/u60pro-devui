@@ -23,7 +23,7 @@ OBJS      := $(APP_SRCS:.c=.o) $(LVGL_SRCS:.c=.o)
 CFLAGS := -std=c11 -Os -ffunction-sections -fdata-sections \
           -Wall -Wextra -Wno-unused-parameter \
           -D_GNU_SOURCE -DLV_CONF_INCLUDE_SIMPLE \
-          -I$(ROOT) -Iinclude -I$(LVGL_DIR)
+          -I$(ROOT) -Iinclude -I$(LVGL_DIR) -Ithird_party/stb
 
 LDFLAGS := -static -Wl,--gc-sections -lm
 
