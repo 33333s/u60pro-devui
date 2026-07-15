@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "devui": {
-    "version": "1.2.11",
+    "version": "1.2.12",
     "asset": "u60pro-devui-aarch64",
-    "notes": "新增长短信按需滚动，并修复短信详情与高级设置弹层的触控穿透。"
+    "notes": "修复关闭短信详情后遗留触控事件可能打开另一条短信。"
   },
   "ui": {
     "version": "0.4.10",

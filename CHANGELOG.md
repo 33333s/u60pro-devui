@@ -2,6 +2,17 @@
 
 > 当前正式命名与安装路径已经统一为：`zwrt-datad`、`/data/plugins/zwrt-datad/zwrt-datad`、`/data/plugins/u60pro-devui/`、`/data/plugins/u60pro-devui/ui`。历史条目里如果出现 `u60-datad`、`/data/u60pro` 或 `/data/ui`，表示当时版本记录。
 
+## v1.2.12 - 2026-07-15
+
+### 修复
+
+- **短信详情关闭后误开另一条短信**：关闭详情时统一清除触摸层中已锁存的 tap/stroke 与重放 release；避免覆盖层消失后，上一帧遗留的触控事件再命中下方短信列表。
+- **慢帧路径一致性**：即时抬手、完整手势锁存和延迟 tap 三条关闭路径现在复用同一收尾逻辑，避免只有部分输入路径被消费。
+
+### 验证
+
+- 已完成 aarch64 musl 静态构建，并以设备既有 `start-devui.sh` 启动；DRM `320x480`、触摸 `event3`、电源键与 datad `/state` 连接正常。
+
 ## v1.2.11 - 2026-07-10
 
 ### 修复

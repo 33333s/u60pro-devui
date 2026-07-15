@@ -2009,6 +2009,17 @@ static char g_sms_num[40], g_sms_date[16], g_sms_text[DEVUI_SMS_TEXT_MAX];   /* 
 static int  g_sms_scroll, g_sms_scroll_max;
 static int  g_sms_view_x, g_sms_view_y, g_sms_view_w, g_sms_view_h;
 
+/* Closing an SMS removes its overlay before the next input pass.  Discard every
+ * latched gesture, rather than one queue entry, so an older release cannot be
+ * replayed against the SMS card exposed underneath. */
+static void sms_close(touch_input_t *touch, int *need_render)
+{
+    g_sms_open = -1;
+    g_sms_scroll = g_sms_scroll_max = 0;
+    touch_input_clear_taps(touch);
+    *need_render = 1;
+}
+
 /* Draw a small envelope in the fixed status bar, just right of the clock, when
  * there are unread messages. Native shape; the font has no envelope glyph. */
 static void draw_sms_icon(void)
@@ -5719,12 +5730,11 @@ int main(void)
                 } else if (release_was_tap) {
                     const char *act = html_view_click((float)down_x, (float)down_y);
                     if (!strcmp(act, "act:smsclose")) {
-                        g_sms_open = -1;
-                        g_sms_scroll = g_sms_scroll_max = 0;
-                        need_render = 1;
+                        sms_close(&touch, &need_render);
                     }
                 }
-                touch_input_drop_replayed_release(&touch, release_was_tap);
+                if (g_sms_open >= 0)
+                    touch_input_drop_replayed_release(&touch, release_was_tap);
                 sms_dragging = 0;
             } else if (!pressed) {
                 /* A complete gesture can land while layout is busy. Collapse queued
@@ -5739,9 +5749,7 @@ int main(void)
                         const char *act = html_view_click((float)(have_tap ? tx : sx),
                                                           (float)(have_tap ? ty : sy));
                         if (!strcmp(act, "act:smsclose")) {
-                            g_sms_open = -1;
-                            g_sms_scroll = g_sms_scroll_max = 0;
-                            need_render = 1;
+                            sms_close(&touch, &need_render);
                         }
                     } else if (sms_point_in_view(sx, sy) && g_sms_scroll_max > 0) {
                         int next = clampi(g_sms_scroll - dy, 0, g_sms_scroll_max);
@@ -5756,9 +5764,7 @@ int main(void)
                     if (touch_input_take_latest_tap(&touch, &tx, &ty)) {
                         const char *act = html_view_click((float)tx, (float)ty);
                         if (!strcmp(act, "act:smsclose")) {
-                            g_sms_open = -1;
-                            g_sms_scroll = g_sms_scroll_max = 0;
-                            need_render = 1;
+                            sms_close(&touch, &need_render);
                         }
                     }
                 }
