@@ -64,6 +64,19 @@ static void        maybe_dump_fb(drm_disp_t *d);
 #endif
 #define FUNCTIONS_DIR UI_DIR "/functions"
 #define UI_FONT "/usr/ui/fonts/ZTEZhengYuan.ttf"
+
+/* The rootfs is read-only and the vendor font is thin at small sizes, so allow
+ * an override via the DEVUI_FONT env var. Falls back to UI_FONT (with a log
+ * line) when the override is unset or unreadable. */
+static const char *resolve_ui_font(void)
+{
+    const char *env = getenv("DEVUI_FONT");
+    if (env && *env) {
+        if (access(env, R_OK) == 0) return env;
+        fprintf(stderr, "DEVUI_FONT=%s unreadable, using %s\n", env, UI_FONT);
+    }
+    return UI_FONT;
+}
 #define DATAD_HTTP_ADDR "127.0.0.1"
 #define DATAD_HTTP_PORT 9460
 #define DATAD_HTTP_TIMEOUT_MS 300
@@ -5461,7 +5474,7 @@ int main(void)
 
     drm_disp_t disp;
     if (drm_disp_init(&disp) != 0) { fprintf(stderr, "drm init failed\n"); return 1; }
-    html_view_init(disp.fb, disp.width, disp.height, disp.pitch_px, 1, UI_FONT);
+    html_view_init(disp.fb, disp.width, disp.height, disp.pitch_px, 1, resolve_ui_font());
     html_view_set_uidir(UI_DIR);
 
     touch_input_t touch;
