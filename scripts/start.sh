@@ -13,6 +13,7 @@ LEGACY_UI_DIR=/data/ui
 DEVUI_BIN=$DEVUI_DIR/u60pro-devui
 DATAD_BIN=$DATAD_DIR/zwrt-datad
 DATAD_LAN_PORT=${DATAD_LAN_PORT:-9461}
+DATAD_LAN_BIND=${DATAD_LAN_BIND:-0.0.0.0}
 DATAD_TOKEN_FILE=${DATAD_TOKEN_FILE:-$DATAD_DIR/auth.token}
 DATAD_MODEM_REMOTE_STREAM=${DATAD_MODEM_REMOTE_STREAM:-1}
 DATAD_MODEM_REMOTE_STALE_SEC=${DATAD_MODEM_REMOTE_STALE_SEC:-6}
@@ -90,9 +91,36 @@ start_datad_legacy() {
     [ -x "$DATAD_BIN" ] || return 0
     pidof zwrt-datad >/dev/null 2>&1 && return 0
     killall -9 u60-datad 2>/dev/null
+    # zwrt-datad only opens the LAN listener (and keeps loopback auth-free) when
+    # an explicit --lan-bind is given; --lan-port alone does neither, which left
+    # DevUI's unauthenticated loopback polling getting 401 on every /state.
+    # It also refuses to start without a non-empty token file, so seed one.
+    if [ ! -s "$DATAD_TOKEN_FILE" ]; then
+        mkdir -p "$(dirname "$DATAD_TOKEN_FILE")" || return 1
+        token_tmp=$(mktemp "$DATAD_TOKEN_FILE.tmp.XXXXXX") || return 1
+        chmod 600 "$token_tmp" || {
+            rm -f "$token_tmp"
+            return 1
+        }
+        (umask 077
+         head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$token_tmp"
+        )
+        if [ ! -s "$token_tmp" ]; then
+            rm -f "$token_tmp"
+            return 1
+        fi
+        mv -f "$token_tmp" "$DATAD_TOKEN_FILE" || {
+            rm -f "$token_tmp"
+            return 1
+        }
+    fi
+    # The token protects the LAN listener; keep new and existing credentials
+    # private even when provisioning used a loose umask.
+    chmod 600 "$DATAD_TOKEN_FILE" || return 1
     nohup env DATAD_MODEM_REMOTE_STREAM="$DATAD_MODEM_REMOTE_STREAM" \
         DATAD_MODEM_REMOTE_STALE_SEC="$DATAD_MODEM_REMOTE_STALE_SEC" \
-        "$DATAD_BIN" -i 1000 --lan-port "$DATAD_LAN_PORT" \
+        "$DATAD_BIN" -i 1000 \
+        --lan-bind "$DATAD_LAN_BIND" --lan-port "$DATAD_LAN_PORT" \
         --auth-token-file "$DATAD_TOKEN_FILE" >/tmp/zwrt-datad.log 2>&1 </dev/null &
     sleep 1
 }
