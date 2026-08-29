@@ -38,6 +38,13 @@
 #define DEVUI_BACKEND_RETRY_MS 1000
 #endif
 
+/* Consecutive SSE snapshot parse failures tolerated before we drop the stream
+ * and let the poll loop fall back to HTTP. A live-but-unparseable stream (e.g.
+ * an upstream that breaks SSE framing) otherwise freezes the UI silently. */
+#ifndef DEVUI_SSE_MAX_PARSE_FAIL
+#define DEVUI_SSE_MAX_PARSE_FAIL 5
+#endif
+
 #ifndef DEVUI_BACKEND_IO_TIMEOUT_MS
 #define DEVUI_BACKEND_IO_TIMEOUT_MS 300
 #endif
@@ -66,6 +73,7 @@
 struct backend_state {
     int inited;
     int sse_fd;
+    unsigned sse_parse_fail_streak;
     uint32_t next_retry_ms;
     char sse_buf[DEVUI_SSE_BUF_MAX];
     size_t sse_len;
@@ -439,6 +447,7 @@ static void close_sse_stream(void)
     if (g_backend.sse_fd >= 0) close(g_backend.sse_fd);
     g_backend.sse_fd = -1;
     g_backend.sse_len = 0;
+    g_backend.sse_parse_fail_streak = 0;
     g_backend.next_retry_ms = mono_ms() + DEVUI_BACKEND_RETRY_MS;
 }
 
@@ -464,11 +473,11 @@ static int apply_snapshot_json(const char *json, size_t len)
     devui_data_t parsed;
     size_t clean_len = 0;
 
-    if (!trim_json_copy(json, len, clean, sizeof clean, &clean_len)) return 0;
+    if (!trim_json_copy(json, len, clean, sizeof clean, &clean_len)) return -1;
     if (clean_len == g_backend.live_json_len &&
         memcmp(g_backend.live_json, clean, clean_len) == 0)
         return 0;
-    if (!parse_snapshot(&parsed, clean)) return 0;
+    if (!parse_snapshot(&parsed, clean)) return -1;
     memcpy(g_backend.live_json, clean, clean_len + 1);
     g_backend.live_json_len = clean_len;
     g_backend.live_data = parsed;
@@ -585,7 +594,16 @@ static int process_sse_event(const char *buf, size_t len)
     if (!payload_len) return 0;
     if (event_name[0] && strcmp(event_name, "state") != 0) return 0;
     payload[payload_len] = 0;
-    return apply_snapshot_json(payload, payload_len);
+
+    int rc = apply_snapshot_json(payload, payload_len);
+    if (rc < 0) {
+        g_backend.sse_parse_fail_streak++;
+        fprintf(stderr, "devui: SSE snapshot parse failed (%u/%d)\n",
+                g_backend.sse_parse_fail_streak, DEVUI_SSE_MAX_PARSE_FAIL);
+        return 0;
+    }
+    g_backend.sse_parse_fail_streak = 0;
+    return rc;
 }
 
 static int process_sse_buffer(void)
@@ -674,9 +692,25 @@ static int open_sse_stream(void)
     }
 }
 
+/* Drop a live-but-unparseable SSE stream so data_backend_poll() reverts to
+ * HTTP polling. Returns 1 when the stream was closed. */
+static int sse_drop_if_unparseable(void)
+{
+    if (g_backend.sse_fd < 0 ||
+        g_backend.sse_parse_fail_streak < DEVUI_SSE_MAX_PARSE_FAIL)
+        return 0;
+    fprintf(stderr,
+            "devui: dropping SSE after %u consecutive parse failures; "
+            "falling back to HTTP polling\n",
+            g_backend.sse_parse_fail_streak);
+    close_sse_stream();
+    return 1;
+}
+
 static int drain_sse_stream(void)
 {
     int changed = process_sse_buffer();
+    if (sse_drop_if_unparseable()) return changed;
 
     while (g_backend.sse_fd >= 0) {
         ssize_t rd;
@@ -690,6 +724,7 @@ static int drain_sse_stream(void)
             g_backend.sse_len += (size_t)rd;
             g_backend.sse_buf[g_backend.sse_len] = 0;
             changed |= process_sse_buffer();
+            if (sse_drop_if_unparseable()) break;
             continue;
         }
         if (rd == 0) {
@@ -721,7 +756,13 @@ int data_backend_poll(uint32_t now_ms)
     backend_init_once();
     if (!g_backend.current_valid && !g_backend.live_valid)
         (void)data_backend_init();
-    if (g_backend.sse_fd >= 0) changed |= drain_sse_stream();
+    if (g_backend.sse_fd >= 0) {
+        changed |= drain_sse_stream();
+        /* If drain_sse_stream() gave up on an unparseable stream, pull one
+         * HTTP snapshot now instead of waiting a full retry interval. */
+        if (g_backend.sse_fd < 0 && fetch_state_http() > 0)
+            changed = 1;
+    }
     if (g_backend.sse_fd < 0 && now_ms >= g_backend.next_retry_ms) {
         if (open_sse_stream() == 0) {
             changed |= drain_sse_stream();
