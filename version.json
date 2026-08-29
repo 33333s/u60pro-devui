@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "devui": {
-    "version": "1.2.12",
+    "version": "1.2.13",
     "asset": "u60pro-devui-aarch64",
-    "notes": "修复关闭短信详情后遗留触控事件可能打开另一条短信。"
+    "notes": "修复后端 LAN 启动与 SSE 解析失败回退，并支持 DEVUI_FONT 覆盖字体。"
   },
   "ui": {
     "version": "0.4.10",
