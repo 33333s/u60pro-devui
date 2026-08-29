@@ -97,13 +97,25 @@ start_datad_legacy() {
     # It also refuses to start without a non-empty token file, so seed one.
     if [ ! -s "$DATAD_TOKEN_FILE" ]; then
         mkdir -p "$(dirname "$DATAD_TOKEN_FILE")" || return 1
+        token_tmp=$(mktemp "$DATAD_TOKEN_FILE.tmp.XXXXXX") || return 1
+        chmod 600 "$token_tmp" || {
+            rm -f "$token_tmp"
+            return 1
+        }
         (umask 077
-         head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$DATAD_TOKEN_FILE"
-        ) || return 1
+         head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$token_tmp"
+        )
+        if [ ! -s "$token_tmp" ]; then
+            rm -f "$token_tmp"
+            return 1
+        fi
+        mv -f "$token_tmp" "$DATAD_TOKEN_FILE" || {
+            rm -f "$token_tmp"
+            return 1
+        }
     fi
-    # The token protects the LAN listener; never leave it readable by other
-    # local accounts even when an existing file was created under a loose umask.
-    [ -s "$DATAD_TOKEN_FILE" ] || return 1
+    # The token protects the LAN listener; keep new and existing credentials
+    # private even when provisioning used a loose umask.
     chmod 600 "$DATAD_TOKEN_FILE" || return 1
     nohup env DATAD_MODEM_REMOTE_STREAM="$DATAD_MODEM_REMOTE_STREAM" \
         DATAD_MODEM_REMOTE_STALE_SEC="$DATAD_MODEM_REMOTE_STALE_SEC" \
