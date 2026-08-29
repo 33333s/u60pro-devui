@@ -96,9 +96,15 @@ start_datad_legacy() {
     # DevUI's unauthenticated loopback polling getting 401 on every /state.
     # It also refuses to start without a non-empty token file, so seed one.
     if [ ! -s "$DATAD_TOKEN_FILE" ]; then
-        mkdir -p "$(dirname "$DATAD_TOKEN_FILE")"
-        head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$DATAD_TOKEN_FILE"
+        mkdir -p "$(dirname "$DATAD_TOKEN_FILE")" || return 1
+        (umask 077
+         head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$DATAD_TOKEN_FILE"
+        ) || return 1
     fi
+    # The token protects the LAN listener; never leave it readable by other
+    # local accounts even when an existing file was created under a loose umask.
+    [ -s "$DATAD_TOKEN_FILE" ] || return 1
+    chmod 600 "$DATAD_TOKEN_FILE" || return 1
     nohup env DATAD_MODEM_REMOTE_STREAM="$DATAD_MODEM_REMOTE_STREAM" \
         DATAD_MODEM_REMOTE_STALE_SEC="$DATAD_MODEM_REMOTE_STALE_SEC" \
         "$DATAD_BIN" -i 1000 \
