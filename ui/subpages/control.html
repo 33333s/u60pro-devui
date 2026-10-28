@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
+<body class="{{THEME}}">
+  {{STATUSBAR}}
+  <!-- control center: pulled down from the top edge, pull up from the bottom edge to close -->
+  <div class="subtop">
+    <a href="act:backfunc" class="subback">返回</a>
+    <span class="subname">控制中心</span>
+  </div>
+
+  <div class="cc-grid">
+    <a href="act:wifi" class="ccb {{WIFICLASS}}"><span class="ccc" id="cc-wifi"></span><span class="ccl">Wi-Fi</span></a>
+    <a href="act:nfc" class="ccb {{NFCCLASS}}"><span class="ccc" id="cc-nfc"></span><span class="ccl">NFC</span></a>
+    <a href="act:dps" class="ccb {{DPSCLASS}}"><span class="ccc" id="cc-dps"></span><span class="ccl">直供电</span></a>
+    <a href="act:theme" class="ccb"><span class="ccc" id="cc-theme"></span><span class="ccl">{{THEMESTATE}}</span></a>
+  </div>
+
+  <div class="card">
+    <div class="srow"><span>亮度</span><span class="sval">{{BRIGHT}}%</span></div>
+    <a href="act:bright" id="bright-bar" class="slider"><span class="sfill" style="width:{{BRIGHT}}%"></span></a>
+    <div class="srow"><span>自动息屏</span></div>
+    {{AUTOOFF}}
+  </div>
+
+  <a href="act:menu" class="card valrow"><span class="vk">电源</span><span class="vv muted">关机 / 重启</span></a>
+
+  <div class="sheet-hint">从屏幕底边上滑收起</div>
+  {{TOAST}}
+</body>
+</html>

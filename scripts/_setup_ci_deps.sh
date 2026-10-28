@@ -5,9 +5,8 @@
 # so only the first job (or a revision bump) pays for downloads and builds.
 set -e
 
-FREETYPE_REV=25a08f24cfc0da879d1938352d026532f280b77e
-LITEHTML_REV=9bc84b8b8d15a4e50f18b327aa30955048b441c2
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/scripts/deps-revs.sh"
 
 bash "$ROOT/scripts/_setup_toolchain.sh"
 
@@ -30,5 +29,5 @@ build_lib() {
 fetch_rev https://github.com/freetype/freetype.git "$HOME/freetype" "$FREETYPE_REV"
 fetch_rev https://github.com/litehtml/litehtml.git "$HOME/litehtml" "$LITEHTML_REV"
 build_lib "$HOME/freetype-musl" "$FREETYPE_REV" _build_freetype.sh
-build_lib "$HOME/litehtml-musl" "$LITEHTML_REV" _build_litehtml.sh
+build_lib "$HOME/litehtml-musl" "$LITEHTML_BUILD" _build_litehtml.sh
 echo "CI-DEPS-READY"

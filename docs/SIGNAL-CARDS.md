@@ -6,7 +6,7 @@ modem 解码、回放和 raw log 归 `zwrt-datad` 维护；这里只记录 DevUI
 
 ## 页面入口
 
-- `ui/01-signal.html` 使用 `{{SIGNALCARDS}}` 作为默认第一页的完整信号区。
+- `ui/01-signal.html` 是默认第二页（第一页是 `00-home.html` 时钟页）：顶部 `{{SIGNALCARDS}}` 之前是 `{{SIGGAUGES}}` 生成的原生圆弧表盘（SA 显示 NR，纯 LTE 显示 LTE，NSA / EN-DC 同时显示 NR 和 LTE 两排，没有读数的一路显示 `--`），下面用 `{{SIGNALCARDS}}` 作为完整信号区。
 - `{{NEIGHBORCARDS}}` 放在 `{{SIGNALCARDS}}` 后面，作为可展开的邻小区列表入口。
 - `{{CARRIERS}}` 继续保留给旧自定义模板，只展开载波列表。
 - 测速入口已经迁移到“更多功能”二级页；首页不再直接放 `{{STHOMEBTN}}`

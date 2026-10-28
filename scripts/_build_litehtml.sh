@@ -9,8 +9,11 @@ AR="$TC/aarch64-linux-ar"
 LH="$HOME/litehtml"
 OUT="$HOME/litehtml-musl"
 BUILD="$HOME/lh-build"
+. "$(cd "$(dirname "$0")" && pwd)/deps-revs.sh"
 
 [ -f "$LH/include/litehtml.h" ] || { echo "litehtml src missing at $LH"; exit 1; }
+git -C "$LH" checkout -q -- .
+git -C "$LH" apply "$LITEHTML_PATCH"
 rm -rf "$BUILD" "$OUT"; mkdir -p "$BUILD" "$OUT/lib"
 
 GUMBO_INC="-I$LH/src/gumbo/include -I$LH/src/gumbo/include/gumbo"

@@ -17,6 +17,7 @@
 #include "devui_ext.h"
 
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <math.h>
 #include <netinet/in.h>
@@ -49,6 +50,12 @@ extern void        html_view_set_clip_top(int y);
 extern void        html_view_fill_rect(int x, int y, int w, int h, int r, int g, int b, int a);
 extern void        html_view_fill_poly(const int *xs, const int *ys, int n, int r, int g, int b, int a);
 extern void        html_view_fill_round_rect(int x, int y, int w, int h, int rad, int r, int g, int b, int a);
+extern void        html_view_fill_circle(float cx, float cy, float rad, int r, int g, int b, int a);
+extern void        html_view_line(float x0, float y0, float x1, float y1, float th, int r, int g, int b, int a);
+extern void        html_view_round_rect_aa(float x, float y, float w, float h, float rad, float th,
+                                           int r, int g, int b, int a);
+extern void        html_view_arc(float cx, float cy, float rad, float th, float a0, float a1,
+                                 int r, int g, int b, int a);
 extern int         html_view_text_width_px(const char *text, int size);
 extern void        html_view_text_bounds_px(const char *text, int size, int *x0, int *y0, int *x1, int *y1);
 extern void        html_view_draw_text_px(int x, int y, const char *text, int size, int bold,
@@ -103,20 +110,50 @@ struct template_cache_entry {
 static struct template_cache_entry g_tmpl_cache[TEMPLATE_CACHE_CAP];
 static int g_tmpl_next;
 
+/* ---- palette ----
+ * The U30 Pro screen palette: light text on a dark navy page, with a primary
+ * accent (a) and a second accent (b: 5G badge, uplink) per theme. */
+static const struct { const char *name, *cls; unsigned a, b; } g_themes[] = {
+    { "海洋",   "th-ocean",  0x38D0FF, 0xFF7AC8 },
+    { "极光",   "th-aurora", 0x4ADE80, 0xFFC857 },
+    { "日落",   "th-sunset", 0xFF9F43, 0x6C8CFF },
+    { "紫罗兰", "th-violet", 0xA78BFA, 0x2DD4BF },
+};
+#define NTHEMES ((int)(sizeof g_themes / sizeof g_themes[0]))
+#define C_TXT   0xF2F6FAu
+#define C_DIM   0x93A4B8u
+#define C_FAINT 0x56677Au
+#define C_OK    0x4ADE80u
+#define C_WARN  0xFBBF24u
+#define C_BAD   0xF87171u
+#define C_BAR   0x070C15u   /* status bar = top of the page background (style.css) */
+#define RGB3(c) (int)((c) >> 16 & 255), (int)((c) >> 8 & 255), (int)((c) & 255)
+
 /* ---- pages / theme ---- */
 static char g_pages[24][288];
 static int  g_npages, g_cur;
 static char g_subpage[64];       /* non-empty = a second-level page under ui/subpages */
 static char g_subpage_path[300];
-static int  g_theme;      /* 0 = dark, 1 = light */
+static int  g_theme;      /* index into g_themes */
 static int  g_show_key;   /* reveal WiFi password (default hidden) */
 static int  g_show_cellid; /* reveal NR Cell ID (default hidden) */
 static int  g_show_imei;   /* reveal IMEI (default hidden) */
 static int  g_speed_bits = 1; /* 1 = Mbps (bit rate), 0 = MB/s (byte rate) */
+
+static unsigned theme_a(void) { return g_themes[g_theme].a; }
+static unsigned theme_b(void) { return g_themes[g_theme].b; }
+
+/* <body> class: "dark" keeps generated markup's .dark selectors, plus the palette */
+static const char *theme_body_class(void)
+{
+    static char cls[40];
+    snprintf(cls, sizeof cls, "dark %s", g_themes[g_theme].cls);
+    return cls;
+}
 static int  g_show_batpct = 1; /* show percent text inside status battery */
 static int  g_charging;   /* set from snapshot; drives charge animation cadence */
 static int  g_stat_bat, g_stat_sig, g_stat_lowbat;
-static char g_stat_time[8], g_stat_speed[40], g_stat_gen[8];
+static char g_stat_time[8], g_stat_gen[8];
 static unsigned g_phase;  /* animation tick (battery charge sweep) */
 static int  g_charge_boot; /* power-off charging boot: full-screen charging UI */
 static int  g_scroll;     /* current page vertical scroll offset */
@@ -154,6 +191,10 @@ static int g_render_html_cache_modal;
 static long g_render_html_cache_sms_open;
 static int g_render_html_cache_lock;
 static long long g_render_html_cache_css_mtime = -1;
+/* The page raster before native overlays: a cache hit restores it, so overlays
+ * with alpha (ring tracks, glass discs) are not blended onto the last frame. */
+static uint16_t g_render_base[320 * 480];
+static int g_render_quiet;   /* render() leaves the panel alone (transition snapshots) */
 static long long g_pages_dir_mtime = -1;
 static uint32_t g_pages_scan_at;
 static int normalize_refresh_ms(int ms);
@@ -172,7 +213,6 @@ static int  g_dps = -1;   /* power direct-supply mode (/state power.direct_suppl
 static uint32_t g_wifi_hold_until, g_dps_hold_until;   /* optimistic toggle hold */
 /* main AP config from datad wifi.status: /state no longer carries the password */
 static struct { char ssid[64], key[64]; } g_wifi_cfg[3];
-static uint32_t g_wifi_cfg_at;
 static int  g_adb_pending = -1; /* optimistic ADB state while USB re-enumerates */
 static int  g_usb_net = -1;     /* Type-C network sharing composition active */
 static int  g_typec_source = -1; /* 1 = reverse charge peer, 0 = charge U60 */
@@ -180,12 +220,11 @@ static int  g_typec_attached = -1;
 static int  g_usb_net_pending = -1;
 static int  g_typec_pending = -1;
 static uint32_t g_usb_net_until, g_typec_until;
-static char g_dhcp_pool[48];
+static char g_dhcp_pool[80];
 /* currently WiFi-associated client MACs (lowercased, comma-joined). DHCP leases
  * linger after a device leaves, so the device list filters against this (live
  * station dump) to match the vendor's "only connected" behavior. */
 static char g_assoc_macs[640];
-static uint32_t g_wifi_aux_at;
 
 /* Is this MAC currently associated to a radio? (case-insensitive substring) */
 static int mac_assoc(const char *mac)
@@ -368,10 +407,6 @@ static void fmt_speed_c(char *o, size_t n, long bps) {
     else if (bps >= 1024)   snprintf(o, n, "%.0fK", bps / 1024.0);
     else                    snprintf(o, n, "%ldB", bps);
 }
-static void fmt_one(char *o, size_t n, double v) {
-    if (v >= 10) snprintf(o, n, "%.0f", v);
-    else         snprintf(o, n, "%.1f", v);
-}
 /* Single speed value with unit, honoring the bit/byte-rate setting (matches the
  * status-bar units): bits=1 -> Mbps/Kbps/bps, bits=0 -> MB/s/KB/s/B/s. */
 static void fmt_speed_u(char *o, size_t n, long bps, int bits)
@@ -383,19 +418,6 @@ static void fmt_speed_u(char *o, size_t n, long bps, int bits)
     double val = v / div;
     if (val >= 10) snprintf(o, n, "%.0f %s", val, unit);
     else           snprintf(o, n, "%.1f %s", val, unit);
-}
-
-/* Status-bar speed pair: "up/down <unit>", shared unit picked from the
- * larger of the two. bits=1 -> Mbps/Kbps/bps; bits=0 -> MB/s/KB/s/B/s. */
-static void fmt_speed_pair(char *buf, size_t cap, long up, long down, int bits) {
-    double mul = bits ? 8.0 : 1.0;
-    double u = up * mul, d = down * mul, mx = u > d ? u : d;
-    const char *unit; double div;
-    if (bits) { if (mx >= 1e6) { unit = "Mbps"; div = 1e6; } else if (mx >= 1e3) { unit = "Kbps"; div = 1e3; } else { unit = "bps"; div = 1; } }
-    else      { if (mx >= 1e6) { unit = "MB/s"; div = 1e6; } else if (mx >= 1e3) { unit = "KB/s"; div = 1e3; } else { unit = "B/s"; div = 1; } }
-    char us[12], ds[12];
-    fmt_one(us, sizeof us, u / div); fmt_one(ds, sizeof ds, d / div);
-    snprintf(buf, cap, "\xe2\x86\x91%s \xe2\x86\x93%s %s", us, ds, unit);
 }
 
 /* ---- {{key}} template substitution ---- */
@@ -726,15 +748,15 @@ static void usb_net_watchdog_start(void)
 static int signal_json_next_object(const char **pp, char *dst, size_t cap);
 
 /* Band switches from datad wifi.state. Returns 0 when datad did not answer. */
-static int wifi_state_from_datad(void)
+/* datad "wifi.state" reply -> radio switch states; 0 if it is unusable */
+static int wifi_state_parse(const char *reply)
 {
-    static char reply[8192];
-    char result[8192], part[2048], obj[512], band[8], en[8];
+    static char result[8192];
+    char part[2048], obj[512], band[8], en[8];
     const char *p;
     int w24 = -1, w5 = -1;
 
-    if (!datad_control("wifi.state", NULL, reply, sizeof reply, 800) ||
-        !json_get(reply, "result", result, sizeof result))
+    if (!json_get(reply, "result", result, sizeof result))
         return 0;
     if (json_get(result, "radios", part, sizeof part)) {
         p = part;
@@ -758,14 +780,13 @@ static int wifi_state_from_datad(void)
 }
 
 /* Main AP ssid/key from datad wifi.status (2.4G, 5G, 6G). */
-static void wifi_cfg_from_datad(void)
+/* datad "wifi.status" reply -> SSIDs and keys per band */
+static void wifi_cfg_parse(const char *reply)
 {
     static const char *const sections[3] = { "main_2g", "main_5g", "main_6g" };
-    static char reply[4096];
     char result[4096], sec[1024];
 
-    if (!datad_control("wifi.status", NULL, reply, sizeof reply, 800) ||
-        !json_get(reply, "result", result, sizeof result))
+    if (!json_get(reply, "result", result, sizeof result))
         return;
     for (int i = 0; i < 3; i++) {
         g_wifi_cfg[i].ssid[0] = g_wifi_cfg[i].key[0] = 0;
@@ -789,67 +810,201 @@ static const char *wifi_key_for(const char *ssid)
     return first;
 }
 
-static void wifi_aux_refresh(void)
+/* ---- WiFi / USB / Type-C facts the datad snapshot lacks: radio switches
+ * and AP settings (datad wifi.state / wifi.status), power save, the DHCP pool,
+ * associated stations, USB networking and the Type-C role. Getting them takes
+ * datad ~100 ms and iw / uci / ubus process spawns, so a worker thread collects
+ * them every AUX_PERIOD_MS while the screen is on and the UI thread only takes
+ * the latest sample. ---- */
+#define AUX_PERIOD_MS 4000
+#define AUX_CFG_MS    30000
+#define AUX_UCI_MS    60000
+typedef struct {
+    int w0_up, w2_up, psm, usbnet, typec_src, typec_attached;
+    char pool[80];
+    char macs[sizeof g_assoc_macs];
+    int state_ok, cfg_ok;           /* replies fetched in this sample */
+    char state[8192], cfg[4096];
+} aux_sample_t;
+
+static pthread_mutex_t g_aux_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_aux_cv = PTHREAD_COND_INITIALIZER;
+static aux_sample_t g_aux;            /* latest sample, under g_aux_mu */
+static unsigned g_aux_gen, g_aux_seen;
+static int g_aux_awake = 1, g_aux_kick, g_aux_started;
+
+static int read_line_file(const char *path, char *out, size_t cap)
 {
-    uint32_t now = millis();
-    int have_datad = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int ok = fgets(out, (int)cap, f) != NULL;
+    fclose(f);
+    if (ok) out[strcspn(out, "\r\n")] = 0;
+    return ok;
+}
 
-    if ((int32_t)(now - g_wifi_hold_until) >= 0)
-        have_datad = wifi_state_from_datad();
-    if (!g_wifi_cfg_at || (uint32_t)(now - g_wifi_cfg_at) >= 30000) {
-        g_wifi_cfg_at = now;
-        wifi_cfg_from_datad();
+static void macs_add(char *list, size_t cap, const char *mac)
+{
+    char lc[24];
+    size_t n = 0, len = strlen(list);
+    for (; mac[n] && n < sizeof lc - 2 && mac[n] != ' ' && mac[n] != '\n'; n++)
+        lc[n] = (char)tolower((unsigned char)mac[n]);
+    lc[n++] = ',';
+    lc[n] = 0;
+    if (len + n < cap) memcpy(list + len, lc, n + 1);
+}
+
+static void aux_collect(aux_sample_t *a, uint32_t now)
+{
+    static uint32_t uci_at, cfg_at;
+    static char pool[80];   /* "a.b.c.st - a.b.c.end" */
+    char v[64], cmd[512];
+    int o = 0;
+
+    memset(a, 0, sizeof *a);
+    a->state_ok = datad_control("wifi.state", NULL, a->state, sizeof a->state, 800) != 0;
+    if (!cfg_at || now - cfg_at >= AUX_CFG_MS) {
+        a->cfg_ok = datad_control("wifi.status", NULL, a->cfg, sizeof a->cfg, 800) != 0;
+        if (a->cfg_ok) cfg_at = now;
     }
+    if (read_line_file("/sys/class/net/wlan0/operstate", v, sizeof v)) a->w0_up = !strcmp(v, "up");
+    if (read_line_file("/sys/class/net/wlan2/operstate", v, sizeof v)) a->w2_up = !strcmp(v, "up");
+    if (read_line_file("/sys/kernel/config/usb_gadget/g1/idProduct", v, sizeof v))
+        a->usbnet = !strcasecmp(v, "0x9057") || !strcasecmp(v, "0x90b1");
 
-    FILE *fp = popen(
-        "echo W0=$(cat /sys/class/net/wlan0/operstate 2>/dev/null);"
-        "echo W2=$(cat /sys/class/net/wlan2/operstate 2>/dev/null);"
-        "ps=$(iw dev wlan0 get power_save 2>/dev/null | grep -o 'o[nf]*' | tail -1);"
-        "[ -z \"$ps\" ] && ps=$(iw dev wlan2 get power_save 2>/dev/null | grep -o 'o[nf]*' | tail -1);"
-        "echo PSM=$([ \"$ps\" = on ] && echo 1 || echo 0);"
-        "ip=$(uci -q get network.lan.ipaddr); st=$(uci -q get dhcp.lan.start); lim=$(uci -q get dhcp.lan.limit);"
-        "if [ -n \"$ip\" ] && [ -n \"$st\" ]; then pre=${ip%.*}; end=$((st+lim-1)); [ $end -gt 254 ] && end=254;"
-        "echo \"POOL=$pre.$st - $pre.$end\"; fi;"
-        /* "connected now" = WiFi-associated stations plus ARP-complete entries
-         * (ARP covers LAN/USB clients too; leases alone linger 24h). */
-        "echo MACS=$({ for w in wlan0 wlan1 wlan2 wlan3; do iw dev $w station dump 2>/dev/null | awk '/Station/{print $2}'; done;"
-        " awk 'NR>1 && $3!=\"0x0\"{print $4}' /proc/net/arp 2>/dev/null; } | tr 'A-Z\\n' 'a-z,');"
-        "pid=$(cat /sys/kernel/config/usb_gadget/g1/idProduct 2>/dev/null);"
-        "echo USBNET=$([ \"$pid\" = 0x9057 ] || [ \"$pid\" = 0x90b1 ] || [ \"$pid\" = 0x90B1 ] && echo 1 || echo 0);"
-        "tc=$(ubus call zwrt_bsp.typec list 2>/dev/null);"
-        "echo TYPECSRC=$(echo \"$tc\" | grep power_role | grep -o 'source\\|sink' | head -1);"
-        "echo TYPECATTACH=$(echo \"$tc\" | grep cc_attch_state | grep -o '[0-9]' | head -1)", "r");
-    if (!fp) return;
-    char line[768];
-    while (fgets(line, sizeof line, fp)) {
-        if (!strncmp(line, "W0=", 3) || !strncmp(line, "W2=", 3)) {
-            /* operstate is only the fallback for a datad that is not answering */
-            if (!have_datad && (int32_t)(now - g_wifi_hold_until) >= 0) {
-                if (line[1] == '0') g_w24 = strstr(line, "=up") != NULL;
-                else                g_w5  = strstr(line, "=up") != NULL;
+    /* one shell for the tools; each section is tagged for the parser */
+    o += snprintf(cmd + o, sizeof cmd - o,
+                  "echo @PS; iw dev wlan0 get power_save 2>/dev/null || iw dev wlan2 get power_save 2>/dev/null;"
+                  "echo @ST;");
+    for (int i = 0; i < 4; i++) {
+        char path[48];
+        snprintf(path, sizeof path, "/sys/class/net/wlan%d", i);
+        if (access(path, F_OK) == 0)
+            o += snprintf(cmd + o, sizeof cmd - o, "iw dev wlan%d station dump 2>/dev/null;", i);
+    }
+    o += snprintf(cmd + o, sizeof cmd - o, "echo @TC; ubus call zwrt_bsp.typec list 2>/dev/null;");
+    int want_uci = !uci_at || now - uci_at >= AUX_UCI_MS;
+    if (want_uci)
+        snprintf(cmd + o, sizeof cmd - o,
+                 "echo @UCI; uci -q get network.lan.ipaddr; uci -q get dhcp.lan.start; uci -q get dhcp.lan.limit");
+
+    FILE *fp = popen(cmd, "r");
+    if (fp) {
+        char line[256], sec = 0, ip[20] = "";
+        int uci_n = 0, st = 0, lim = 0;
+        a->typec_src = -1;
+        while (fgets(line, sizeof line, fp)) {
+            if (line[0] == '@') { sec = line[1]; continue; }
+            if (sec == 'P' && strstr(line, "Power save:")) a->psm = strstr(line, ": on") != NULL;
+            else if (sec == 'S' && !strncmp(line, "Station ", 8)) macs_add(a->macs, sizeof a->macs, line + 8);
+            else if (sec == 'T' && a->typec_src < 0 && strstr(line, "power_role")) {
+                if (strstr(line, "source")) a->typec_src = 1;
+                else if (strstr(line, "sink")) a->typec_src = 0;
+            } else if (sec == 'T' && strstr(line, "cc_attch_state")) {
+                const char *d = strpbrk(line, "0123456789");
+                if (d) a->typec_attached = *d != '0';
+            } else if (sec == 'U') {
+                line[strcspn(line, "\r\n")] = 0;
+                if (uci_n == 0) snprintf(ip, sizeof ip, "%.15s", line);
+                else if (uci_n == 1) st = atoi(line);
+                else if (uci_n == 2) lim = atoi(line);
+                uci_n++;
             }
         }
-        else if (!strncmp(line, "PSM=", 4))  g_wpsm = atoi(line + 4);
-        else if (!strncmp(line, "POOL=", 5)) {
-            char *nl = strchr(line, '\n'); if (nl) *nl = 0;
-            snprintf(g_dhcp_pool, sizeof g_dhcp_pool, "%s", line + 5);
-        }
-        else if (!strncmp(line, "MACS=", 5)) {
-            char *nl = strchr(line, '\n'); if (nl) *nl = 0;
-            snprintf(g_assoc_macs, sizeof g_assoc_macs, "%s", line + 5);
-        }
-        else if (!strncmp(line, "USBNET=", 7)) {
-            g_usb_net = atoi(line + 7) ? 1 : 0;
-        }
-        else if (!strncmp(line, "TYPECSRC=", 9)) {
-            if (strstr(line, "source")) g_typec_source = 1;
-            else if (strstr(line, "sink")) g_typec_source = 0;
-        }
-        else if (!strncmp(line, "TYPECATTACH=", 12)) {
-            g_typec_attached = atoi(line + 12) ? 1 : 0;
+        pclose(fp);
+        if (want_uci) {
+            uci_at = now;
+            char *dot = strrchr(ip, '.');
+            pool[0] = 0;
+            if (dot && st > 0) {
+                int end = st + lim - 1;
+                if (end > 254) end = 254;
+                *dot = 0;
+                snprintf(pool, sizeof pool, "%s.%d - %s.%d", ip, st, ip, end);
+            }
         }
     }
-    pclose(fp);
+    snprintf(a->pool, sizeof a->pool, "%s", pool);
+
+    /* ARP-complete entries cover LAN/USB clients (leases alone linger 24h) */
+    FILE *arp = fopen("/proc/net/arp", "r");
+    if (arp) {
+        char line[256], ipa[64], hw[32], flags[16], mac[32];
+        int first = 1;
+        while (fgets(line, sizeof line, arp)) {
+            if (first) { first = 0; continue; }
+            if (sscanf(line, "%63s %31s %15s %31s", ipa, hw, flags, mac) == 4 && strcmp(flags, "0x0"))
+                macs_add(a->macs, sizeof a->macs, mac);
+        }
+        fclose(arp);
+    }
+}
+
+static void *aux_worker(void *arg)
+{
+    static aux_sample_t smp;
+    (void)arg;
+    for (;;) {
+        aux_collect(&smp, millis());
+        pthread_mutex_lock(&g_aux_mu);
+        g_aux = smp;
+        g_aux_gen++;
+        while (!g_aux_kick) {
+            if (!g_aux_awake) { pthread_cond_wait(&g_aux_cv, &g_aux_mu); continue; }
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += AUX_PERIOD_MS / 1000;
+            if (pthread_cond_timedwait(&g_aux_cv, &g_aux_mu, &ts) != 0) break;
+        }
+        g_aux_kick = 0;
+        pthread_mutex_unlock(&g_aux_mu);
+    }
+    return NULL;
+}
+
+/* Screen on: sample now and keep sampling; off: pause the worker. */
+static void aux_set_awake(int awake)
+{
+    pthread_mutex_lock(&g_aux_mu);
+    if (awake && !g_aux_awake) g_aux_kick = 1;
+    g_aux_awake = awake;
+    pthread_cond_signal(&g_aux_cv);
+    pthread_mutex_unlock(&g_aux_mu);
+}
+
+static void aux_start(void)
+{
+    pthread_t t;
+    if (g_aux_started) return;
+    if (pthread_create(&t, NULL, aux_worker, NULL) == 0) {
+        pthread_detach(t);
+        g_aux_started = 1;
+    }
+}
+
+/* Take a new sample from the worker, if there is one. */
+static void aux_apply(void)
+{
+    static aux_sample_t a;
+    pthread_mutex_lock(&g_aux_mu);
+    int fresh = g_aux_gen != g_aux_seen;
+    g_aux_seen = g_aux_gen;
+    if (fresh) a = g_aux;
+    pthread_mutex_unlock(&g_aux_mu);
+    if (!fresh) return;
+
+    /* right after a switch the radios settle; keep the state the tap set */
+    int settled = (int32_t)(millis() - g_wifi_hold_until) >= 0;
+    int have_datad = settled && a.state_ok && wifi_state_parse(a.state);
+    if (a.cfg_ok) wifi_cfg_parse(a.cfg);
+    /* operstate is only the fallback for a datad that is not answering */
+    if (!have_datad && settled) { g_w24 = a.w0_up; g_w5 = a.w2_up; }
+    g_wpsm = a.psm;
+    if (a.pool[0]) snprintf(g_dhcp_pool, sizeof g_dhcp_pool, "%s", a.pool);
+    snprintf(g_assoc_macs, sizeof g_assoc_macs, "%s", a.macs);
+    g_usb_net = a.usbnet;
+    if (a.typec_src >= 0) g_typec_source = a.typec_src;
+    g_typec_attached = a.typec_attached;
 }
 
 /* ---- screen lock (PIN) persistence. The PIN lives in a dotfile under the UI
@@ -879,9 +1034,20 @@ static void save_pin(const char *pin)
 }
 static void clear_pin(void) { g_pin[0] = 0; remove(LOCK_PIN_FILE); }
 /* Enter the lock pad. setup=1 -> set a new PIN; setup=0 -> unlock prompt. */
+/* The screen locks as on the U30 Pro, PIN or not: at start, on every screen
+ * off, and after a minute untouched when it never sleeps. The locked preview
+ * is page 1 with live data and no actions. With a PIN a swipe or a short hold
+ * opens the pad; without one only a LOCK_HOLD_MS hold unlocks, so a pocket or
+ * an NFC tap cannot flip switches. */
+#define LOCK_HOLD_MS     600
+#define LOCK_PAD_HOLD_MS 450
+#define LOCK_IDLE_MS     60000
+static int g_lock_hold;      /* 0..100: progress of the unlock hold, drawn on the badge */
+
 static void enter_lock(int setup)
 {
     g_lock_state = setup ? 2 : 1;
+    g_lock_hold = 0;
     g_pin_entry[0] = 0; g_lock_err = 0; g_scroll = 0;
 }
 
@@ -895,7 +1061,7 @@ static void load_conf(void)
     if (!fp) return;
     char line[64], sval[16]; int v;
     while (fgets(line, sizeof line, fp)) {
-        if      (sscanf(line, "theme=%d", &v) == 1)      g_theme = !!v;
+        if      (sscanf(line, "theme=%d", &v) == 1)      { if (v >= 0 && v < NTHEMES) g_theme = v; }
         else if (sscanf(line, "speed_bits=%d", &v) == 1) g_speed_bits = !!v;
         else if (sscanf(line, "show_batpct=%d", &v) == 1) g_show_batpct = !!v;
         else if (sscanf(line, "autooff=%d", &v) == 1)    g_autooff_ms = v;
@@ -959,9 +1125,23 @@ static int speedtest_binary_ready(void)
     return access(SPEEDTEST_BIN, X_OK) == 0;
 }
 
+/* Is a better-speedtest process running (started here or elsewhere)? Polled
+ * about once a second, so /proc is read directly instead of `pidof`. */
 static int speedtest_running(void)
 {
-    return system("pidof better-speedtest >/dev/null 2>&1") == 0;
+    if (!speedtest_binary_ready()) return 0;
+    DIR *d = opendir("/proc");
+    if (!d) return 0;
+    struct dirent *e;
+    int found = 0;
+    while (!found && (e = readdir(d))) {
+        if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
+        char path[300], comm[32];
+        snprintf(path, sizeof path, "/proc/%s/comm", e->d_name);
+        found = read_line_file(path, comm, sizeof comm) && !strcmp(comm, "better-speedtes");
+    }
+    closedir(d);
+    return found;
 }
 
 static int speedtest_loop_running(void)
@@ -1262,9 +1442,18 @@ static int subpage_name_ok(const char *name)
     return l > 5 && strcmp(name + l - 5, ".html") == 0;
 }
 
+/* Pulled sheets, as on the U30 Pro: the control center comes down from the top
+ * edge, the SMS list up from the bottom edge. Each is an ordinary subpage
+ * (taps, scrolling and act:backfunc work as usual); g_sheet only remembers
+ * which edge pull opened it so the reverse pull can close it. */
+#define SHEET_CONTROL 1
+#define SHEET_SMS     2
+static int g_sheet;
+
 static int subpage_open(const char *name)
 {
     char path[300];
+    g_sheet = 0;
     if (!subpage_name_ok(name)) return 0;
     snprintf(path, sizeof path, "%s/subpages/%s", UI_DIR, name);
     if (access(path, R_OK) != 0) return 0;
@@ -1288,6 +1477,7 @@ static int function_page_open(const char *name)
 
 static void subpage_close(void)
 {
+    g_sheet = 0;
     g_subpage[0] = 0;
     g_subpage_path[0] = 0;
     g_scroll = 0;
@@ -1369,6 +1559,7 @@ static const char *speedtest_function_tile_html(void)
 {
     if (!speedtest_binary_ready()) return "";
     return "<a href='act:sub:speedtest.html' class='func-tile ft-speed'>"
+           "<span class='func-ic' id='fic-speed'></span><span class='func-go'>&gt;</span>"
            "<span class='func-name'>网络测速</span>"
            "<span class='func-desc'>打开完整测速仪表盘</span>"
            "</a>";
@@ -1408,10 +1599,11 @@ static const char *custom_function_tiles_html(void)
         html_esc(href, sizeof href, names[i]);
         o += snprintf(buf + o, sizeof buf - o,
                       "<a href=\"act:func:%s\" class=\"func-tile func-custom\">"
+                      "<span class=\"func-ic\" id=\"fic-custom-%d\"></span><span class=\"func-go\">&gt;</span>"
                       "<span class=\"func-name\">%s</span>"
                       "<span class=\"func-desc\">自定义页面</span>"
                       "</a>",
-                      href, title);
+                      href, i, title);
         if (o >= (int)sizeof(buf) - 256) break;
     }
     return buf;
@@ -2048,52 +2240,49 @@ static void draw_charts(void)
 {
     int x, y, w, h;
     if (html_view_rect("#chart-cpu", &x, &y, &w, &h)) {
-        html_view_polyline(x, y, w, h, h_cpu, h_n, 0, 100, 0x4f, 0x8b, 0xff, 2, 26); /* CPU usage, blue */
-        html_view_polyline(x, y, w, h, h_ct,  h_n, 20, 70, 0xff, 0x8c, 0x42, 2, 0);  /* temperature, orange */
+        html_view_polyline(x, y, w, h, h_cpu, h_n, 0, 100, RGB3(theme_a()), 2, 26); /* CPU usage */
+        html_view_polyline(x, y, w, h, h_ct,  h_n, 20, 70, RGB3(theme_b()), 2, 0);  /* temperature */
     }
     if (html_view_rect("#chart-mem", &x, &y, &w, &h))
-        html_view_polyline(x, y, w, h, h_mem, h_n, 0, 100, 0x46, 0xc4, 0x6f, 2, 34); /* memory, green */
+        html_view_polyline(x, y, w, h, h_mem, h_n, 0, 100, RGB3(C_OK), 2, 34); /* memory */
     if (html_view_rect("#chart-net", &x, &y, &w, &h)) {
         static int rxi[HIST], txi[HIST];
         long mx = 1;
         for (int i = 0; i < h_n; i++) { if (h_rx[i] > mx) mx = h_rx[i]; if (h_tx[i] > mx) mx = h_tx[i]; }
         for (int i = 0; i < h_n; i++) { rxi[i] = (int)h_rx[i]; txi[i] = (int)h_tx[i]; }
-        html_view_polyline(x, y, w, h, rxi, h_n, 0, (int)mx, 0x4f, 0x8b, 0xff, 2, 22); /* downlink, blue */
-        html_view_polyline(x, y, w, h, txi, h_n, 0, (int)mx, 0xff, 0x8c, 0x42, 2, 0);  /* uplink, orange */
+        html_view_polyline(x, y, w, h, rxi, h_n, 0, (int)mx, RGB3(theme_a()), 2, 22); /* downlink */
+        html_view_polyline(x, y, w, h, txi, h_n, 0, (int)mx, RGB3(theme_b()), 2, 0);  /* uplink */
     }
     if (html_view_rect("#chart-batt", &x, &y, &w, &h)) {
         static int tn[HIST], pn[HIST];
         int mx = 1;
         for (int i = 0; i < h_n; i++) if (h_pwr[i] > mx) mx = h_pwr[i];
         for (int i = 0; i < h_n; i++) { tn[i] = (h_bt[i] - 20) * 2; pn[i] = (int)((long)h_pwr[i] * 100 / mx); }
-        html_view_polyline(x, y, w, h, pn, h_n, 0, 100, 0x4f, 0x8b, 0xff, 2, 22); /* power, blue */
-        html_view_polyline(x, y, w, h, tn, h_n, 0, 100, 0xff, 0x8c, 0x42, 2, 0);  /* temperature, orange */
+        html_view_polyline(x, y, w, h, pn, h_n, 0, 100, RGB3(theme_a()), 2, 22); /* power */
+        html_view_polyline(x, y, w, h, tn, h_n, 0, 100, RGB3(theme_b()), 2, 0);  /* temperature */
     }
 }
 
-/* Padlock glyph centered in the lower screen, shown on the locked preview
- * (state 1). Drawn natively so it does not depend on font glyph coverage. */
+/* Locked preview badge at the bottom: a pill with a padlock and the hint;
+ * while the finger holds, the pill fills with the accent. */
 static void draw_lock_icon(void)
 {
-    const int cx = 160, cy = 406;          /* icon center, lower-middle */
-    int dark = !g_theme;
-    int lv = dark ? 0xff : 0x00;           /* lock color: white(dark) / black(light) */
-    /* shackle: arch ring (semicircle + short legs); legs end inside the body */
-    {
-        int xs[40], ys[40], n = 0;
-        const int ro = 7, ri = 5, arc_cy = cy - 2, leg = cy + 3;
-        xs[n] = cx - ro; ys[n] = leg; n++;
-        for (int aa = 180; aa >= 0; aa -= 30) { double r = aa * 3.14159265 / 180; xs[n] = cx + (int)(ro * cos(r)); ys[n] = arc_cy - (int)(ro * sin(r)); n++; }
-        xs[n] = cx + ro; ys[n] = leg; n++;
-        xs[n] = cx + ri; ys[n] = leg; n++;
-        for (int aa = 0; aa <= 180; aa += 30) { double r = aa * 3.14159265 / 180; xs[n] = cx + (int)(ri * cos(r)); ys[n] = arc_cy - (int)(ri * sin(r)); n++; }
-        xs[n] = cx - ri; ys[n] = leg; n++;
-        html_view_fill_poly(xs, ys, n, lv, lv, lv, 255);
-    }
-    /* body + keyhole (keyhole in page bg tone to look punched through) */
-    html_view_fill_round_rect(cx - 10, cy + 1, 20, 15, 4, lv, lv, lv, 255);
-    html_view_fill_round_rect(cx - 2, cy + 6, 4, 4, 2,
-                              dark ? 0x15 : 0xec, dark ? 0x16 : 0xee, dark ? 0x1a : 0xf1, 255);
+    const int w = 132, h = 32, x = (320 - w) / 2, y = 430;
+    const char *hint = lock_enabled() ? "滑动输入密码" : "长按解锁";
+    const float cx = (float)x + 24.f, cy = (float)y + h / 2.f + 1.f;
+    int tw = html_view_text_width_px(hint, 14);
+
+    html_view_fill_round_rect(x, y, w, h, h / 2, RGB3(C_BAR), 255);
+    html_view_fill_round_rect(x, y, w, h, h / 2, RGB3(C_TXT), 30);
+    if (g_lock_hold > 0)
+        html_view_fill_round_rect(x, y, w * g_lock_hold / 100 < h ? h : w * g_lock_hold / 100, h, h / 2,
+                                  RGB3(theme_a()), 200);
+    /* padlock: shackle arc over a rounded body */
+    html_view_arc(cx, cy - 3.f, 4.5f, 2.f, -90.f, 90.f, RGB3(C_TXT), 255);
+    html_view_line(cx - 4.5f, cy - 3.f, cx - 4.5f, cy, 2.f, RGB3(C_TXT), 255);
+    html_view_line(cx + 4.5f, cy - 3.f, cx + 4.5f, cy, 2.f, RGB3(C_TXT), 255);
+    html_view_fill_round_rect((int)cx - 7, (int)cy, 14, 10, 2, RGB3(C_TXT), 255);
+    html_view_draw_text_px((int)cx + 14 + (w - 38 - tw) / 2, y + 7, hint, 14, 0, RGB3(C_TXT), 255);
 }
 
 /* SMS detail dialog + status-bar envelope state. */
@@ -2120,10 +2309,10 @@ static void draw_sms_icon(void)
 {
     if (!g_sms_unread_now) return;
     const int ew = 16, eh = 11;
-    int ex = 8 + html_view_text_width_px(g_stat_time, 16) + 7;
+    int ex = 10 + html_view_text_width_px(g_stat_time, 16) + 7;
     int ey = (26 - eh) / 2;
-    /* body: blue rounded rectangle */
-    html_view_fill_round_rect(ex, ey, ew, eh, 2, 0x2f, 0x6f, 0xe0, 255);
+    /* body: rounded rectangle in the second accent */
+    html_view_fill_round_rect(ex, ey, ew, eh, 2, RGB3(theme_b()), 255);
     /* flap: white inverted-V from the two top corners down to center */
     int xs[3] = { ex + 1, ex + ew - 1, ex + ew / 2 };
     int ys[3] = { ey + 1, ey + 1,      ey + eh / 2 + 1 };
@@ -2131,75 +2320,63 @@ static void draw_sms_icon(void)
 }
 
 /* ---- band lock (éé¢): comma-list band sets ---- */
+/* Status bar text vertically centered on the bar by its digits. */
+#define SBAR_TIME_X 10
+static int sbar_text_y(int size)
+{
+    int x0, y0, x1, y1;
+    html_view_text_bounds_px("0", size, &x0, &y0, &x1, &y1);
+    return 13 - (y0 + y1) / 2;
+}
+
+/* Right to left: battery, its percentage, the signal bars and the network
+ * generation. Time (and the SMS envelope) on the left. The battery is an outline with a fill in the state color and the
+ * percentage stays outside it, so it reads on any charge level. */
 static void draw_native_statusbar(void)
 {
-    const int dark = !g_theme;
-    const int bg_r = dark ? 0x1d : 0xd8, bg_g = dark ? 0x27 : 0xe2, bg_b = dark ? 0x33 : 0xf0;
-    const int fg_r = dark ? 0xe9 : 0x1b, fg_g = dark ? 0xeb : 0x1d, fg_b = dark ? 0xee : 0x22;
-    const int dim_r = dark ? 0x5b : 0xa6, dim_g = dark ? 0x66 : 0xae, dim_b = dark ? 0x74 : 0xb8;
+    const unsigned bad = C_BAD, ok = C_OK;
 
-    html_view_fill_rect(0, 0, 320, 26, bg_r, bg_g, bg_b, 255);
-    html_view_draw_text_px(8, 4, g_stat_time, 16, 0, fg_r, fg_g, fg_b, 255);
+    html_view_fill_rect(0, 0, 320, 26, RGB3(C_BAR), 255);
+    html_view_fill_rect(0, 25, 320, 1, RGB3(C_TXT), 14);              /* hairline */
+    html_view_draw_text_px(SBAR_TIME_X, sbar_text_y(16), g_stat_time, 16, 0, RGB3(C_TXT), 255);
 
-    const int bat_x = 279, bat_y = 5, bat_w = 35, bat_h = 16;
-    const int tip_x = bat_x + bat_w, tip_y = bat_y + 5;
-    const int sig_y = 3, sig_h = 18;
-    const int sig_left = bat_x - 49;
-    static const int bh[5] = { 7, 7, 7, 7, 7 };
-    static const int bx[5] = { 18, 23, 28, 33, 38 };
-    static const int bw[5] = { 4, 4, 4, 4, 4 };
-    const int bar_left = sig_left + bx[0];
-    const int bar_right = sig_left + bx[4] + bw[4];
-    const int group_gap = bat_x - bar_right;
-    int sw = html_view_text_width_px(g_stat_speed, 13);
-    int sx = bar_left - group_gap - sw; if (sx < 84) sx = 84;
-    html_view_draw_text_px(sx, 5, g_stat_speed, 13, 0, fg_r, fg_g, fg_b, 255);
-
-    const int base = sig_y + sig_h + 1;
-    for (int i = 0; i < 5; i++) {
-        int on = i < g_stat_sig;
-        int r = on ? fg_r : dim_r, g = on ? fg_g : dim_g, b = on ? fg_b : dim_b;
-        int x = sig_left + bx[i];
-        html_view_fill_round_rect(x, base - bh[i], bw[i], bh[i], 2, r, g, b, 255);
-    }
-    int gen_size = 11, gw = html_view_text_width_px(g_stat_gen, gen_size);
-    if (gw > 24) { gen_size = 10; gw = html_view_text_width_px(g_stat_gen, gen_size); }
-    if (gw > 24) { gen_size = 9; }
-    gw = html_view_text_width_px(g_stat_gen, gen_size);
-    int gx = bar_left + ((bar_right - bar_left) - gw) / 2;
-    html_view_draw_text_px(gx, sig_y, g_stat_gen, gen_size, 0, fg_r, fg_g, fg_b, 255);
-
-    html_view_fill_round_rect(bat_x, bat_y, bat_w, bat_h, 4, fg_r, fg_g, fg_b, 255);
-    if (dark)
-        html_view_fill_round_rect(bat_x + 1, bat_y + 1, bat_w - 2, bat_h - 2, 3, bg_r, bg_g, bg_b, 255);
-    else
-        html_view_fill_round_rect(bat_x + 1, bat_y + 1, bat_w - 2, bat_h - 2, 3, 0xd6, 0xdc, 0xe4, 255);
-    html_view_fill_round_rect(tip_x, tip_y, 2, 7, 1, fg_r, fg_g, fg_b, 255);
-
-    int bat_pct = clampi(g_stat_bat, 0, 100);
-    int draw_charging = g_charging;
-    int fr = fg_r, fgc = fg_g, fb = fg_b;
-    if (draw_charging) { fr = 0x5e; fgc = 0xc8; fb = 0x5e; }
-    else if (g_stat_lowbat) { fr = 0xe8; fgc = 0x53; fb = 0x3a; }
-    int fill_w = (bat_w - 4) * bat_pct / 100;
-    if (fill_w > 0)
-        html_view_fill_round_rect(bat_x + 2, bat_y + 2, fill_w, bat_h - 4, 2, fr, fgc, fb, 255);
+    /* battery: 23x12 outline + tip */
+    const float bw = 23.f, bh = 12.f, bx = 320.f - 9.f - bw, by = 7.f;
+    int pct = clampi(g_stat_bat, 0, 100);
+    unsigned fill = g_charging ? ok : g_stat_lowbat ? bad : C_TXT;
+    html_view_round_rect_aa(bx, by, bw, bh, 3.5f, 1.4f, RGB3(C_TXT), 170);
+    html_view_round_rect_aa(bx + bw + 1.f, by + 3.5f, 2.f, 5.f, 1.f, 0.f, RGB3(C_TXT), 170);
+    if (pct > 0)
+        html_view_round_rect_aa(bx + 2.5f, by + 2.5f, (bw - 5.f) * (float)pct / 100.f, bh - 5.f, 1.5f, 0.f,
+                                RGB3(fill), 255);
+    int right = (int)bx - 5;
 
     if (g_show_batpct) {
-        char bp[8]; snprintf(bp, sizeof bp, "%d%%", bat_pct);
-        int x0, y0, x1, y1;
-        int pct_size = 11;
-        html_view_text_bounds_px(bp, pct_size, &x0, &y0, &x1, &y1);
-        if (x1 - x0 > bat_w - 4) {
-            pct_size = 10;
-            html_view_text_bounds_px(bp, pct_size, &x0, &y0, &x1, &y1);
-        }
-        int tx = bat_x + (bat_w - (x1 - x0)) / 2 - x0;
-        int ty = bat_y + (bat_h - (y1 - y0)) / 2 - y0 + 1;
-        html_view_draw_text_contrast_px(tx, ty, bp, pct_size, 0,
-                                        0x12, 0x25, 0x18,
-                                        0xf2, 0xf5, 0xf7, 255);
+        char bp[8];
+        snprintf(bp, sizeof bp, "%d%%", pct);
+        int w = html_view_text_width_px(bp, 15);
+        html_view_draw_text_px(right - w, sbar_text_y(15), bp, 15, 0,
+                               RGB3(g_stat_lowbat && !g_charging ? bad : C_TXT), 255);
+        right -= w + 3;
     }
+    if (g_charging) {                                                   /* bolt */
+        int x = right - 7, y = 7;
+        int xs[6] = { x + 5, x, x + 3, x + 2, x + 7, x + 4 };
+        int ys[6] = { y, y + 7, y + 7, y + 12, y + 5, y + 5 };
+        html_view_fill_poly(xs, ys, 6, RGB3(ok), 255);
+        right -= 10;
+    }
+
+    /* signal: four bars, lit up to the level (signal_level gives 0..5) */
+    right -= 8;
+    int lit = g_stat_sig > 0 ? (g_stat_sig * 4 + 2) / 5 : 0;
+    for (int i = 0; i < 4; i++) {
+        float h = 4.f + 2.7f * (float)i, x = (float)right - 18.f + 5.f * (float)i;
+        html_view_round_rect_aa(x, 19.f - h, 3.f, h, 1.f, 0.f, RGB3(C_TXT), i < lit ? 255 : 55);
+    }
+    right -= 18 + 4;
+    int gw = html_view_text_width_px(g_stat_gen, 14);
+    html_view_draw_text_px(right - gw, sbar_text_y(14), g_stat_gen, 14, 0, RGB3(C_TXT), 255);
 }
 
 static void draw_center_text_px(int cx, int y, const char *text, int size, int bold,
@@ -2208,6 +2385,182 @@ static void draw_center_text_px(int cx, int y, const char *text, int size, int b
     int x0, y0, x1, y1;
     html_view_text_bounds_px(text, size, &x0, &y0, &x1, &y1);
     html_view_draw_text_px(cx - (x1 - x0) / 2 - x0, y - y0, text, size, bold, r, g, b, a);
+}
+
+/* ---- U30-style dials, drawn into placeholder boxes after the page renders ----
+ * #gauge-{lte,nr}-{rsrp,sinr}: a 270 degree arc open at the bottom, the value
+ * in the middle and its name in the opening (#gauge-rsrp / #gauge-sinr: the
+ * serving cell, for custom templates); #home-ring: battery ring around the home
+ * clock; #home-bars / #home-wifi / #home-bolt: small home-page icons.
+ * build_kv() fills g_dial from the snapshot it renders. */
+typedef struct { int rsrp_ok, sinr_ok; float rsrp, sinr; } dial_cell_t;
+static struct {
+    dial_cell_t lte, nr;       /* a leg that is not up has no readings: "--" */
+    int nr_serving;            /* the NR leg is up: it is the serving cell */
+    int bat, charging, sig, wifi_on, nfc_on, dps_on;
+} g_dial;
+
+static float dial_clamp(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
+
+static void dial_gauge(const char *sel, int ok, float lv, unsigned col, const char *val, const char *name)
+{
+    int x, y, w, h, x0, y0, x1, y1;
+    float cx, cy, rad;
+
+    if (!html_view_rect(sel, &x, &y, &w, &h)) return;
+    rad = (float)(w < h ? w : h) / 2.f - 7.f;
+    cx = (float)x + (float)w / 2.f;
+    cy = (float)y + (float)h / 2.f + 4.f;
+    {
+        int big = rad >= 50.f, vs = big ? 30 : 24;
+        float th = big ? 8.f : 7.f;
+        html_view_arc(cx, cy, rad, th, -135.f, 135.f, RGB3(C_TXT), 26);
+        if (ok && lv > .01f)
+            html_view_arc(cx, cy, rad, th, -135.f, -135.f + 270.f * lv, RGB3(col), 255);
+        html_view_text_bounds_px(ok ? val : "--", vs, &x0, &y0, &x1, &y1);
+        draw_center_text_px((int)cx, (int)cy - (y1 - y0) / 2 - 4, ok ? val : "--", vs, 1,
+                            RGB3(ok ? C_TXT : C_FAINT), 255);
+        draw_center_text_px((int)cx, (int)(cy + rad * .62f), name, big ? 13 : 12, 0, RGB3(C_DIM), 255);
+    }
+}
+
+/* RSRP and SINR gauges of one cell */
+static void dial_cell(const char *rsrp_sel, const char *sinr_sel, const dial_cell_t *c, const char *rat)
+{
+    char v[16], name[16];
+    float lv = dial_clamp((c->rsrp + 125.f) / 55.f);
+
+    snprintf(v, sizeof v, "%.0f", c->rsrp);
+    snprintf(name, sizeof name, "%s RSRP", rat);
+    dial_gauge(rsrp_sel, c->rsrp_ok, lv, lv > .6f ? C_OK : lv > .35f ? C_WARN : C_BAD, v, name);
+    snprintf(v, sizeof v, "%.1f", c->sinr);
+    snprintf(name, sizeof name, "%s SINR", rat);
+    dial_gauge(sinr_sel, c->sinr_ok, dial_clamp((c->sinr + 5.f) / 30.f),
+               c->sinr > 13.f ? C_OK : c->sinr > 0.f ? C_WARN : C_BAD, v, name);
+}
+
+static void draw_dials(void)
+{
+    int x, y, w, h;
+
+    dial_cell("#gauge-nr-rsrp", "#gauge-nr-sinr", &g_dial.nr, "NR");
+    dial_cell("#gauge-lte-rsrp", "#gauge-lte-sinr", &g_dial.lte, "LTE");
+    dial_cell("#gauge-rsrp", "#gauge-sinr", g_dial.nr_serving ? &g_dial.nr : &g_dial.lte,
+              g_dial.nr_serving ? "NR" : "LTE");
+
+    if (html_view_rect("#home-ring", &x, &y, &w, &h)) {
+        float cx = (float)x + (float)w / 2.f, cy = (float)y + (float)h / 2.f;
+        float rad = (float)(w < h ? w : h) / 2.f - 4.f;
+        unsigned col = g_dial.charging || g_dial.bat > 30 ? C_OK : g_dial.bat > 15 ? C_WARN : C_BAD;
+        html_view_arc(cx, cy, rad, 6.f, 0.f, 360.f, RGB3(C_TXT), 20);
+        if (g_dial.bat > 0)
+            html_view_arc(cx, cy, rad, 6.f, 0.f, 360.f * (float)g_dial.bat / 100.f, RGB3(col), 255);
+    }
+    if (html_view_rect("#home-bars", &x, &y, &w, &h)) {
+        for (int i = 0; i < 4; i++) {
+            int bh = 5 + i * 4, bx = x + i * 5;
+            unsigned c = i < (g_dial.sig + 1) * 4 / 5 && g_dial.sig ? theme_a() : C_FAINT;
+            html_view_fill_round_rect(bx, y + h - bh, 3, bh, 1, RGB3(c), 255);
+        }
+    }
+    if (html_view_rect("#home-wifi", &x, &y, &w, &h)) {
+        unsigned c = g_dial.wifi_on ? theme_a() : C_FAINT;
+        float cx = (float)x + (float)w / 2.f, cy = (float)y + (float)h - 2.f;
+        html_view_fill_circle(cx, cy, 1.8f, RGB3(c), 255);
+        html_view_arc(cx, cy, 5.5f, 2.f, -45.f, 45.f, RGB3(c), 255);
+        html_view_arc(cx, cy, 10.f, 2.f, -45.f, 45.f, RGB3(c), 255);
+    }
+    if (g_dial.charging && html_view_rect("#home-bolt", &x, &y, &w, &h)) {
+        int xs[6] = { x + w * 6 / 10, x + w / 6, x + w / 2, x + w * 4 / 10, x + w * 5 / 6, x + w / 2 };
+        int ys[6] = { y, y + h * 6 / 10, y + h * 6 / 10, y + h, y + h * 4 / 10, y + h * 4 / 10 };
+        html_view_fill_poly(xs, ys, 6, RGB3(C_OK), 255);
+    }
+}
+
+/* Function-list icons, drawn in the primary accent into the empty .func-ic
+ * circles: #fic-wifi, #fic-sms, #fic-cell, #fic-lock, #fic-speed and a generic
+ * app grid for each #fic-custom-N. */
+static void draw_func_icons(void)
+{
+    unsigned c = theme_a();
+    int x, y, w, h;
+    float cx, cy;
+    const float t = 2.2f;
+
+#define FIC(sel) (html_view_rect(sel, &x, &y, &w, &h) && \
+                  ((cx = (float)x + (float)w / 2.f), (cy = (float)y + (float)h / 2.f), 1))
+    if (FIC("#fic-wifi")) {                     /* dot + three arcs */
+        float by = cy + 7.f;
+        html_view_fill_circle(cx, by, 2.f, RGB3(c), 255);
+        html_view_arc(cx, by, 6.f, t, -45.f, 45.f, RGB3(c), 255);
+        html_view_arc(cx, by, 11.f, t, -45.f, 45.f, RGB3(c), 255);
+        html_view_arc(cx, by, 16.f, t, -45.f, 45.f, RGB3(c), 255);
+    }
+    if (FIC("#fic-sms")) {                      /* envelope */
+        float l = cx - 10.f, r = cx + 10.f, tp = cy - 7.f, bt = cy + 7.f;
+        html_view_line(l, tp, r, tp, t, RGB3(c), 255);
+        html_view_line(l, bt, r, bt, t, RGB3(c), 255);
+        html_view_line(l, tp, l, bt, t, RGB3(c), 255);
+        html_view_line(r, tp, r, bt, t, RGB3(c), 255);
+        html_view_line(l, tp, cx, cy + 1.f, t, RGB3(c), 255);
+        html_view_line(r, tp, cx, cy + 1.f, t, RGB3(c), 255);
+    }
+    if (FIC("#fic-cell")) {                     /* antenna with radio waves */
+        float ty = cy - 4.f;
+        html_view_fill_circle(cx, ty, 2.4f, RGB3(c), 255);
+        html_view_line(cx, ty, cx - 5.f, cy + 10.f, t, RGB3(c), 255);
+        html_view_line(cx, ty, cx + 5.f, cy + 10.f, t, RGB3(c), 255);
+        html_view_arc(cx, ty, 6.f, t, 50.f, 130.f, RGB3(c), 255);
+        html_view_arc(cx, ty, 6.f, t, 230.f, 310.f, RGB3(c), 255);
+        html_view_arc(cx, ty, 11.f, t, 50.f, 130.f, RGB3(c), 255);
+        html_view_arc(cx, ty, 11.f, t, 230.f, 310.f, RGB3(c), 255);
+    }
+    if (FIC("#fic-lock")) {                     /* padlock */
+        html_view_arc(cx, cy - 3.f, 5.5f, t, -90.f, 90.f, RGB3(c), 255);
+        html_view_line(cx - 5.5f, cy - 3.f, cx - 5.5f, cy + 1.f, t, RGB3(c), 255);
+        html_view_line(cx + 5.5f, cy - 3.f, cx + 5.5f, cy + 1.f, t, RGB3(c), 255);
+        html_view_fill_round_rect((int)(cx - 9.f), (int)(cy + 1.f), 18, 12, 3, RGB3(c), 255);
+    }
+    if (FIC("#fic-speed")) {                    /* speedometer */
+        html_view_arc(cx, cy + 3.f, 11.f, t, -120.f, 120.f, RGB3(c), 255);
+        html_view_line(cx, cy + 3.f, cx + 6.f, cy - 4.f, t, RGB3(c), 255);
+        html_view_fill_circle(cx, cy + 3.f, 2.4f, RGB3(c), 255);
+    }
+    /* control center toggles: dark glyph on the lit accent disc, light when off */
+    if (FIC("#cc-wifi")) {
+        unsigned k = g_dial.wifi_on ? 0x0B1220u : C_TXT;
+        float by = cy + 8.f;
+        html_view_fill_circle(cx, by, 2.2f, RGB3(k), 255);
+        html_view_arc(cx, by, 7.f, 2.6f, -45.f, 45.f, RGB3(k), 255);
+        html_view_arc(cx, by, 13.f, 2.6f, -45.f, 45.f, RGB3(k), 255);
+        html_view_arc(cx, by, 19.f, 2.6f, -45.f, 45.f, RGB3(k), 255);
+    }
+    if (FIC("#cc-nfc")) {                        /* phone tapping waves */
+        unsigned k = g_dial.nfc_on ? 0x0B1220u : C_TXT;
+        html_view_arc(cx - 8.f, cy, 6.f, 2.6f, 50.f, 130.f, RGB3(k), 255);
+        html_view_arc(cx - 8.f, cy, 12.f, 2.6f, 50.f, 130.f, RGB3(k), 255);
+        html_view_arc(cx - 8.f, cy, 18.f, 2.6f, 55.f, 125.f, RGB3(k), 255);
+        html_view_fill_circle(cx - 8.f, cy, 2.2f, RGB3(k), 255);
+    }
+    if (FIC("#cc-dps")) {                        /* lightning bolt */
+        unsigned k = g_dial.dps_on ? 0x0B1220u : C_TXT;
+        int xs[6] = { (int)cx + 3, (int)cx - 8, (int)cx - 1, (int)cx - 4, (int)cx + 8, (int)cx + 1 };
+        int ys[6] = { (int)cy - 13, (int)cy + 2, (int)cy + 2, (int)cy + 13, (int)cy - 3, (int)cy - 3 };
+        html_view_fill_poly(xs, ys, 6, RGB3(k), 255);
+    }
+    if (FIC("#cc-theme")) {                      /* the palette's two accents and green */
+        html_view_fill_circle(cx - 8.f, cy - 4.f, 5.f, RGB3(theme_a()), 255);
+        html_view_fill_circle(cx + 8.f, cy - 4.f, 5.f, RGB3(theme_b()), 255);
+        html_view_fill_circle(cx, cy + 8.f, 5.f, RGB3(C_OK), 255);
+    }
+    for (int i = 0; i < 32; i++) {              /* custom pages: app grid */
+        char sel[24];
+        snprintf(sel, sizeof sel, "#fic-custom-%d", i);
+        if (!FIC(sel)) break;
+        for (int k = 0; k < 4; k++)
+            html_view_fill_round_rect((int)cx - 9 + (k % 2) * 10, (int)cy - 9 + (k / 2) * 10, 8, 8, 2, RGB3(c), 255);
+    }
+#undef FIC
 }
 
 struct charge_boot_state {
@@ -2230,7 +2583,7 @@ static void charge_boot_refresh(struct charge_boot_state *s)
     if (data_refresh(&d)) {
         s->pct = d.bat_percent;
         s->charger = d.charger_connect ? 1 : 0;
-        s->charging = (d.charger_connect || d.charging) ? 1 : 0;
+        s->charging = (d.charger_connect || d.charging == 1) ? 1 : 0;   /* charge_status 1 = charging */
         s->chg_uv = d.chg_uv;
         s->chg_ua = d.chg_ua;
     }
@@ -3706,7 +4059,7 @@ static const char *sms_modal_html(void)
         "<div id='smsview' class='smsmview'><div id='smsbody' class='smsmbody' style='top:-%dpx'>%s</div></div>"
         "<div class='mbtns'><a href='act:smsclose' class='mbtn2 prim mfull'>关闭</a></div>"
         "</div></body></html>",
-        g_theme ? "light" : "dark", g_sms_num, g_sms_date, g_sms_scroll, esc);
+        theme_body_class(), g_sms_num, g_sms_date, g_sms_scroll, esc);
     return out;
 }
 
@@ -3727,7 +4080,7 @@ static const char *modal_html(void)
             "<div class='sec'>开启解析后才显示第二页。读取关闭时，TA / Ports / SSB Index 会显示为空。</div>"
             "<div class='mbtns'><a href='act:closemodal' class='mbtn2 prim mfull'>关闭</a></div>"
             "</div></body></html>",
-            g_theme ? "light" : "dark",
+            theme_body_class(),
             g_sig_read ? "on" : "off",
             g_sig_parse ? "on" : "off");
         return out;
@@ -3746,7 +4099,7 @@ static const char *modal_html(void)
         "<a href='act:minv' class='mbtn2'>反选</a>"
         "<a href='act:mapply' class='mbtn2 prim'>应用</a></div>"
         "</div></body></html>",
-        g_theme ? "light" : "dark", title, chips);
+        theme_body_class(), title, chips);
     return out;
 }
 
@@ -4066,7 +4419,8 @@ static int build_kv(struct kv *t, const char *path)
     int is_charts = path && strstr(path, "charts.html") != NULL;
     g_phase++;
 
-    static char s_time[8], s_bat[8], s_rsrp[12], s_rsrq[12], s_sinr[12], s_bw[12];
+    static char s_time[8], s_bat[8], s_rsrp[12], s_rsrq[12], s_sinr[12], s_bw[12], s_date[40];
+    static char s_siggauges[400];
     static char s_cellid[20], s_pci[12], s_clients[8], s_up[24], s_rxs[20], s_txs[20];
     static char s_rxb[16], s_txb[16], s_cpu[8], s_mem[8], w_rsrp[6], w_rsrq[6], w_sinr[6], w_bw[6];
     static char s_oper[48], s_ssid[64], s_key[64], s_page[8], s_np[8], s_model[64], s_fw[80];
@@ -4090,6 +4444,27 @@ static int build_kv(struct kv *t, const char *path)
     time_t now = time(NULL); struct tm tmv; localtime_r(&now, &tmv);
     if (now != h_last) { hist_push(&d); h_last = now; }   /* sample once per second */
     snprintf(s_time, sizeof s_time, "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+    {
+        static const char *const wd[7] = { "周日", "周一", "周二", "周三", "周四", "周五", "周六" };
+        snprintf(s_date, sizeof s_date, "%d月%d日 %s", tmv.tm_mon + 1, tmv.tm_mday, wd[tmv.tm_wday % 7]);
+    }
+    {
+        int nr = d.nr_rsrp != 0;
+        g_dial.nr.rsrp = (float)d.nr_rsrp;
+        g_dial.nr.rsrp_ok = d.nr_rsrp != 0;
+        g_dial.nr.sinr_ok = signal_value_present(d.nr_snr);
+        g_dial.nr.sinr = g_dial.nr.sinr_ok ? (float)atof(d.nr_snr) : 0.f;
+        g_dial.lte.rsrp = (float)d.lte_rsrp;
+        g_dial.lte.rsrp_ok = d.lte_rsrp != 0;
+        g_dial.lte.sinr_ok = signal_value_present(d.lte_snr);
+        g_dial.lte.sinr = g_dial.lte.sinr_ok ? (float)atof(d.lte_snr) : 0.f;
+        g_dial.nr_serving = nr;
+        g_dial.bat = clampi(d.bat_percent, 0, 100);
+        g_dial.charging = d.charging == 1;   /* charge_status: 1 charging, 2 discharging, 3 idle, 4 full */
+        g_dial.sig = signal_level(nr ? d.nr_rsrp : d.lte_rsrp);
+        g_dial.wifi_on = g_w24 == 1 || g_w5 == 1;
+        g_dial.nfc_on = d.nfc_switch != 0;
+    }
     snprintf(s_sigrefresh, sizeof s_sigrefresh, "%02d:%02d:%02d",
              tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
     snprintf(s_bat, sizeof s_bat, "%d", d.bat_percent);
@@ -4113,6 +4488,7 @@ static int build_kv(struct kv *t, const char *path)
     if (!d.wifi_key[0])
         snprintf(d.wifi_key, sizeof d.wifi_key, "%s", wifi_key_for(d.wifi_ssid));
     if (d.dps >= 0 && (int32_t)(millis() - g_dps_hold_until) >= 0) g_dps = d.dps;
+    g_dial.dps_on = g_dps == 1;
     if (!d.wifi_key[0]) strcpy(s_key, "-");
     else if (g_show_key) snprintf(s_key, sizeof s_key, "%s", d.wifi_key);
     else { int kn = (int)strlen(d.wifi_key); if (kn > 16) kn = 16; memset(s_key, '*', kn); s_key[kn] = 0; }
@@ -4161,6 +4537,19 @@ static int build_kv(struct kv *t, const char *path)
     int is_lte  = !is_nsa && !is_sa && (strstr(d.net_type, "LTE") || strstr(d.net_type, "4G"));
     int show_nr  = is_sa || is_nsa || is_endc;
     int show_lte = is_nsa || is_endc || is_lte;
+    {
+        /* gauges per leg on the air interface: SA -> NR, LTE -> LTE, NSA / EN-DC -> both */
+        int g_nr = show_nr, g_lte = show_lte || !show_nr;
+        const char *cls = g_nr && g_lte ? "gauge sm" : "gauge";
+        int go = snprintf(s_siggauges, sizeof s_siggauges, "<div class='card gauges'>");
+        if (g_nr)
+            go += snprintf(s_siggauges + go, sizeof s_siggauges - go,
+                           "<div id='gauge-nr-rsrp' class='%s'></div><div id='gauge-nr-sinr' class='%s'></div>", cls, cls);
+        if (g_lte)
+            go += snprintf(s_siggauges + go, sizeof s_siggauges - go,
+                           "<div id='gauge-lte-rsrp' class='%s'></div><div id='gauge-lte-sinr' class='%s'></div>", cls, cls);
+        snprintf(s_siggauges + go, sizeof s_siggauges - go, "</div>");
+    }
     int show_nr_nas = is_sa;
     int nr_cc = 0, nr_bw = 0, lte_cc = 0, lte_bw = 0;
     int nr_show_cc = 0, nr_show_bw = 0, lte_show_cc = 0, lte_show_bw = 0, no = 0, lo = 0;
@@ -4648,9 +5037,6 @@ static int build_kv(struct kv *t, const char *path)
 
     /* ---- shared status bar: native-drawn content over a simple 26px slot ---- */
     {
-        char sp[40];
-        fmt_speed_pair(sp, sizeof sp, d.tx_speed, d.rx_speed, g_speed_bits);
-        snprintf(g_stat_speed, sizeof g_stat_speed, "%s", sp);
         g_stat_bat = clampi(d.bat_percent, 0, 100);
         g_stat_lowbat = d.bat_percent <= 20;
         g_sms_unread_now = d.sms_unread > 0;
@@ -4828,9 +5214,11 @@ static int build_kv(struct kv *t, const char *path)
     int connected = strstr(d.wan_status, "connect") != NULL;
     int wifi_master = (g_w24 == 1 || g_w5 == 1);
     int i = 0;
-    t[i++] = (struct kv){ "STATUSBAR", s_sbar };   t[i++] = (struct kv){ "DOTS", s_dots };
+    t[i++] = (struct kv){ "STATUSBAR", s_sbar };
+    t[i++] = (struct kv){ "DOTS", g_lock_state == 1 ? "" : s_dots };   /* the lock badge sits there */
     t[i++] = (struct kv){ "SIGBARS", "" };
     t[i++] = (struct kv){ "TIME", s_time };        t[i++] = (struct kv){ "BAT", s_bat };
+    t[i++] = (struct kv){ "DATE", s_date };
     t[i++] = (struct kv){ "OPER", s_oper };        t[i++] = (struct kv){ "NETTYPE", d.net_type };
     t[i++] = (struct kv){ "BAND", d.band };        t[i++] = (struct kv){ "WAN", connected ? "已连接" : "未连接" };
     t[i++] = (struct kv){ "RSRP", s_rsrp };        t[i++] = (struct kv){ "RSRP_W", w_rsrp };
@@ -4852,9 +5240,10 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "PAGE", s_page };        t[i++] = (struct kv){ "NPAGES", s_np };
     t[i++] = (struct kv){ "CARRIERS", s_carriers }; t[i++] = (struct kv){ "GEN", s_gen };
     t[i++] = (struct kv){ "SIGNALCARDS", s_sigcards };
+    t[i++] = (struct kv){ "SIGGAUGES", s_siggauges };
     t[i++] = (struct kv){ "NEIGHBORCARDS", s_neighborcards };
     t[i++] = (struct kv){ "GENCLASS", genc };
-    t[i++] = (struct kv){ "THEME", g_theme ? "light" : "dark" };
+    t[i++] = (struct kv){ "THEME", theme_body_class() };
     t[i++] = (struct kv){ "BATCLASS", d.bat_percent <= 20 ? "low" : "" };
     t[i++] = (struct kv){ "KEYBTN", g_show_key ? "隐藏密码" : "显示密码" };
     t[i++] = (struct kv){ "ADBCLASS", adb_on ? "on" : "off" };
@@ -4865,8 +5254,8 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "USBNETSTATE", usb_net_state };
     t[i++] = (struct kv){ "BATPCTCLASS", g_show_batpct ? "on" : "off" };
     t[i++] = (struct kv){ "BATPCTSTATE", g_show_batpct ? "已显示" : "已隐藏" };
-    t[i++] = (struct kv){ "THEMECLASS", g_theme ? "on" : "off" };
-    t[i++] = (struct kv){ "THEMESTATE", g_theme ? "浅色模式" : "深色模式" };
+    t[i++] = (struct kv){ "THEMECLASS", "on" };
+    t[i++] = (struct kv){ "THEMESTATE", g_themes[g_theme].name };
     t[i++] = (struct kv){ "SPUNITCLASS", g_speed_bits ? "on" : "off" };
     t[i++] = (struct kv){ "SPUNITSTATE", g_speed_bits ? "比特率 Mbps" : "字节率 MB/s" };
     t[i++] = (struct kv){ "SPUNIT", s_spu };
@@ -5014,7 +5403,7 @@ static const char *custom_page_html(const char *path)
                  "<div class=\"subtop\"><a href=\"act:backfunc\" class=\"subback\">返回</a>"
                  "<span class=\"subname\">%s</span></div>"
                  "<div class=\"custom-page\">",
-                 g_theme ? "light" : "dark", kv_get(t, n, "STATUSBAR"), title);
+                 theme_body_class(), kv_get(t, n, "STATUSBAR"), title);
     if (o < 0) o = 0;
     if (o < (int)sizeof(out) - 1) {
         size_t room = sizeof(out) - (size_t)o - 1;
@@ -5088,42 +5477,51 @@ static void pm_arc(int cx, int cy, double ro, double ri, int a0, int a1, int r, 
 }
 
 /* kind: 0=power, 1=reboot, 2=cancel */
-static void pm_glyph(const char *sel, int kind, int cr, int cg, int cb)
+/* One power-menu button: a glass disc ringed in the action colour with the
+ * glyph in that colour; once armed (first tap) the disc fills with it and the
+ * glyph turns dark. kind: 0 power off, 1 reboot, 2 cancel. */
+static void pm_glyph(const char *sel, int kind, unsigned col)
 {
     int x, y, w, h;
     if (!html_view_rect(sel, &x, &y, &w, &h)) return;
-    int rad = (w < h ? w : h) / 2;
-    int cx = x + w / 2, cy = y + h / 2;
+    float rad = (float)(w < h ? w : h) / 2.f;
+    float cx = (float)x + (float)w / 2.f, cy = (float)y + (float)h / 2.f;
     int armed = (kind == 0 && g_pwr_confirm == 1) || (kind == 1 && g_pwr_confirm == 2);
-    if (armed) pm_disc(cx, cy, rad + 4, 0xff, 0xff, 0xff, 255);   /* white halo when armed */
-    pm_disc(cx, cy, rad, cr, cg, cb, 255);
-    const int W = 0xff;
-    double ro = rad * 0.54, ri = ro - rad * 0.15, th = rad * 0.15;
-    if (kind == 0) {                         /* power: ring with a gap at top + vertical bar */
-        pm_arc(cx, cy, ro, ri, 110, 430, W, W, W);
-        pm_line(cx, cy - rad * 0.06, cx, cy - rad * 0.60, th, W, W, W);
-    } else if (kind == 1) {                  /* reboot: about 290 degree ring + arrowhead */
-        int a0 = 120, a1 = 410;
-        pm_arc(cx, cy, ro, ri, a0, a1, W, W, W);
-        double te = a1 * PM_PI / 180.0, rm = (ro + ri) / 2.0;
-        double pex = cx + rm * cos(te), pey = cy - rm * sin(te);
-        double tx = -sin(te), ty = -cos(te), rxx = cos(te), ryy = -sin(te);
-        double L = (ro - ri) * 1.9, hw = (ro - ri) * 1.25;
-        int ax[3] = { (int)(pex + tx * L + 0.5), (int)(pex + rxx * hw + 0.5), (int)(pex - rxx * hw + 0.5) };
-        int ay[3] = { (int)(pey + ty * L + 0.5), (int)(pey + ryy * hw + 0.5), (int)(pey - ryy * hw + 0.5) };
-        html_view_fill_poly(ax, ay, 3, W, W, W, 255);
+    unsigned ic = armed ? 0x0B1220u : col;
+    float r = rad * .40f, th = rad * .10f;
+
+    if (armed) {
+        html_view_fill_circle(cx, cy, rad + 5.f, RGB3(col), 70);   /* soft halo */
+        html_view_fill_circle(cx, cy, rad, RGB3(col), 255);
+    } else {
+        html_view_fill_circle(cx, cy, rad, RGB3(C_TXT), 22);
+        html_view_arc(cx, cy, rad - 1.f, 1.6f, 0.f, 360.f, RGB3(col), 110);
+    }
+    if (kind == 0) {                         /* power: open ring + bar through the gap */
+        html_view_arc(cx, cy + 2.f, r, th, 38.f, 322.f, RGB3(ic), 255);
+        html_view_line(cx, cy - r * 1.25f, cx, cy - r * .15f, th, RGB3(ic), 255);
+    } else if (kind == 1) {                  /* reboot: ring + arrowhead at its end */
+        const float a1 = 310.f, ra = a1 * (float)PM_PI / 180.f;
+        float ex = cx + r * sinf(ra), ey = cy - r * cosf(ra);
+        float tx = cosf(ra), ty = sinf(ra);          /* clockwise tangent */
+        float nx = sinf(ra), ny = -cosf(ra);         /* outward normal */
+        float L = th * 2.2f, hw = th * 1.6f;
+        int ax[3] = { (int)(ex + tx * L + .5f), (int)(ex + nx * hw + .5f), (int)(ex - nx * hw + .5f) };
+        int ay[3] = { (int)(ey + ty * L + .5f), (int)(ey + ny * hw + .5f), (int)(ey - ny * hw + .5f) };
+        html_view_arc(cx, cy, r, th, 40.f, a1, RGB3(ic), 255);
+        html_view_fill_poly(ax, ay, 3, RGB3(ic), 255);
     } else {                                 /* cancel: X */
-        double d = rad * 0.40;
-        pm_line(cx - d, cy - d, cx + d, cy + d, th, W, W, W);
-        pm_line(cx - d, cy + d, cx + d, cy - d, th, W, W, W);
+        float d = r * .78f;
+        html_view_line(cx - d, cy - d, cx + d, cy + d, th, RGB3(ic), 255);
+        html_view_line(cx - d, cy + d, cx + d, cy - d, th, RGB3(ic), 255);
     }
 }
 
 static void draw_power_menu(void)
 {
-    pm_glyph("#pmc-off",    0, 0xd2, 0x48, 0x3c);   /* red */
-    pm_glyph("#pmc-reboot", 1, 0xe0, 0x89, 0x2a);   /* orange */
-    pm_glyph("#pmc-cancel", 2, 0x4a, 0x51, 0x5c);   /* gray */
+    pm_glyph("#pmc-off",    0, C_BAD);
+    pm_glyph("#pmc-reboot", 1, C_WARN);
+    pm_glyph("#pmc-cancel", 2, C_DIM);
 }
 
 static int st_hist_max(const int *hist, int n)
@@ -5135,11 +5533,10 @@ static int st_hist_max(const int *hist, int n)
 
 static void st_chart_grid(int x, int y, int w, int h)
 {
-    const int dark = !g_theme;
-    const int r = dark ? 0x2d : 0xb8;
-    const int g = dark ? 0x3c : 0xcc;
-    const int b = dark ? 0x4a : 0xd8;
-    const int a = dark ? 150 : 180;
+    const int r = 0x2d;
+    const int g = 0x3c;
+    const int b = 0x4a;
+    const int a = 150;
 
     html_view_fill_rect(x + 1, y + h / 3, w - 2, 1, r, g, b, a);
     html_view_fill_rect(x + 1, y + h * 2 / 3, w - 2, 1, r, g, b, a);
@@ -5163,7 +5560,6 @@ static void draw_speedtest_widgets(void)
     int x, y, w, h;
     html_view_set_clip_top(26);
     if (html_view_rect("#st-gauge-dial", &x, &y, &w, &h)) {
-        const int dark = !g_theme;
         double cur = speedtest_display_mbps();
         double scale = speedtest_display_peak_mbps();
         int pct = speedtest_pct(cur, scale);
@@ -5186,36 +5582,36 @@ static void draw_speedtest_widgets(void)
             (int)(basey - py * half + 0.5)
         };
         char num[32];
-        const int outer_r = dark ? 0x0b : 0xd9;
-        const int outer_g = dark ? 0x12 : 0xf0;
-        const int outer_b = dark ? 0x1b : 0xf6;
-        const int inner_r = dark ? 0x12 : 0xf7;
-        const int inner_g = dark ? 0x20 : 0xfc;
-        const int inner_b = dark ? 0x2e : 0xfe;
-        const int track_r = dark ? 0x34 : 0xc0;
-        const int track_g = dark ? 0x43 : 0xd8;
-        const int track_b = dark ? 0x51 : 0xe2;
-        const int tick_r = dark ? 0xd8 : 0x3d;
-        const int tick_g = dark ? 0xe5 : 0x58;
-        const int tick_b = dark ? 0xee : 0x65;
-        const int num_r = dark ? 0xff : 0x18;
-        const int num_g = dark ? 0xff : 0x33;
-        const int num_b = dark ? 0xff : 0x42;
-        const int unit_r = dark ? 0x9f : 0x68;
-        const int unit_g = dark ? 0xb4 : 0x7f;
-        const int unit_b = dark ? 0xc5 : 0x8b;
-        const int hub_outer_r = dark ? 0xf4 : 0x18;
-        const int hub_outer_g = dark ? 0xf7 : 0x33;
-        const int hub_outer_b = dark ? 0xfb : 0x42;
-        const int hub_inner_r = dark ? 0x12 : 0xf7;
-        const int hub_inner_g = dark ? 0x20 : 0xfc;
-        const int hub_inner_b = dark ? 0x2e : 0xfe;
+        const int outer_r = 0x0b;
+        const int outer_g = 0x12;
+        const int outer_b = 0x1b;
+        const int inner_r = 0x12;
+        const int inner_g = 0x20;
+        const int inner_b = 0x2e;
+        const int track_r = 0x34;
+        const int track_g = 0x43;
+        const int track_b = 0x51;
+        const int tick_r = 0xd8;
+        const int tick_g = 0xe5;
+        const int tick_b = 0xee;
+        const int num_r = 0xff;
+        const int num_g = 0xff;
+        const int num_b = 0xff;
+        const int unit_r = 0x9f;
+        const int unit_g = 0xb4;
+        const int unit_b = 0xc5;
+        const int hub_outer_r = 0xf4;
+        const int hub_outer_g = 0xf7;
+        const int hub_outer_b = 0xfb;
+        const int hub_inner_r = 0x12;
+        const int hub_inner_g = 0x20;
+        const int hub_inner_b = 0x2e;
 
         pm_disc(cx, cy, rad, outer_r, outer_g, outer_b, 255);
         pm_disc(cx, cy, rad - 5, inner_r, inner_g, inner_b, 255);
         pm_arc(cx, cy, rad - 12, rad - 20, -30, 210, track_r, track_g, track_b);
         if (pct > 0)
-            pm_arc(cx, cy, rad - 12, rad - 20, (int)(210.0 - 240.0 * pct / 100.0), 210, 0x2f, 0xb8, 0xc9);
+            pm_arc(cx, cy, rad - 12, rad - 20, (int)(210.0 - 240.0 * pct / 100.0), 210, RGB3(theme_a()));
         for (int i = 0; i <= 10; i++) {
             double a = (210.0 - 240.0 * i / 10.0) * PM_PI / 180.0;
             double tx = cos(a), ty = -sin(a);
@@ -5230,9 +5626,95 @@ static void draw_speedtest_widgets(void)
         draw_center_text_px(cx, cy + 38, num, 28, 1, num_r, num_g, num_b, 255);
         draw_center_text_px(cx, cy + 62, "Mbps", 12, 0, unit_r, unit_g, unit_b, 255);
     }
-    st_draw_one_chart("#st-chart-dl", g_st_dl_hist, g_st_dl_n, 0x2f, 0xb8, 0xc9);
-    st_draw_one_chart("#st-chart-ul", g_st_ul_hist, g_st_ul_n, 0xe7, 0xa3, 0x3b);
+    st_draw_one_chart("#st-chart-dl", g_st_dl_hist, g_st_dl_n, RGB3(theme_a()));
+    st_draw_one_chart("#st-chart-ul", g_st_ul_hist, g_st_ul_n, RGB3(theme_b()));
     html_view_set_clip_top(0);
+}
+
+/* ---- pulled sheets: open/close with a vertical slide ---- */
+#define EDGE_ZONE_PX 30      /* status bar / page-dot strip a sheet pull starts on */
+#define EDGE_PULL_PX 60      /* vertical travel that commits a sheet pull */
+static const int g_panel_rot = 1;   /* the panel is mounted upside down (html_view_init) */
+static uint16_t g_slide_a[320 * 480], g_slide_b[320 * 480];
+
+/* Copy logical row r of src (a full-frame snapshot) to logical row dst_r of the fb. */
+static void slide_row(drm_disp_t *d, const uint16_t *src, int r, int dst_r)
+{
+    int H = d->height, pr = g_panel_rot ? H - 1 - r : r, pd = g_panel_rot ? H - 1 - dst_r : dst_r;
+    memcpy(d->fb + (size_t)pd * d->pitch_px, src + (size_t)pr * d->pitch_px, (size_t)d->pitch_px * 2);
+}
+
+/* Slide between two frames: `over` moves in (opening) or out (closing) from
+ * the top (from_top) or the bottom edge, `under` stays put beneath it. */
+#define SHEET_SLIDE_MS 220
+
+static void sheet_slide(drm_disp_t *d, const uint16_t *over, const uint16_t *under, int from_top, int opening)
+{
+    const int H = d->height;
+    uint32_t t0 = millis();
+    for (;;) {
+        /* as many frames as the panel takes in SHEET_SLIDE_MS, eased out */
+        float t = (float)(millis() - t0) / SHEET_SLIDE_MS;
+        if (t > 1.f) t = 1.f;
+        int vis = (int)(H * (1.f - (1.f - t) * (1.f - t) * (1.f - t)) + .5f);
+        if (!opening) vis = H - vis;                          /* visible rows of `over` */
+        for (int r = 0; r < H; r++) {
+            int in_over = from_top ? r < vis : r >= H - vis;
+            if (in_over) slide_row(d, over, from_top ? r + H - vis : r - (H - vis), r);
+            else         slide_row(d, under, r, r);
+        }
+        drm_disp_dirty(d, 0, 0, d->width - 1, H - 1);
+        if (t >= 1.f) break;
+    }
+}
+
+static void sheet_snapshot(drm_disp_t *d, uint16_t *dst)
+{
+    if ((size_t)d->pitch_px * d->height > 320 * 480) return;
+    memcpy(dst, d->fb, (size_t)d->pitch_px * d->height * 2);
+}
+
+static void render(drm_disp_t *disp, const char *path);
+static void maybe_dump_fb(drm_disp_t *d);
+
+/* A vertical pull that started on an edge strip (sy) and travelled dy. On a
+ * top-level page: down from the top opens the control center, up from the
+ * bottom opens the SMS list; inside a sheet the reverse pull closes it.
+ * Returns 1 when the pull was used. */
+static int sheet_edge_pull(drm_disp_t *d, int sy, int dy)
+{
+    const int H = d->height;
+    int from_top = sy <= EDGE_ZONE_PX, from_bottom = sy >= H - EDGE_ZONE_PX;
+    int which = 0, closing = 0;
+
+    if (dy >= EDGE_PULL_PX && from_top) {
+        if (g_sheet == SHEET_SMS) closing = 1;
+        else if (!g_subpage[0]) which = SHEET_CONTROL;
+    } else if (dy <= -EDGE_PULL_PX && from_bottom) {
+        if (g_sheet == SHEET_CONTROL) closing = 1;
+        else if (!g_subpage[0]) which = SHEET_SMS;
+    }
+    if (!which && !closing) return 0;
+
+    sheet_snapshot(d, g_slide_a);                 /* frame on screen now */
+    g_render_quiet = 1;                           /* the next frame only feeds the slide */
+    if (closing) {
+        int was = g_sheet;
+        subpage_close();
+        render(d, active_page_path());
+        sheet_snapshot(d, g_slide_b);             /* page underneath */
+        g_render_quiet = 0;
+        sheet_slide(d, g_slide_a, g_slide_b, was == SHEET_CONTROL, 0);
+    } else {
+        if (!subpage_open(which == SHEET_CONTROL ? "control.html" : "sms.html")) { g_render_quiet = 0; return 0; }
+        g_sheet = which;
+        render(d, active_page_path());
+        sheet_snapshot(d, g_slide_b);             /* the sheet */
+        g_render_quiet = 0;
+        sheet_slide(d, g_slide_b, g_slide_a, which == SHEET_CONTROL, 1);
+    }
+    maybe_dump_fb(d);                             /* the slide ends on the rendered frame */
+    return 1;
 }
 
 static void capture_fb(drm_disp_t *d);   /* fwd: fb snapshot for modal overlay */
@@ -5274,8 +5756,12 @@ static void render(drm_disp_t *disp, const char *path)
                  g_render_html_cache_len == html_len &&
                  !strcmp(g_render_html_cache_path, path) &&
                  !strncmp(g_render_html_cache, html, html_len);
+    size_t fb_px = (size_t)disp->pitch_px * disp->height;
+    if (fb_px > sizeof g_render_base / sizeof g_render_base[0]) reuse = cacheable = 0;
     html_view_set_scroll(scroll);
-    if (!reuse) {
+    if (reuse) {
+        memcpy(disp->fb, g_render_base, fb_px * sizeof(uint16_t));
+    } else {
         g_page_h = html_view_render_html(html);
         if (cacheable) {
             memcpy(g_render_html_cache, html, html_len + 1);
@@ -5286,11 +5772,14 @@ static void render(drm_disp_t *disp, const char *path)
             g_render_html_cache_sms_open = g_sms_open;
             g_render_html_cache_lock = g_lock_state;
             g_render_html_cache_css_mtime = css_mtime;
+            memcpy(g_render_base, disp->fb, fb_px * sizeof(uint16_t));
         } else {
             invalidate_render_html_cache();
         }
     }
     draw_charts();      /* native polylines into any #chart-* placeholders */
+    draw_dials();       /* gauges, home ring and icons into their placeholders */
+    draw_func_icons();  /* function-list icons */
     if (!g_lock_state && (is_speedtest || g_st_home_open)) draw_speedtest_widgets();
     draw_native_statusbar();
     draw_sms_icon();    /* native envelope in the status bar when unread SMS */
@@ -5307,7 +5796,8 @@ static void render(drm_disp_t *disp, const char *path)
         capture_fb(disp);
         render_sms_overlay(disp, 0);
     }
-    drm_disp_dirty(disp, 0, 0, disp->width - 1, disp->height - 1);
+    if (g_render_quiet) return;
+    drm_disp_present(disp, 0, disp->height - 1);
     maybe_dump_fb(disp);
 }
 
@@ -5400,30 +5890,66 @@ static void render_page_to_pair_buf(uint16_t *buf, const char *path, const char 
     html_view_render_to_scroll(buf, html, scroll);
     html_view_target_begin(buf, scroll);
     draw_charts();
+    draw_dials();
+    draw_func_icons();
     if (!g_lock_state && (path_is_speedtest(path) || g_st_home_open)) draw_speedtest_widgets();
     draw_native_statusbar();
     draw_sms_icon();
     html_view_target_end();
 }
 
-static void prep_pair(int target, int dir)
+/* The current page for a swipe is the frame on screen (unrotated), unless a
+ * dialog or toast covers it; only the target page needs rendering, so the
+ * page follows the finger sooner. */
+static void prep_current(const drm_disp_t *d, uint16_t *buf)
 {
-    const char *h;
+    const int W = d->width, H = d->height;
+    if (g_modal || g_sms_open >= 0 || g_toast[0] || W * H > 320 * 480) {
+        html_view_set_scroll(g_scroll);
+        render_page_to_pair_buf(buf, g_pages[g_cur], page_html(g_pages[g_cur]), g_scroll);
+        return;
+    }
+    for (int y = 0; y < H; y++) {
+        const uint16_t *sp = d->fb + (size_t)(H - 1 - y) * d->pitch_px + (W - 1);
+        uint16_t *dp = buf + (size_t)y * W;
+        for (int x = 0; x < W; x++) dp[x] = *sp--;
+    }
+}
+
+/* The target page as it shows once it is current (its page dot lit). */
+static void prep_target(uint16_t *buf, int target)
+{
+    int cur = g_cur;
+    g_cur = target;
+    html_view_set_scroll(0);
+    render_page_to_pair_buf(buf, g_pages[target], page_html(g_pages[target]), 0);
+    g_cur = cur;
+}
+
+static void prep_pair(const drm_disp_t *d, int target, int dir)
+{
     if (dir > 0) {   /* next: left=current, right=target */
-        html_view_set_scroll(g_scroll); h = page_html(g_pages[g_cur]);  render_page_to_pair_buf(g_bufA, g_pages[g_cur], h, g_scroll);
-        html_view_set_scroll(0);        h = page_html(g_pages[target]); render_page_to_pair_buf(g_bufB, g_pages[target], h, 0);
+        prep_current(d, g_bufA);
+        prep_target(g_bufB, target);
     } else {         /* prev: left=target, right=current */
-        html_view_set_scroll(0);        h = page_html(g_pages[target]); render_page_to_pair_buf(g_bufA, g_pages[target], h, 0);
-        html_view_set_scroll(g_scroll); h = page_html(g_pages[g_cur]);  render_page_to_pair_buf(g_bufB, g_pages[g_cur], h, g_scroll);
+        prep_current(d, g_bufB);
+        prep_target(g_bufA, target);
     }
     html_view_set_scroll(g_scroll);
 }
 
-/* Settle the offset from o0 to o1 over a few frames. */
+/* Settle the offset from o0 to o1, eased out; the panel paces the frames. */
 static void anim_o(drm_disp_t *d, int o0, int o1)
 {
-    const int FR = 3;
-    for (int f = 1; f <= FR; f++) compose_frame(d, o0 + (o1 - o0) * f / FR);
+    int dist = o1 > o0 ? o1 - o0 : o0 - o1;
+    uint32_t dur = 90 + (uint32_t)dist / 4, t0 = millis();
+    for (;;) {
+        float t = (float)(millis() - t0) / (float)dur;
+        if (t >= 1.f) break;
+        float e = 1.f - (1.f - t) * (1.f - t) * (1.f - t);
+        compose_frame(d, o0 + (int)((float)(o1 - o0) * e + (o1 > o0 ? .5f : -.5f)));
+    }
+    compose_frame(d, o1);
 }
 
 /* Smooth vertical scrolling: the full page is pre-rendered once into g_scrollbuf
@@ -5444,7 +5970,13 @@ static void scroll_blit(drm_disp_t *d, int scroll)
         else     fill_rev_span(dp, 0, W);
     }
     html_view_set_scroll(scroll);
+    /* the page buffer has no native drawings: add them for this window, kept
+     * below the pinned status bar */
+    html_view_set_clip_top(SBAR_H);
     draw_charts();
+    draw_dials();
+    draw_func_icons();
+    html_view_set_clip_top(0);
     if (!g_lock_state && (path_is_speedtest(active_page_path()) || g_st_home_open)) draw_speedtest_widgets();
     /* The native status bar is pinned; dragging only changes the content below it.
      * With the framebuffer rotated 180 degrees, that content maps to the top
@@ -5623,35 +6155,38 @@ static void set_bright_x(int x, int bx, int bw)
     backlight_set(f * m / 100);
 }
 
-/* Screen off: fade backlight down (content still shown) then blank the fb. */
+/* Screen off: backlight to 0 and a black frame. The panel itself stays awake:
+ * on the U60 the touch controller shares the display driver chip, and with the
+ * panel asleep (DPMS off) the touch driver resets the LCD and finally reboots. */
 static void screen_off(drm_disp_t *d)
 {
     backlight_fade_off();
-    invalidate_render_html_cache();
     memset(d->fb, 0, (size_t)d->pitch_px * d->height * sizeof(uint16_t));
     drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
 }
-/* Screen on: render, then "warm up" the command-mode panel with several frame
- * pushes while the backlight is still 0; this drives it past the idle-exit
- * transient invisibly, then fades the backlight up from 0. */
+/* Screen on: render, then "warm up" the command-mode panel with a few more
+ * frame pushes while the backlight is still 0; this drives it past the
+ * idle-exit transient invisibly, then fades the backlight up from 0. Each push
+ * waits for the panel (~33 ms), so the pushes pace themselves. */
+#define SCREEN_ON_WARM_PUSHES 2
+static void screen_warm_up(drm_disp_t *d)
+{
+    for (int k = 0; k < SCREEN_ON_WARM_PUSHES; k++)
+        drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
+}
+
 static void screen_on(drm_disp_t *d, const char *path)
 {
     if (g_charge_boot) render_charge_boot(d);
     else               render(d, path);       /* backlight still 0 from screen_off */
-    for (int k = 0; k < 5; k++) {            /* ~175ms of dark refresh */
-        usleep(35000);
-        drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
-    }
+    screen_warm_up(d);
     backlight_fade_on();   /* 0 -> user level */
 }
 
 static void screen_on_ext(drm_disp_t *d, devui_ext_t *ext)
 {
     render_ext_view(d, ext);                  /* backlight still 0 from screen_off */
-    for (int k = 0; k < 5; k++) {
-        usleep(35000);
-        drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
-    }
+    screen_warm_up(d);
     backlight_fade_on();
 }
 
@@ -5668,7 +6203,7 @@ int main(void)
 
     drm_disp_t disp;
     if (drm_disp_init(&disp) != 0) { fprintf(stderr, "drm init failed\n"); return 1; }
-    html_view_init(disp.fb, disp.width, disp.height, disp.pitch_px, 1, resolve_ui_font());
+    html_view_init(disp.fb, disp.width, disp.height, disp.pitch_px, g_panel_rot, resolve_ui_font());
     html_view_set_uidir(UI_DIR);
 
     touch_input_t touch;
@@ -5694,6 +6229,9 @@ int main(void)
     uint32_t last_motion_frame = 0;
     float scroll_v = 0.0f, scroll_pos = 0.0f;
     int sliding = 0, bar_x = 0, bar_w = 0;   /* brightness slider drag */
+    int edge_pull = 0;                       /* vertical drag that started on an edge strip */
+    int lock_holding = 0;                    /* finger down on the locked preview */
+    uint32_t lock_down_ms = 0;
     int segging = 0, seg_x = 0, seg_y = 0, seg_w = 0, seg_h = 0;   /* segmented control drag */
     int seg_which = 0, seg_n = 4;   /* 1 = net mode, 2 = auto-off, 3 = refresh */
     const int W = disp.width, H = disp.height;
@@ -5728,10 +6266,10 @@ int main(void)
     if (g_saved_bright >= 0) backlight_set(g_saved_bright);   /* restore brightness */
     if (!g_charge_boot) {
         load_pin();
-        wifi_aux_refresh();                   /* prime page-2 switch states */
+        aux_start();                          /* page-2 switch states etc., off this thread */
         if (usb_pid_is("9057") || usb_pid_is("90b1") || usb_pid_is("90B1"))
             usb_net_watchdog_start();
-        if (lock_enabled()) enter_lock(0);   /* boot straight into the unlock pad */
+        enter_lock(0);                        /* boot into the locked preview */
         render(&disp, CUR_PATH);
     } else {
         render_charge_boot(&disp);
@@ -5777,7 +6315,7 @@ int main(void)
             scroll_inertia = 0; scroll_track_valid = 0; scroll_v = 0.0f;
             if (backlight_is_on()) {
                 screen_off(&disp);
-                if (!g_charge_boot && lock_enabled()) {
+                if (!g_charge_boot) {
                     if (ext_ok) devui_ext_deactivate(&ext);
                     enter_lock(0);   /* power key locks the screen */
                 }
@@ -5794,6 +6332,11 @@ int main(void)
                 else { devui_ext_deactivate(&ext); need_render = 1; }
             } else if (g_charge_boot) {
                 if (!backlight_is_on()) screen_on(&disp, NULL);
+            } else if (g_lock_state == 1 && !lock_enabled()) {   /* no PIN: the key unlocks */
+                g_lock_state = 0; g_lock_hold = 0;
+                menu = 1; g_pwr_confirm = 0;
+                if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
+                else need_render = 1;
             } else if (g_lock_state) {               /* no power menu while locked */
                 if (!backlight_is_on()) screen_on(&disp, CUR_PATH);
             } else {
@@ -5837,15 +6380,35 @@ int main(void)
             pressed = 0;
             scroll_inertia = 0; scroll_track_valid = 0; scroll_v = 0.0f;
         } else if (g_lock_state == 1) {
-            /* locked preview: page 1 with live data, no actions. A swipe in any
-             * direction opens the PIN pad. */
-            if (pressed && !prev_press) { down_x = x; down_y = y; }
-            else if (pressed && prev_press) {
+            /* locked preview: page 1 with live data, no actions (see enter_lock) */
+            if (pressed && !prev_press) {
+                down_x = x; down_y = y; lock_down_ms = now; lock_holding = 1;
+            } else if (pressed && prev_press && lock_holding) {
                 int dx = x - down_x, dy = y - down_y;
+                uint32_t need = lock_enabled() ? LOCK_PAD_HOLD_MS : LOCK_HOLD_MS;
+                uint32_t held = now - lock_down_ms;
                 if (dx * dx + dy * dy > 22 * 22) {
-                    g_lock_state = 3; g_pin_entry[0] = 0; g_lock_err = 0; g_scroll = 0;
+                    lock_holding = 0;                /* a swipe: opens the pad, never unlocks */
+                    g_lock_hold = 0;
+                    if (lock_enabled()) { g_lock_state = 3; g_pin_entry[0] = 0; g_lock_err = 0; g_scroll = 0; }
                     need_render = 1;
+                } else if (held >= need) {
+                    lock_holding = 0;
+                    g_lock_hold = 0;
+                    if (lock_enabled()) { g_lock_state = 3; g_pin_entry[0] = 0; g_lock_err = 0; }
+                    else g_lock_state = 0;
+                    g_scroll = 0;
+                    touch_input_clear_taps(&touch);  /* the holding finger must not tap on release */
+                    need_render = 1;
+                } else if (motion_frame_due(now, &last_motion_frame)) {
+                    g_lock_hold = (int)(held * 100 / need);
+                    render(&disp, CUR_PATH);
+                    animating = 1;
                 }
+            } else if (!pressed && prev_press) {
+                lock_holding = 0;
+                if (g_lock_hold) { g_lock_hold = 0; need_render = 1; }
+                touch_input_clear_taps(&touch);
             }
         } else if (g_lock_state) {
             /* PIN pad (3=unlock / 2=setup): tap only, no confirm key; a 4th digit
@@ -6038,7 +6601,11 @@ int main(void)
                     int qdx = ex - sx, qdy = ey - sy;
                     int qadx = qdx < 0 ? -qdx : qdx;
                     int qady = qdy < 0 ? -qdy : qdy;
-                    if (!g_subpage[0] && g_npages > 1 && qadx >= QUEUED_SWIPE_PX && qadx > qady) {
+                    if (qady >= qadx && sheet_edge_pull(&disp, sy, qdy)) {
+                        queued_motion = 1;
+                        animating = 1;
+                        touch_input_clear_taps(&touch);
+                    } else if (!g_subpage[0] && g_npages > 1 && qadx >= QUEUED_SWIPE_PX && qadx > qady) {
                         int dir = qdx < 0 ? 1 : -1;
                         int target = (g_cur + (dir > 0 ? 1 : g_npages - 1)) % g_npages;
                         int o_now = dir > 0 ? -qdx : (W - qdx);
@@ -6047,7 +6614,7 @@ int main(void)
                         scroll_inertia = 0;
                         scroll_track_valid = 0;
                         scroll_v = 0.0f;
-                        prep_pair(target, dir);
+                        prep_pair(&disp, target, dir);
                         anim_o(&disp, o_now, dir > 0 ? W : 0);
                         g_cur = target;
                         g_scroll = 0;
@@ -6147,11 +6714,14 @@ int main(void)
                 else {
                 int dx = x - down_x, dy = y - down_y;
                 int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
-                if (drag_dir == 0 && scroll_dir == 0) {
-                    if (!g_subpage[0] && g_npages > 1 && adx > DRAG_START_PX && adx > ady) {
+                if (drag_dir == 0 && scroll_dir == 0 && !edge_pull) {
+                    if (ady > DRAG_START_PX && ady >= adx &&
+                        (down_y <= EDGE_ZONE_PX || down_y >= H - EDGE_ZONE_PX)) {
+                        edge_pull = 1;              /* decided on release: sheet open / close */
+                    } else if (!g_subpage[0] && g_npages > 1 && adx > DRAG_START_PX && adx > ady) {
                         drag_dir = dx < 0 ? 1 : -1;
                         drag_target = (g_cur + (drag_dir > 0 ? 1 : g_npages - 1)) % g_npages;
-                        prep_pair(drag_target, drag_dir);
+                        prep_pair(&disp, drag_target, drag_dir);
                     } else if (ady > DRAG_START_PX && ady >= adx && maxs > 0) {
                         scroll_dir = 1; scroll_start = g_scroll;
                         int bufh = g_page_h > SCROLLMAX ? SCROLLMAX : g_page_h;  /* prerender once */
@@ -6195,11 +6765,17 @@ int main(void)
             }
             else if (!pressed && prev_press) {
                 int rel_dx = x - down_x, rel_dy = y - down_y;
-                int release_was_tap = dragging && !sliding && !segging &&
+                int release_was_tap = dragging && !sliding && !segging && !edge_pull &&
                                       drag_dir == 0 && scroll_dir == 0 &&
                                       rel_dx * rel_dx + rel_dy * rel_dy <= 14 * 14;
                 int dx = rel_dx;
-                if (sliding) { save_conf(); /* persist brightness after drag */ }
+                if (edge_pull) {
+                    if (dragging && !menu && sheet_edge_pull(&disp, down_y, rel_dy)) {
+                        touch_input_clear_taps(&touch);
+                        animating = 1;
+                    }
+                }
+                else if (sliding) { save_conf(); /* persist brightness after drag */ }
                 else if (segging) {   /* snap to nearest cell + apply */
                     int c = clampi((x - seg_x) * seg_n / (seg_w > 0 ? seg_w : 1), 0, seg_n - 1);
                     if (seg_which == 1) {
@@ -6221,7 +6797,10 @@ int main(void)
                 }
                 else if (dragging && drag_dir != 0) {            /* finish or snap back */
                     int adx = dx < 0 ? -dx : dx;
-                    int commit = adx > W * 30 / 100;
+                    uint32_t held = now - drag_down_ms;
+                    /* far enough, or a quick flick the way the drag went */
+                    int commit = adx > W * 30 / 100 ||
+                                 (adx >= 24 && held < 300 && (dx < 0) == (drag_dir > 0));
                     int o_now = drag_dir > 0 ? -dx : (W - dx);
                     if (o_now < 0) o_now = 0; if (o_now > W) o_now = W;
                     anim_o(&disp, o_now, drag_dir > 0 ? (commit ? W : 0) : (commit ? 0 : W));
@@ -6298,7 +6877,13 @@ int main(void)
                             last_act = now;
                             need_render = 1;
                         }
-                        else if (!strcmp(a, "theme"))     { g_theme = !g_theme; save_conf(); need_render = 1; }
+                        else if (!strcmp(a, "theme")) {
+                            g_theme = (g_theme + 1) % NTHEMES;
+                            save_conf();
+                            snprintf(g_toast, sizeof g_toast, "主题：%s", g_themes[g_theme].name);
+                            g_toast_until = now + 1600;
+                            need_render = 1;
+                        }
                         else if (!strcmp(a, "revealkey")) { g_show_key = !g_show_key; need_render = 1; }
                         else if (!strcmp(a, "revealcell")) { g_show_cellid = !g_show_cellid; need_render = 1; }
                         else if (!strcmp(a, "revealimei")) { g_show_imei = !g_show_imei; need_render = 1; }
@@ -6622,7 +7207,7 @@ action_done:
                 if (!replay_release)
                     touch_input_drop_replayed_release(&touch, release_was_tap);
                 last_motion_frame = 0;
-                dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0; g_segdrag = 0;
+                dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0; g_segdrag = 0; edge_pull = 0;
                 scroll_track_valid = 0;
             }
         }
@@ -6642,10 +7227,16 @@ action_done:
         /* auto screen-off after the configured idle timeout (locks if enabled) */
         if (g_autooff_ms > 0 && backlight_is_on() && now - last_act >= (uint32_t)g_autooff_ms) {
             screen_off(&disp);
-            if (lock_enabled()) {
-                if (ext_ok) devui_ext_deactivate(&ext);
-                enter_lock(0);
-            }
+            if (ext_ok) devui_ext_deactivate(&ext);
+            enter_lock(0);
+        }
+        /* never sleeping: still lock after a minute untouched */
+        if (g_autooff_ms == 0 && !g_lock_state && backlight_is_on() &&
+            now - last_act >= LOCK_IDLE_MS) {
+            if (ext_ok) devui_ext_deactivate(&ext);
+            menu = 0;
+            enter_lock(0);
+            need_render = 1;
         }
 
         /* periodic clock/state check (not mid-drag). refresh=0 pauses promotion of
@@ -6680,7 +7271,10 @@ action_done:
         }
 
         /* reconcile page-2 WiFi switch states from uci/iw on a slow throttle */
-        if (!dragging && !scroll_inertia && now - g_wifi_aux_at >= 4000) { g_wifi_aux_at = now; wifi_aux_refresh(); }
+        if (g_aux_started) {
+            aux_apply();
+            if (backlight_is_on() != g_aux_awake) aux_set_awake(backlight_is_on());
+        }
         if (!g_charge_boot && data_backend_generation() != datad_generation) {
             /* new datad connection (first contact or a restarted datad) */
             datad_generation = data_backend_generation();

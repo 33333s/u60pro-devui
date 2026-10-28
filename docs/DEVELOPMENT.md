@@ -43,11 +43,12 @@ ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u
 
 当前顶层页（左右滑动，底部圆点指示；`menu.html` 为电源长按覆盖层）。**页面按文件名编号排序**；v1.2.9 起 WiFi、短信、信令读取、锁频和测速收进“更多功能”二级页，减少顶层横滑页数。给页面改名/删页仍然会触发「插件更新残留」坑，见版本机制一节。
 
-- **01-signal.html — 信号**：状态栏；运营商 + 制式，右上角 QCI/AMBR；按载波分卡片（`频段·频宽 / EARFCN / PCI / RSRP / SINR`，按质量上色、未激活置灰）。当 datad 输出 `net.HSR=true` 时，主信号卡片会切换为紫色高铁模式并显示“高铁模式”；`mcc == 460` 且载波 `EARFCN/ARFCN` 命中高铁专网白名单 `507150, 527070, 531390, 153370, 505230, 627744, 634464, 423630` 时，单个 LTE/NR 载波卡片会染紫并标注“高铁专网”。真正 `HSR` 仍以 datad 信令确认为准。表头随组网模式（`5G SA / 5G NSA / EN-DC / 4G`）变化并显示 `L LTE + M NR 载波 · 总X MHz`。
+- **00-home.html — 首页**：U30 Pro 式时钟页。大号时钟和日期、绕时钟的电量环（原生绘制）、制式胶囊 + 信号格 + 运营商、上下行速率、Wi-Fi 设备数和电量，底部是本次流量和运行时间；锁屏预览显示这一页。
+- **01-signal.html — 信号**：状态栏；顶部 RSRP / SINR 圆弧表盘（原生绘制；SA 显示 NR，纯 LTE 显示 LTE，NSA / EN-DC 两排都显示）；运营商 + 制式，右上角 QCI/AMBR；按载波分卡片（`频段·频宽 / EARFCN / PCI / RSRP / SINR`，按质量上色、未激活置灰）。当 datad 输出 `net.HSR=true` 时，主信号卡片会切换为紫色高铁模式并显示“高铁模式”；`mcc == 460` 且载波 `EARFCN/ARFCN` 命中高铁专网白名单 `507150, 527070, 531390, 153370, 505230, 627744, 634464, 423630` 时，单个 LTE/NR 载波卡片会染紫并标注“高铁专网”。真正 `HSR` 仍以 datad 信令确认为准。表头随组网模式（`5G SA / 5G NSA / EN-DC / 4G`）变化并显示 `L LTE + M NR 载波 · 总X MHz`。
 - **02-functions.html — 更多功能**：进入 WiFi、短信、信令读取、锁频和可选测速二级页；同时扫描 `ui/functions/*.html` 作为用户自定义入口。
 - **ui/subpages/*.html — 二级页**：`wifi.html`、`sms.html`、`cell.html`、`lock.html`、`speedtest.html` 通过 `act:sub:<文件名>` 打开，统一用 `act:backfunc` 返回。
 - **05-charts.html — 图表**：CPU 占用+温度 / 内存 / 网速 / 电池(功率+温度) 四张原生折线图。
-- **06-system.html — 系统/设置**：CPU/内存占用、温度、充电器/电池电压电流、版本号、IMEI(打码)、QCI/AMBR 缓存；屏幕亮度滑条、自动息屏分段控件、锁屏 / 电源直供电(DPS) / USB-C 供电方向 / USB 网络共享 / 速率单位 / 主题 开关，并提供“刷新 AMBR 缓存”按钮。可竖向滚动。
+- **06-system.html — 系统/设置**：CPU/内存占用、温度、充电器/电池电压电流、版本号、IMEI(打码)、QCI/AMBR 缓存；屏幕亮度滑条、自动息屏分段控件、锁屏 / 电源直供电(DPS) / USB-C 供电方向 / USB 网络共享 / 速率单位 / 主题（四套强调色循环切换）设置，并提供“刷新 AMBR 缓存”按钮。可竖向滚动。
 - **lockscreen.html — 锁屏键盘**：特殊页（同 `menu.html`，不计入翻页）。开启锁屏后由宿主在 `g_lock_state` 非 0 时全屏显示，4 位 PIN 数字键盘 + 删除键。状态栏（含未读短信信封图标）一并显示。详见下方「屏幕锁（PIN）」。
 - **menu.html — 电源菜单**：电源键长按弹出。三个竖排大圆形按键（关机/重启/取消），圆盘和图标原生绘制，下方文字标签，二次确认。详见下方「电源菜单（原生圆形按键）」。
 
@@ -89,11 +90,20 @@ ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u
 
 运营商按 MCC=460 + MNC 区分：移动 0/2/4/7/8，联通 1/6/9，电信 3/5/11，广电 15。
 
-### 电池与充电闪电
+### 状态栏与电池
 
-电池图标用 CSS 画（圆角边框 + 右侧正极小凸点 `.tip` + 绿色填充，低电量转红）。充电时**不再**用流光动画（已移除半透明 `.glow` 扫光与加速刷新），改为充电时由宿主**原生绘制一个闪电**叠在电池上：`draw_batt_bolt()` 用 `html_view_rect("#batt")` 取电池框，按归一化顶点用 `html_view_fill_poly`（扫描线多边形填充）画一个比电池略高的闪电（上下各凸出几像素、仍在 26px 状态栏内），颜色随主题黑/白。litehtml/字体画不出可靠的闪电，所以走原生。
+状态栏整条由宿主原生绘制（`draw_native_statusbar()`），页面里的 `{{STATUSBAR}}` 只是 26px 的占位。左边是时间（有未读短信时后面跟信封）；右边从右往左依次为：
 
-> 翻页时状态栏被钉住（见下「翻页与状态栏」），闪电在 `compose_frame` 合成每帧后补画一次，所以横滑全程都在。
+- **电池**：抗锯齿圆角描边加正极凸点，内部按电量填充。充电时绿色，低电量（≤20%）红色，其余白色。
+- **百分比**：放在电池外面，15px。不再把字压在电池填充上，任何电量下都看得清。可在系统页关闭。
+- **充电闪电**：充电时画在百分比左边。
+- **信号格**：4 格信号条（`signal_level` 的 0..5 级折算），左边是制式 14px。
+
+状态栏不显示速率，速率在首页和图表页看。
+
+状态栏底部有一条很淡的分隔线。字号都不小于 14px，也不用"错位重画"的假粗体：小字号笔画只有一像素宽，再这样加粗会发虚。
+
+> 翻页时状态栏被钉住（见下「翻页与状态栏」）。
 
 ## 数据模型（`zwrt-datad` 快照）
 
@@ -142,7 +152,7 @@ ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u
 - **息屏/亮屏带背光淡入淡出**（`backlight.c`）：息屏从当前亮度平滑降到 1 再写 0；亮屏从 0 渐亮到熄屏前亮度。时长按亮度比例缩放（满亮度各约 0.125s）。
   - 淡变只改实时背光，**不动记忆的用户亮度**——`backlight_get()` 返回 `s_on_level`（用户设定值），所以第五页亮度滑条不会跟着动画跳。
   - 用**真实时钟**控时（写背光 sysfs 较慢，按"步数×sleep"会严重超时）。
-  - 息屏后照例 memset 黑 + DIRTYFB（防手电筒下残影）。亮屏时先在背光为 0 时把命令模式面板"热身"几帧，避开退出 idle 的瞬态闪烁（中高亮度已无闪）。
+  - 息屏：背光约 60 ms 渐暗到 0，之后 memset 黑 + DIRTYFB（防手电筒下残影）。亮屏：背光为 0 时先排版推一帧，再"热身"推 2 帧（每帧等面板约 33 ms，不另外 sleep），避开命令模式面板退出 idle 的瞬态闪烁，然后 10 ms 最低档软启动、约 40 ms 渐亮。实测从松开电源键算起，熄屏约 90 ms，亮屏约 160 ms 开始亮、约 230 ms 到设定亮度（原来分别是约 150 ms 和约 420/515 ms）。
   - **遗留**：极低亮度/偶发息屏的轻微闪，是背光升压电路冷启动/关断的硬件瞬态（"连续按丝滑、单次按才闪"即此）——纯软件难根除，因为"真息屏"就得把背光写 0、boost 断电。
 
 ### 屏幕锁（PIN）
@@ -151,9 +161,10 @@ ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u
 
 - **状态**：`g_pin`（已设密码，`""`=未启用）、`g_lock_state`（0 正常 / 1 锁屏首页预览 / 2 设置 PIN 键盘 / 3 解锁 PIN 键盘）、`g_pin_entry`（当前已输入）、`g_lock_err`（显示「密码错误」）。`CUR_PATH` 在 `g_lock_state == 1` 时复用 `g_pages[0]` 作为只读预览，在 `g_lock_state == 2/3` 时指向 `lockscreen.html`，并覆盖电源菜单与普通页。
 - **持久化**：PIN 存 `/data/plugins/u60pro-devui/ui/.lockpin`（点文件，`UI_DIR` 必存在、不被 `adb push *.html` 覆盖）。`load_pin/save_pin/clear_pin`。**开机若已设密码直接进入解锁键盘**。忘记密码 `adb shell rm /data/plugins/u60pro-devui/ui/.lockpin`。
-- **触发锁屏**：`screen_off` 的两个入口——电源键短按、自动息屏超时——之后若 `lock_enabled()` 即 `enter_lock(0)` 进入首页预览。开机同理。预览态显示实时第一页和原生锁图标，滑动任意方向才进入解锁 PIN 键盘。
+- **触发锁屏**（照 U30 Pro，设不设密码都锁）：开机、`screen_off` 的两个入口（电源键短按、自动息屏超时）、以及自动息屏为“关”时 `LOCK_IDLE_MS`（60 s）无触摸，都会 `enter_lock(0)` 进入首页预览。预览态显示实时第一页、隐藏页点，底部原生绘制“长按解锁”/“滑动输入密码”胶囊。
+- **解锁**：没设密码时只有按住不动 `LOCK_HOLD_MS`（600 ms）才解锁，按住期间胶囊按 `g_lock_hold` 进度填色；点按、滑动都无效，抬手时清空 tap 队列，解锁那一下不会落到下面的页面。长按电源键直接解锁并打开电源菜单。设了密码时滑动超过 22 px 或按住 `LOCK_PAD_HOLD_MS`（450 ms）打开解锁 PIN 键盘。
 - **键盘交互**（主循环 `g_lock_state` 分支，仅处理 tap）：`act:pin:<0-9>` 累加，满 4 位**自动提交**（无确认键）；设置键盘存盘并开启，解锁键盘比对——正确 `g_lock_state=0` 回到界面，错误置 `g_lock_err` 并清空。`act:pin:del` 退格，`act:lockcancel` 放弃设置。
-- 第五页 `act:locktoggle`：开→关 `clear_pin()`；关→开 `enter_lock(1)` 进设置键盘（输满 4 位才真正开启）。锁定时电源键长按不再开电源菜单。首页预览态会隐藏 `网络测速` 入口、内嵌面板和测速原生控件，但后台测速检测继续轮询，解锁后仍能立刻显示正确状态。
+- 第五页 `act:locktoggle`：开→关 `clear_pin()`；关→开 `enter_lock(1)` 进设置键盘（输满 4 位才真正开启）。设了密码时，锁定状态下电源键长按不开电源菜单。首页预览态会隐藏 `网络测速` 入口、内嵌面板和测速原生控件，但后台测速检测继续轮询，解锁后仍能立刻显示正确状态。
 - **键盘布局**：litehtml 无 grid，用 `.kprow` 居中 + `.kpcell` 行内块（inline-block）等宽，按键也是 inline-block（圆角能被裁切，见下「圆角」教训）；「密码错误」是 `{{LOCKMSG}}` 生成的绝对居中红气泡（屏幕中央）。
 
 ### 触摸事件锁存（`touch_input.c`）
@@ -185,7 +196,7 @@ litehtml 没有 canvas/SVG/滚动/圆角绘制，这些都由宿主补：
 - **圆角填充/描边**：容器的 `draw_solid_fill`/`draw_borders` **原本直接画矩形、忽略 `border-radius`**，所以整个 UI 的圆角在设备上一直没真出现。现 `draw_solid_fill` 在有半径时走 `fill_rounded`（按四角半径跳过圆弧外像素），`draw_borders` 在「四边等宽同色 + 有半径」时走 `stroke_rounded`（内外两个圆角形之差）。卡片/开关/按钮/电池框终于真圆角。
 - **多边形填充**：`html_view_fill_poly`（扫描线奇偶规则）画 litehtml/CSS 画不出的形状，如充电闪电。
 - **整页高度**：`document::render()` **返回的是内容宽度不是高度**（坑！），用 `root()->get_placement().height` 拿真实高度，否则滚动永远不触发。
-- **竖向滚动**：`doc->draw(0,0,-scrollY)` 上移内容；点击命中按 `y+scroll` 修正。拖动时预渲染整页到缓冲、每帧窗口贴图。滚动帧只搬动 26px 状态栏下方的内容区，固定状态栏沿用上一帧，不要在每帧滚动中重复画状态栏原生图标。`menu.html`、`lockscreen.html` 是全屏特殊页，渲染时必须强制 `scroll=0`，否则会继承当前长页面滚动偏移，出现电源菜单被卷到屏幕外的问题。
+- **竖向滚动**：`doc->draw(0,0,-scrollY)` 上移内容；点击命中按 `y+scroll` 修正。拖动时预渲染整页到缓冲、每帧窗口贴图。滚动帧只搬动 26px 状态栏下方的内容区，固定状态栏沿用上一帧，不要在每帧滚动中重复画状态栏原生图标。预渲染的缓冲里没有原生图元，所以 `scroll_blit` 每帧都要补画折线、表盘和图标（`draw_charts` / `draw_dials` / `draw_func_icons`），并用 `html_view_set_clip_top(SBAR_H)` 裁在状态栏下方；新加的原生图元要同时加到这里和 `render_page_to_pair_buf`。`menu.html`、`lockscreen.html` 是全屏特殊页，渲染时必须强制 `scroll=0`，否则会继承当前长页面滚动偏移，出现电源菜单被卷到屏幕外的问题。
 - **整页重建与内存水位**：实机排查过一次“手动刷新 AMBR 后内存持续上涨”的问题，结论是 **AMBR 读取本身不是根因**。真正触发上涨的是前端在页面 HTML 发生变化后反复整页重建 `litehtml::document`；如果先创建新文档、再覆盖全局 `g_doc`，旧 DOM 会在新 DOM 分配完成前继续占住内存，musl 下容易把堆高水位一步步抬上去。现已在 `src/html_view.cpp` 的 `html_view_render_html()` / `html_view_render_overlay()` 中先 `g_doc.reset()`，再 `document::createFromString(...)`，实机现象已从“每次刷新继续爬升”收敛为“首次大页面重建有一次性抬升，随后稳定”。后续如果再遇到“某字段一刷新就涨内存”，优先先查是否又走到了未释放旧文档的整页重建路径，而不要先怀疑 `qos/ambr` 解析逻辑。
 - **覆盖层（modal）**：`html_view_render_overlay` 不清屏、在已渲染画面上叠加（body 透明只画弹窗框）；先 `fill_rect` 把页面压暗。二级弹窗交互用整屏快照 + 重绘弹窗层（避免每次重排整页）。
 - **分段控件滑动高亮**：拖动开始整页快照一次，之后每帧在快照上贴一个半透明蓝框跟手；松手吸附到最近格再应用。
@@ -211,7 +222,7 @@ litehtml 没有 canvas/SVG/滚动/圆角绘制，这些都由宿主补：
 ```sh
 bash scripts/_setup_toolchain.sh      # 一次性
 bash scripts/_build_freetype.sh       # → ~/freetype-musl/lib/libfreetype.a
-bash scripts/_build_litehtml.sh       # → ~/litehtml-musl/lib/liblitehtml.a
+bash scripts/_build_litehtml.sh       # → ~/litehtml-musl/lib/liblitehtml.a（先打 scripts/litehtml.patch）
 bash scripts/build.sh                 # → u60pro-devui(.stripped)  即正式 UI 二进制
 ```
 
@@ -240,10 +251,22 @@ DevUI 只连本机 `127.0.0.1:9460`。datad 用 `--lan-bind` 另开 9461 给内�
 - 回退：调用在后台线程执行；只有 datad 不可达或返回 404（旧版本没有该接口/动作）时，才执行原来的本机 `ubus`/`ifconfig` 命令。datad 明确拒绝（400/409/502）时不回退。
 - 仍在本机执行、datad 没有对应接口的：Type-C 供电方向/USB 网络共享（`zwrt_bsp.typec` / `powerbank` 脚本）、开启 ADB 的 `usb_composition 9059`、Wi-Fi 省电（`iw power_save`，datad 的 `wifi.psm.set` 只支持 TopFlow 高级 Wi-Fi）。
 
+## 熄屏
+
+熄屏只关背光并写一帧黑色，面板本身保持唤醒。**不要用 DRM `DPMS` 让面板睡眠**：U60 的触摸控制器（sitronix，I²C 1-0055）和显示驱动在同一颗芯片上，面板一睡触摸就 I²C 报错，
+内核触摸驱动会反复 `TP: RESET LCD`，几次之后整机重启（2026-10-28 实测，`/data/logfs/syslog` 可见）。原厂程序同样只关背光。
+
 ## 测试与 CI
 
 - `sh tests/run_host_tests.sh`：在宿主机原生编译 `data.c`，对着 `tests/mock_datad.py`（按 datad 真实应答格式模拟 `/state`、`/events`、`/control`、`/ubus/call`，`/modem/...` 返回 404）检查 datad 客户端：分块应答解码、拒绝不回退、`null` 字段、邻区回退到 `neighbor.lte`、SSE 重连计数。需要 `cc` 和 `python3`。
 - `.github/workflows/ci.yml`：准备工具链和固定版本的 FreeType/litehtml（`scripts/_setup_ci_deps.sh`），执行 `scripts/build.sh`，确认产物是静态 aarch64 ELF，检查脚本语法，跑上面的宿主机测试，并上传 `u60pro-devui.stripped`。本仓库自己的 PR 和 main/tag 推送跑在自托管 runner（标签 `devui-ci`），fork PR 跑在 GitHub 托管机器。
+
+## 界面预览
+
+`bash tests/ui/preview.sh <输出目录> [主题 0-3] [state.json]` 在 Linux 宿主机上把所有页面（含二级页、电源菜单、锁屏）渲染成 PNG 和一张总览图 `sheet.png`。
+它用宿主机 gcc 编译真正的 `htmlmain.c`（`tests/ui/preview_host.c` 把 `main` 改名后直接包含它），帧缓冲放在内存里，数据来自 `tests/mock_datad.py` 加载的 `tests/ui/sample_state.json`，所以令牌替换、CSS 和原生绘制都和真机走同一条路径。
+FreeType 和 litehtml 按 `scripts/deps-revs.sh` 固定的版本编一次后缓存在 `~/.cache/devui-preview`。需要 gcc/g++、git、带 Pillow 的 python3 和一个中文字体（默认 Noto Sans CJK，可用 `DEVUI_FONT` 指定）；真机字体不同，换行位置可能略有差异。
+CI 也会跑一遍并把 `sheet.png` 作为 `ui-preview` 产物上传。
 
 ## 部署与运行
 
@@ -352,7 +375,29 @@ esac
 
 这块屏更接近命令式显示：`DRM_IOCTL_MODE_DIRTYFB` 每次固定耗时约 **33ms**且**与脏区大小无关**（在阻塞等待面板 TE/刷新节拍），像素拷贝只占约 30µs。所以整屏刷新率上限 ~30fps 是**面板硬件节拍**，**用户态无法“超频”**（要改内核/DTS 的 DSI/TE）。日常 UI 只在内容变化时才推帧，30fps 只影响整屏动画（滑动翻页、充电流光），实际足够流畅。
 
-滑动翻页是**跟手**的：拖动时把当前页与目标页渲染到两张离屏 logical 位图，按手指位移用 `compose_frame` 实时合成 [左|右] 窗口；松手按位移是否过半决定提交或回弹，再用几帧 settle 动画收尾。
+滑动翻页是**跟手**的：拖动时当前页直接取屏上现有画面（反旋转拷贝，不重渲染），只把目标页渲染到离屏 logical 位图，按手指位移用 `compose_frame` 实时合成 [左|右] 窗口；松手时位移超过 30% 或 300ms 内同向轻扫 24px 以上就提交，否则回弹，收尾动画按时间做 ease-out，帧数由面板节拍决定。
+
+`drm_disp_present()` 带一份屏上画面的影子缓冲：内容没变就不推帧（省掉一次 33ms 的 DIRTYFB），变了也只调用一次。实测把变化分成几段分别推送，每段都要付一次整帧的时间，反而更慢。
+
+### 2026-10 实测（U60，空闲停在首页，亮屏）
+
+| 项 | 改动前 | 改动后 |
+| --- | --- | --- |
+| 每次排版绘制（不含推帧） | ~125 ms | ~30 ms |
+| 其中 HTML/CSS 解析 | ~95 ms | ~6 ms |
+| 翻页起手（准备两页） | ~230 ms | ~55 ms |
+| 主循环被阻塞（每 4 秒 / 每 0.9 秒） | 180–250 ms / pidof | 无 |
+| devui 自身 CPU（单核占比） | ~11% + 子进程 ~5% | ~4.5% + 子进程 ~0.4% |
+
+做法：
+
+- **样式表缓存**：litehtml 每次 `createFromString` 都重新解析 style.css（29 KB，设备上约 32 ms），而首页每秒都要重建一次。`scripts/litehtml.patch` 在 litehtml 里按样式表文本缓存解析结果，构建时自动打补丁（`_build_litehtml.sh`、CI、宿主机预览都会打）。补丁的哈希算进 `LITEHTML_BUILD`，改了补丁会自动重编。
+- **字形缓存**：`html_view.cpp` 按（字号, 码点）缓存 FreeType 光栅化后的字形，量宽和绘制都不再调用 `FT_Load_Char`。
+- **渐变缓存**：不透明渐变（页面背景）缓存最近 4 个的像素，命中后直接贴图。
+- **后台采样**：`iw`、`uci`、`ubus` 和 datad 的 `wifi.state` / `wifi.status` 改由后台线程每 4 秒采一次，熄屏时暂停；主线程只取最新一份。测速轮询不再 `system("pidof …")`：没装测速器直接跳过，装了就直接读 `/proc/*/comm`。
+- **缓存命中时先恢复底图**：页面 HTML 没变时，先恢复排版后的干净底图，再叠原生图元，半透明图元不会越叠越亮。
+
+系统页显示的"CPU 占用"是整机的，空闲时约 19%，大部分来自其他进程，devui 只占其中约 1.5 个百分点。
 
 触摸延迟主要受主循环等待和拖动起始阈值影响：屏幕亮着时空闲等待保持在约 8ms，熄屏时才回到较长等待；普通页面拖动起始阈值为 10px，点击判定仍保留独立的 14px 容错。
 
@@ -468,7 +513,7 @@ cp u60pro-devui.stripped u60pro-devui-aarch64
 (cd ui && COPYFILE_DISABLE=1 tar -czf ../ui.tar.gz -- *.html *.css)
 ```
 > **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/plugins/u60pro-devui/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量；如果设备还遗留旧 `/data/ui`，则先迁移再删除。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
-> **坑：`ui.tar.gz` 的打包结构必须和旧版保持一致。** 设备侧更新逻辑默认期望的是“**顶层平铺页面文件**”的 tar 包：顶层直接是 `01-signal.html`、`02-functions.html`、`style.css`、`subpages/...`，**没有** `ui/` 目录、**没有** `./` 前缀、**没有** macOS 产生的 `._*` AppleDouble 文件。用 macOS 自带打包工具直接打整个目录时，容易把这些额外条目也塞进去，导致 UI 更新失败。打包时应显式关闭资源叉（如 `COPYFILE_DISABLE=1`），并直接列出页面文件名生成 tar；`examples/custom-functions/` 不属于默认 UI 包。
+> **坑：`ui.tar.gz` 的打包结构必须和旧版保持一致。** 设备侧更新逻辑默认期望的是“**顶层平铺页面文件**”的 tar 包：顶层直接是 `00-home.html`、`01-signal.html`、`02-functions.html`、`style.css`、`subpages/...`，**没有** `ui/` 目录、**没有** `./` 前缀、**没有** macOS 产生的 `._*` AppleDouble 文件。用 macOS 自带打包工具直接打整个目录时，容易把这些额外条目也塞进去，导致 UI 更新失败。打包时应显式关闭资源叉（如 `COPYFILE_DISABLE=1`），并直接列出页面文件名生成 tar；`examples/custom-functions/` 不属于默认 UI 包。
 
 ## 仓库约定
 

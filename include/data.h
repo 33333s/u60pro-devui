@@ -48,7 +48,8 @@ typedef struct {
     char sa_bands[256], nsa_bands[256], lte_bands[256];
 
     /* battery */
-    int  bat_percent, bat_temp, charging, charger_connect;
+    int  bat_percent, bat_temp, charger_connect;
+    int  charging;   /* vendor charge_status: 1 charging, 2 discharging, 3 not charging, 4 full */
     long chg_uv, chg_ua, bat_uv, bat_ua;   /* charger/battery voltage(µV)/current(µA) */
 
     /* clients */

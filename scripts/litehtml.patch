@@ -1,0 +1,103 @@
+diff --git a/src/document.cpp b/src/document.cpp
+index abf3987..7b75672 100644
+--- a/src/document.cpp
++++ b/src/document.cpp
+@@ -1,4 +1,5 @@
+ #include "html.h"
++#include <algorithm>
+ #include "document.h"
+ #include "stylesheet.h"
+ #include "html_tag.h"
+@@ -48,6 +49,30 @@ document::~document()
+ 	}
+ }
+ 
++// Parsed stylesheets keyed by their source text, most recent first. Parsing
++// CSS dominates createFromString on slow targets that rebuild the same page
++// every second; selectors are not modified after sort_selectors().
++static std::vector<std::pair<string, css>> css_cache;
++static const size_t css_cache_max = 8;
++
++static bool css_cache_get(const string& key, css& out)
++{
++	for (size_t i = 0; i < css_cache.size(); i++)
++	{
++		if (css_cache[i].first != key) continue;
++		out = css_cache[i].second;
++		if (i) std::rotate(css_cache.begin(), css_cache.begin() + i, css_cache.begin() + i + 1);
++		return true;
++	}
++	return false;
++}
++
++static void css_cache_put(const string& key, const css& styles)
++{
++	css_cache.insert(css_cache.begin(), {key, styles});
++	if (css_cache.size() > css_cache_max) css_cache.pop_back();
++}
++
+ document::ptr document::createFromString(
+ 	const estring& str,
+ 	document_container* container,
+@@ -81,8 +106,13 @@ document::ptr document::createFromString(
+ 
+ 	if (master_styles != "")
+ 	{
+-		doc->m_master_css.parse_css_stylesheet(master_styles, "", doc);
+-		doc->m_master_css.sort_selectors();
++		string key = "master\x1f" + std::to_string((int)doc->m_mode) + "\x1f" + master_styles;
++		if (!css_cache_get(key, doc->m_master_css))
++		{
++			doc->m_master_css.parse_css_stylesheet(master_styles, "", doc);
++			doc->m_master_css.sort_selectors();
++			css_cache_put(key, doc->m_master_css);
++		}
+ 	}
+ 	if (user_styles != "")
+ 	{
+@@ -103,20 +133,36 @@ document::ptr document::createFromString(
+ 		// parse elements attributes
+ 		doc->m_root->parse_attributes();
+ 
+-		// parse style sheets linked in document
++		// Documents built from the same sheets share their parsed selectors.
++		// Sheets with media queries or at-rules register state on the document
++		// while parsing, so those are always parsed.
++		string key = "styles\x1f" + std::to_string((int)doc->m_mode);
++		bool cacheable = true;
+ 		for (const auto& css : doc->m_css)
+ 		{
+-			media_query_list_list::ptr media;
+-			if (css.media != "")
++			if (css.media != "" || css.text.find('@') != string::npos)
++				cacheable = false;
++			key += "\x1e" + css.baseurl + "\x1f" + css.text;
++		}
++		if (!cacheable || !css_cache_get(key, doc->m_styles))
++		{
++			// parse style sheets linked in document
++			for (const auto& css : doc->m_css)
+ 			{
+-				auto mq_list = parse_media_query_list(css.media, doc);
+-				media = make_shared<media_query_list_list>();
+-				media->add(mq_list);
++				media_query_list_list::ptr media;
++				if (css.media != "")
++				{
++					auto mq_list = parse_media_query_list(css.media, doc);
++					media = make_shared<media_query_list_list>();
++					media->add(mq_list);
++				}
++				doc->m_styles.parse_css_stylesheet(css.text, css.baseurl, doc, media);
+ 			}
+-			doc->m_styles.parse_css_stylesheet(css.text, css.baseurl, doc, media);
++			// Sort css selectors using CSS rules.
++			doc->m_styles.sort_selectors();
++			if (cacheable)
++				css_cache_put(key, doc->m_styles);
+ 		}
+-		// Sort css selectors using CSS rules.
+-		doc->m_styles.sort_selectors();
+ 
+ 		// Apply media features.
+ 		doc->update_media_lists(doc->m_media);
