@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  # A PR is tested once (pull_request); pushes are only tested on main and on
+  # release tags, so the single self-hosted runner does not run every commit twice.
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Fork PRs stay on disposable GitHub-hosted machines.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "linux", "x64", "devui-ci"]') || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The self-hosted runner keeps the toolchain and the static libraries in its
+      # home between jobs; a GitHub-hosted machine downloads and builds them.
+      - name: Toolchain and static FreeType/litehtml
+        run: bash scripts/_setup_ci_deps.sh
+      - name: Build static aarch64 binary
+        run: bash scripts/build.sh
+      - name: Check the binary is a static aarch64 ELF
+        run: |
+          file u60pro-devui.stripped
+          file u60pro-devui.stripped | grep -q 'ARM aarch64'
+          file u60pro-devui.stripped | grep -q 'statically linked'
+      - name: Shell syntax
+        run: |
+          for f in scripts/*.sh tests/*.sh; do
+            case "$(head -n1 "$f")" in
+              *bash*) bash -n "$f" ;;
+              *) sh -n "$f" ;;
+            esac
+          done
+      - name: datad client against a mock datad
+        run: sh tests/run_host_tests.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: u60pro-devui-aarch64
+          path: u60pro-devui.stripped
+          if-no-files-found: error
+          retention-days: 14

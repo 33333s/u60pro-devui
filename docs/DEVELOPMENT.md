@@ -240,6 +240,11 @@ DevUI 只连本机 `127.0.0.1:9460`。datad 用 `--lan-bind` 另开 9461 给内�
 - 回退：调用在后台线程执行；只有 datad 不可达或返回 404（旧版本没有该接口/动作）时，才执行原来的本机 `ubus`/`ifconfig` 命令。datad 明确拒绝（400/409/502）时不回退。
 - 仍在本机执行、datad 没有对应接口的：Type-C 供电方向/USB 网络共享（`zwrt_bsp.typec` / `powerbank` 脚本）、开启 ADB 的 `usb_composition 9059`、Wi-Fi 省电（`iw power_save`，datad 的 `wifi.psm.set` 只支持 TopFlow 高级 Wi-Fi）。
 
+## 测试与 CI
+
+- `sh tests/run_host_tests.sh`：在宿主机原生编译 `data.c`，对着 `tests/mock_datad.py`（按 datad 真实应答格式模拟 `/state`、`/events`、`/control`、`/ubus/call`，`/modem/...` 返回 404）检查 datad 客户端：分块应答解码、拒绝不回退、`null` 字段、邻区回退到 `neighbor.lte`、SSE 重连计数。需要 `cc` 和 `python3`。
+- `.github/workflows/ci.yml`：准备工具链和固定版本的 FreeType/litehtml（`scripts/_setup_ci_deps.sh`），执行 `scripts/build.sh`，确认产物是静态 aarch64 ELF，检查脚本语法，跑上面的宿主机测试，并上传 `u60pro-devui.stripped`。本仓库自己的 PR 和 main/tag 推送跑在自托管 runner（标签 `devui-ci`），fork PR 跑在 GitHub 托管机器。
+
 ## 部署与运行
 
 ```sh

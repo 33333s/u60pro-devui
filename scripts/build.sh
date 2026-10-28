@@ -52,20 +52,24 @@ for s in "${APP_SRCS[@]}"; do
   APPS="$APPS src/${s}.c"
 done
 
+# Private object dir: fixed /tmp paths collide between users and parallel builds.
+OBJ_DIR="$(mktemp -d)"
+trap 'rm -rf "$OBJ_DIR"' EXIT
+
 echo ">> compiler: $($CC -dumpversion)"
 echo ">> app sources: ${#APP_SRCS[@]}"
 echo ">> building..."
 
 for f in $APPS; do
-  obj="/tmp/$(basename "${f%.c}").o"
+  obj="$OBJ_DIR/$(basename "${f%.c}").o"
   # shellcheck disable=SC2086
   $CC $CFLAGS -pthread -c "$f" -o "$obj"
   OBJS="$OBJS $obj"
 done
 
 CXXFLAGS="-std=c++17 -O2 -w -Iinclude -I$FT_DIR/include -I$LH_DIR/include -I$LH_DIR/include/litehtml -Ithird_party/stb"
-"$CXX" $CXXFLAGS -c src/html_view.cpp -o /tmp/html_view.o
-OBJS="$OBJS /tmp/html_view.o"
+"$CXX" $CXXFLAGS -c src/html_view.cpp -o "$OBJ_DIR/html_view.o"
+OBJS="$OBJS $OBJ_DIR/html_view.o"
 
 # shellcheck disable=SC2086
 "$CXX" -static $OBJS "$LH_DIR/lib/liblitehtml.a" "$FT_LIB" -Wl,--gc-sections -pthread -lm -o u60pro-devui

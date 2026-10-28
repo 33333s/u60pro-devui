@@ -13,6 +13,11 @@
 - **邻小区与信令**：公开版 datad 没有 `/modem/*`，探测到后改用 `/state.neighbor` 显示邻区，“读取信令”对应 `neighbor.set`；私有版 datad 行为不变。
 - **刷新频率**：改用 `state.set_interval`；datad 重启后自动重放刷新频率与邻区采集开关。
 
+### CI
+
+- 新增 `.github/workflows/ci.yml`：交叉编译、静态 ELF 检查、脚本语法和 datad 客户端宿主机测试（`tests/run_host_tests.sh` + `tests/mock_datad.py`）。
+- `scripts/build.sh` 改用独立临时目录存放目标文件，不再写固定的 `/tmp/*.o`。
+
 ## v1.2.12 - 2026-07-15
 
 ### 修复
