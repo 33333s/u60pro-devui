@@ -2,7 +2,7 @@
 
 这份文档记录项目当前最重要的开发事实，方便后续维护、移植，也便于随仓库版本化后公开分享。目标是让关键经验不只停留在本地记忆里，而是和代码一起长期保存。
 
-> 当前正式命名与安装路径已经统一为：`zwrt-datad`、`/data/plugins/zwrt-datad/zwrt-datad`、`/data/plugins/u60pro-devui/`。下文历史章节里如果出现 `u60-datad` 或 `/data/u60pro`，表示当时版本记录，不再是当前安装规范。
+> 当前正式命名与安装路径：`zwrt-datad` 装在 `/data/zwrt-datad/`（由 datad 自己的安装脚本和 `service.sh` 管理），DevUI 装在 `/data/plugins/u60pro-devui/`。旧的 `/data/plugins/zwrt-datad/` 不再使用，datad 安装脚本会自动迁移。下文历史章节里如果出现 `u60-datad` 或 `/data/u60pro`，表示当时版本记录，不再是当前安装规范。
 
 ## 维护范围
 
@@ -14,7 +14,7 @@
 
 `u60pro-devui` 是 ZTE U60Pro 前面板屏幕 UI 的一个 clean-room 开源替代实现。目标形态是一份单独的静态 `aarch64` 二进制，只依赖标准 Linux/OpenWRT 接口，不链接 ZTE 私有库，也不提交任何专有资源。
 
-配套后端是 `zwrt-datad`：单进程数据采集器，轮询 ubus 并把结果归一化成一份 JSON 快照，通过本机 `HTTP /state + SSE /events` 暴露。UI 只读这个本机接口，从不直接调用 ubus。
+配套后端是 `zwrt-datad`：单进程数据采集器，轮询 ubus 并把结果归一化成一份 JSON 快照，通过本机 `HTTP /state + SSE /events` 暴露；设备操作走 `POST /control`。UI 通过本机 `127.0.0.1:9460`（免 Token）访问它，见下文“datad 接口”。
 
 核心设计原则有两条：
 
@@ -227,18 +227,36 @@ bash zwrt-datad/scripts/build.sh       # → zwrt-datad(.stripped)
 - litehtml 的 `document_container` 有约 30 个纯虚函数，全部要实现；`create_element` 返回 `nullptr` 也得显式 override，否则是抽象类编译不过。
 - litehtml **不支持 CSS grid / JS / CSS 动画**，`var()` 也不可靠——布局用 table/flex/block，主题用 `body.dark`/`body.light` 类切换，动画靠宿主驱动帧。
 
+## datad 接口
+
+DevUI 只连本机 `127.0.0.1:9460`。datad 用 `--lan-bind` 另开 9461 给内网并要求 Token，回环口保持免鉴权，所以 DevUI 不读 Token。
+
+- 状态：`GET /state` 首屏、`SSE /events` 增量；SSE 连续解析失败会回退 HTTP 轮询。
+- Wi-Fi 密码：`/state.wlan` 不再带 `key`，改由 `POST /control wifi.status` 读主 AP 配置（约 30 秒刷新一次，按当前 SSID 取对应频段）。
+- Wi-Fi 开关：总开关 `wifi.set_module`，单频段 `wifi.radio.set`，状态读 `wifi.state`。datad 会拒绝原厂起不来的 AP 组合（例如 U60 Pro 关掉最后一个频段或恰好三个 AP），拒绝时界面在下次刷新回到真实状态。改动会让原厂重启 Wi-Fi，约一分钟内其他 SSID 也会短暂断开。
+- 其他操作：`network.set_mode`、`band.set_lte` / `band.set_nr_sa` / `band.set_nr_nsa`、`nfc.set`、`power.direct_supply.set`（状态读 `/state.power.direct_supply`）、`usb.set`（关闭 ADB）、`sms.mark_read`、`qos.reload`（刷新 AMBR）、`device.reboot` / `device.poweroff`。恢复默认锁频没有对应动作，走 `POST /ubus/call zte_nwinfo_api.nwinfo_reset_band_cell_setting`。
+- 刷新频率：`state.set_interval`（500–5000 ms，全局共享）；“停止”只暂停屏幕刷新，不改 datad。
+- 运行时开关重放：`neighbor.set`、`state.set_interval` 只在 datad 进程内有效，DevUI 每次重新连上 SSE（首次连接或 datad 重启）都会重新下发。
+- 回退：调用在后台线程执行；只有 datad 不可达或返回 404（旧版本没有该接口/动作）时，才执行原来的本机 `ubus`/`ifconfig` 命令。datad 明确拒绝（400/409/502）时不回退。
+- 仍在本机执行、datad 没有对应接口的：Type-C 供电方向/USB 网络共享（`zwrt_bsp.typec` / `powerbank` 脚本）、开启 ADB 的 `usb_composition 9059`、Wi-Fi 省电（`iw power_save`，datad 的 `wifi.psm.set` 只支持 TopFlow 高级 Wi-Fi）。
+
+## 测试与 CI
+
+- `sh tests/run_host_tests.sh`：在宿主机原生编译 `data.c`，对着 `tests/mock_datad.py`（按 datad 真实应答格式模拟 `/state`、`/events`、`/control`、`/ubus/call`，`/modem/...` 返回 404）检查 datad 客户端：分块应答解码、拒绝不回退、`null` 字段、邻区回退到 `neighbor.lte`、SSE 重连计数。需要 `cc` 和 `python3`。
+- `.github/workflows/ci.yml`：准备工具链和固定版本的 FreeType/litehtml（`scripts/_setup_ci_deps.sh`），执行 `scripts/build.sh`，确认产物是静态 aarch64 ELF，检查脚本语法，跑上面的宿主机测试，并上传 `u60pro-devui.stripped`。本仓库自己的 PR 和 main/tag 推送跑在自托管 runner（标签 `devui-ci`），fork PR 跑在 GitHub 托管机器。
+
 ## 部署与运行
 
 ```sh
-# 杀掉旧实例再推，否则可能 "Text file busy" 并悄悄保留旧二进制
-adb shell "killall -9 u60pro-devui zwrt-datad u60-datad"
-adb shell "mkdir -p /data/plugins/u60pro-devui/ui /data/plugins/zwrt-datad"
+# datad 先用它自己的安装脚本装到 /data/zwrt-datad（只需一次）
+# 杀掉旧 UI 再推，否则可能 "Text file busy" 并悄悄保留旧二进制
+adb shell "killall -9 u60pro-devui"
+adb shell "mkdir -p /data/plugins/u60pro-devui/ui"
 adb push u60pro-devui.stripped    /data/plugins/u60pro-devui/u60pro-devui
-adb push zwrt-datad.stripped      /data/plugins/zwrt-datad/zwrt-datad
 adb push ui/*.html ui/*.css       /data/plugins/u60pro-devui/ui/
 adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
-           nohup /data/plugins/zwrt-datad/zwrt-datad -i 1000 >/tmp/zwrt-datad.log 2>&1 & \
-           sleep 1; nohup /data/plugins/u60pro-devui/u60pro-devui >/tmp/devui.log 2>&1 &"
+           sh /data/zwrt-datad/service.sh start; \
+           nohup /data/plugins/u60pro-devui/u60pro-devui >/tmp/devui.log 2>&1 &"
 ```
 
 坑位：
@@ -256,8 +274,10 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 /data/plugins/u60pro-devui/u60pro-devui   # UI
 /data/plugins/u60pro-devui/start.sh       # 正常开机才停原厂 UI → 拉起后端 + UI
 /data/plugins/u60pro-devui/devui.conf     # UI 设置持久化
-/data/plugins/zwrt-datad/zwrt-datad       # 数据后端
+/data/zwrt-datad/                         # 数据后端（datad 安装脚本管理：二进制、service.sh、Token、日志）
 ```
+
+datad 安装脚本会在 `rc.local` 里写入自己的 `sh /data/zwrt-datad/service.sh start`；DevUI 的 `start.sh` 也会调用同一个 `service.sh start`，它带目录锁且幂等，两者同时执行不会拉起第二个进程。
 
 **当前稳定方案（2026-06-25 实机回归后确认）** 仍然是 **vendor 早期 bring-up + `rc.local` 晚接管**：
 
@@ -268,7 +288,7 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 `scripts/install-autostart.sh` 当前做的是：
 
 - 保留并启用原厂 `/etc/init.d/zte_topsw_devui`
-- 清掉旧的 `/etc/init.d/u60pro-devui` / `/etc/init.d/zwrt-datad` / `/etc/init.d/u60-datad` rc.d 软链接（如果之前试过 `procd` 方案）
+- 清掉旧的 `/etc/init.d/u60pro-devui` / `/etc/init.d/u60-datad` rc.d 软链接（如果之前试过 `procd` 方案）；`zwrt-datad` 的启动项和旧目录迁移交给 datad 安装脚本，这里不停、不杀、不移动 datad
 - 在 `/etc/rc.local` 的 `exit 0` 前写入上面的 `start.sh` 钩子
 - 顺手清理旧的 `/data/u60pro/u60pro-devui` / `/data/u60pro/u60-datad` / `/data/u60pro/start.sh` 残留
 - 安装完成后立即执行一次 `start.sh`，把当前前台切到自定义 DevUI
@@ -277,7 +297,7 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 
 - 记录 `mode_main_state` / `reboot_reason_code` / `/proc/cmdline` / 电源与输入设备枚举到 `/data/plugins/u60pro-devui/boot-trace.log`
 - 正常开机时停掉原厂 `zte_topsw_devui`
-- 正常开机时拉起单个 `zwrt-datad`
+- 正常开机时执行 `sh /data/zwrt-datad/service.sh start`（未安装 datad 时只记录一行提示，UI 照常启动）
 - 拉起 `u60pro-devui`
 
 所以当前真实启动顺序是：
@@ -292,7 +312,7 @@ procd -> zte_topsw_devui (早期屏幕/触摸 bring-up) -> rc.local -> /data/plu
 
 当前策略改为：
 
-- `start.sh legacy` 是**默认且稳定**的开机路径，会沿用 `nohup` 后台拉起 `zwrt-datad` + `u60pro-devui`。
+- `start.sh legacy` 是**默认且稳定**的开机路径：经 datad 的 `service.sh` 启动后端，再用 `nohup` 后台拉起 `u60pro-devui`。
 - `start.sh procd` 仍保留在脚本里，但仅供手动实验；**不要**把它当默认自启方案。
 - `u60pro-devui` 内部仍保留“外部供电 + 触控初始化失败 -> 强制切到全屏充电页”的兜底，避免误入普通页面。
 - `start.sh` 会把 `mode_main_state`、`reboot_reason_code`、`/proc/cmdline`、电源状态和输入设备枚举写进 `/data/plugins/u60pro-devui/boot-trace.log`，用于继续比对不同开机路径。

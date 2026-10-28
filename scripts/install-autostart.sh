@@ -3,14 +3,17 @@
 # zte_topsw_devui stays enabled for early panel/touch bring-up, and rc.local
 # later runs /data/plugins/u60pro-devui/start.sh to hand over to our DevUI.
 #
-# Expects the binaries + start.sh already copied into the plugin dirs.
+# Expects the binary + start.sh already copied into the plugin dir, and the
+# backend installed with zwrt-datad's own installer (/data/zwrt-datad, which
+# also writes its own rc.local entry):
 #   adb push u60pro-devui scripts/start.sh /data/plugins/u60pro-devui/
-#   adb push zwrt-datad /data/plugins/zwrt-datad/
 #   adb push scripts/install-autostart.sh /tmp/ && adb shell sh /tmp/install-autostart.sh
+#
+# This script never stops, starts or moves zwrt-datad itself.
 #
 # SPDX-License-Identifier: MIT
 DEVUI_DIR=/data/plugins/u60pro-devui
-DATAD_DIR=/data/plugins/zwrt-datad
+DATAD_SERVICE=/data/zwrt-datad/service.sh
 UI_DIR=$DEVUI_DIR/ui
 LEGACY_DIR=/data/u60pro
 LEGACY_UI_DIR=/data/ui
@@ -48,11 +51,11 @@ install_rc_hook() {
     rm -f "$tmp"
 }
 
-mkdir -p "$DEVUI_DIR" "$DATAD_DIR" "$UI_DIR"
+mkdir -p "$DEVUI_DIR" "$UI_DIR"
 [ -f "$LEGACY_DIR/devui.conf" ] && [ ! -f "$DEVUI_DIR/devui.conf" ] && cp -f "$LEGACY_DIR/devui.conf" "$DEVUI_DIR/devui.conf"
 migrate_legacy_ui
-chmod 755 "$DEVUI_DIR/start.sh" "$DEVUI_DIR/u60pro-devui" "$DATAD_DIR/zwrt-datad" 2>/dev/null
-rm -f "$DATAD_DIR/u60-datad" "$DEVUI_DIR"/*.new "$DATAD_DIR"/*.new \
+chmod 755 "$DEVUI_DIR/start.sh" "$DEVUI_DIR/u60pro-devui" 2>/dev/null
+rm -f "$DEVUI_DIR"/*.new \
       "$DEVUI_DIR/ui.tar.gz" "$DEVUI_DIR/u60pro_ui.tar.gz" "$DEVUI_DIR/boot-trace.log.tmp" 2>/dev/null
 rm -rf "$DEVUI_DIR/ui_extract" 2>/dev/null
 
@@ -60,18 +63,14 @@ remove_legacy_rc_hook
 install_rc_hook
 
 /etc/init.d/u60pro-devui disable 2>/dev/null
-/etc/init.d/zwrt-datad disable 2>/dev/null
 /etc/init.d/u60-datad disable 2>/dev/null
 rm -f /etc/rc.d/S*u60pro-devui /etc/rc.d/K*u60pro-devui \
-      /etc/rc.d/S*zwrt-datad /etc/rc.d/K*zwrt-datad \
       /etc/rc.d/S*u60-datad /etc/rc.d/K*u60-datad
 
 /etc/init.d/u60pro-devui stop 2>/dev/null
-/etc/init.d/zwrt-datad stop 2>/dev/null
 /etc/init.d/u60-datad stop 2>/dev/null
 
 killall -9 u60pro-devui 2>/dev/null
-killall -9 zwrt-datad 2>/dev/null
 killall -9 u60-datad 2>/dev/null
 
 rm -f "$LEGACY_DIR/u60pro-devui" "$LEGACY_DIR/u60-datad" "$LEGACY_DIR/zwrt-datad" \
@@ -91,7 +90,12 @@ if [ -x /etc/init.d/zte_topsw_devui ]; then
 echo "zte_topsw_devui_enabled=$?"
 fi
 echo "u60pro_devui_enabled=legacy_rc_local"
+if [ -f "$DATAD_SERVICE" ]; then
+    sh "$DATAD_SERVICE" status
+else
+    echo "zwrt-datad not installed: run its installer (install-datad.sh) to get /data/zwrt-datad"
+fi
 ps | grep -E 'zte_topsw_devui|u60pro-devui|zwrt-datad|u60-datad' | grep -v grep || true
 
 echo "--- rc.local tail ---"
-grep -n "u60pro\|plugins\|exit 0" "$RC" 2>/dev/null || true
+grep -n "u60pro\|plugins\|zwrt-datad\|exit 0" "$RC" 2>/dev/null || true

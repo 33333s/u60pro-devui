@@ -158,16 +158,21 @@ static long long g_pages_dir_mtime = -1;
 static uint32_t g_pages_scan_at;
 static int normalize_refresh_ms(int ms);
 
-/* ---- page-2 aux state, cached (-1 = unknown). Like the reference plugin,
- * bands are controlled purely with `ifconfig wlanN up/down` and read back from
- * operstate (wlan0=main 2.4G, wlan2=main 5G); uci/`wifi reload`/`zwrt_wlan
- * reload` are NOT used (they don't work / wedge the radios). PSM = `iw
- * power_save`, persisted via a self-written /etc/hotplug.d/iface/99-disable-powersave
- * script that re-applies the chosen mode on every ifup (so power_save=on sticks
- * across reconnect/reboot). The DHCP pool is computed live from uci. Toggles flip
- * optimistically; a throttle reconciles. */
+/* ---- page-2 aux state, cached (-1 = unknown). Wi-Fi switches go through
+ * datad (wifi.set_module / wifi.radio.set) and read back from wifi.state, which
+ * knows the U60 Pro AP layouts the firmware can actually start; only when datad
+ * is unreachable do we fall back to `ifconfig wlanN up/down` + operstate
+ * (wlan0=main 2.4G, wlan2=main 5G). PSM = `iw power_save`, persisted via a
+ * self-written /etc/hotplug.d/iface/99-disable-powersave script that re-applies
+ * the chosen mode on every ifup (so power_save=on sticks across
+ * reconnect/reboot). The DHCP pool is computed live from uci. Toggles flip
+ * optimistically and hold for a moment; a throttle reconciles. */
 static int  g_w24 = -1, g_w5 = -1, g_wpsm = -1;
-static int  g_dps = -1;   /* power direct-supply mode (zwrt_bsp.charger), -1 unknown */
+static int  g_dps = -1;   /* power direct-supply mode (/state power.direct_supply), -1 unknown */
+static uint32_t g_wifi_hold_until, g_dps_hold_until;   /* optimistic toggle hold */
+/* main AP config from datad wifi.status: /state no longer carries the password */
+static struct { char ssid[64], key[64]; } g_wifi_cfg[3];
+static uint32_t g_wifi_cfg_at;
 static int  g_adb_pending = -1; /* optimistic ADB state while USB re-enumerates */
 static int  g_usb_net = -1;     /* Type-C network sharing composition active */
 static int  g_typec_source = -1; /* 1 = reverse charge peer, 0 = charge U60 */
@@ -718,8 +723,84 @@ static void usb_net_watchdog_start(void)
  * live truth on this firmware), PSM from `iw power_save`, and the DHCP pool
  * range computed live from uci (lan ip + start/limit offsets). One shell
  * round-trip, called on a throttle. */
+static int signal_json_next_object(const char **pp, char *dst, size_t cap);
+
+/* Band switches from datad wifi.state. Returns 0 when datad did not answer. */
+static int wifi_state_from_datad(void)
+{
+    static char reply[8192];
+    char result[8192], part[2048], obj[512], band[8], en[8];
+    const char *p;
+    int w24 = -1, w5 = -1;
+
+    if (!datad_control("wifi.state", NULL, reply, sizeof reply, 800) ||
+        !json_get(reply, "result", result, sizeof result))
+        return 0;
+    if (json_get(result, "radios", part, sizeof part)) {
+        p = part;
+        while (signal_json_next_object(&p, obj, sizeof obj)) {
+            if (!json_get(obj, "band", band, sizeof band) ||
+                !json_get(obj, "enabled", en, sizeof en) || !strcmp(en, "null"))
+                continue;
+            if (!strcmp(band, "2g")) w24 = !strcmp(en, "true");
+            else if (!strcmp(band, "5g")) w5 = !strcmp(en, "true");
+        }
+    }
+    /* The module switch overrides the bands, except while the firmware is
+     * restarting Wi-Fi (busy), when it briefly reads as off. */
+    if (json_get(result, "busy", en, sizeof en) && strcmp(en, "true") &&
+        json_get(result, "module", part, sizeof part) &&
+        json_get(part, "enabled", en, sizeof en) && !strcmp(en, "false"))
+        w24 = w5 = 0;
+    if (w24 >= 0) g_w24 = w24;
+    if (w5 >= 0) g_w5 = w5;
+    return 1;
+}
+
+/* Main AP ssid/key from datad wifi.status (2.4G, 5G, 6G). */
+static void wifi_cfg_from_datad(void)
+{
+    static const char *const sections[3] = { "main_2g", "main_5g", "main_6g" };
+    static char reply[4096];
+    char result[4096], sec[1024];
+
+    if (!datad_control("wifi.status", NULL, reply, sizeof reply, 800) ||
+        !json_get(reply, "result", result, sizeof result))
+        return;
+    for (int i = 0; i < 3; i++) {
+        g_wifi_cfg[i].ssid[0] = g_wifi_cfg[i].key[0] = 0;
+        if (!json_get(result, sections[i], sec, sizeof sec)) continue;
+        if (!json_get(sec, "ssid", g_wifi_cfg[i].ssid, sizeof g_wifi_cfg[i].ssid))
+            g_wifi_cfg[i].ssid[0] = 0;
+        if (!json_get(sec, "key", g_wifi_cfg[i].key, sizeof g_wifi_cfg[i].key))
+            g_wifi_cfg[i].key[0] = 0;
+    }
+}
+
+/* Password of the AP broadcasting ssid; falls back to the first one set. */
+static const char *wifi_key_for(const char *ssid)
+{
+    const char *first = "";
+    for (int i = 0; i < 3; i++) {
+        if (!g_wifi_cfg[i].key[0]) continue;
+        if (ssid && ssid[0] && !strcmp(g_wifi_cfg[i].ssid, ssid)) return g_wifi_cfg[i].key;
+        if (!first[0]) first = g_wifi_cfg[i].key;
+    }
+    return first;
+}
+
 static void wifi_aux_refresh(void)
 {
+    uint32_t now = millis();
+    int have_datad = 0;
+
+    if ((int32_t)(now - g_wifi_hold_until) >= 0)
+        have_datad = wifi_state_from_datad();
+    if (!g_wifi_cfg_at || (uint32_t)(now - g_wifi_cfg_at) >= 30000) {
+        g_wifi_cfg_at = now;
+        wifi_cfg_from_datad();
+    }
+
     FILE *fp = popen(
         "echo W0=$(cat /sys/class/net/wlan0/operstate 2>/dev/null);"
         "echo W2=$(cat /sys/class/net/wlan2/operstate 2>/dev/null);"
@@ -733,7 +814,6 @@ static void wifi_aux_refresh(void)
          * (ARP covers LAN/USB clients too; leases alone linger 24h). */
         "echo MACS=$({ for w in wlan0 wlan1 wlan2 wlan3; do iw dev $w station dump 2>/dev/null | awk '/Station/{print $2}'; done;"
         " awk 'NR>1 && $3!=\"0x0\"{print $4}' /proc/net/arp 2>/dev/null; } | tr 'A-Z\\n' 'a-z,');"
-        "echo DPS=$(ubus call zwrt_bsp.charger list 2>/dev/null | grep direct_power_supply_mode | grep -o 'enable\\|disable');"
         "pid=$(cat /sys/kernel/config/usb_gadget/g1/idProduct 2>/dev/null);"
         "echo USBNET=$([ \"$pid\" = 0x9057 ] || [ \"$pid\" = 0x90b1 ] || [ \"$pid\" = 0x90B1 ] && echo 1 || echo 0);"
         "tc=$(ubus call zwrt_bsp.typec list 2>/dev/null);"
@@ -742,8 +822,13 @@ static void wifi_aux_refresh(void)
     if (!fp) return;
     char line[768];
     while (fgets(line, sizeof line, fp)) {
-        if      (!strncmp(line, "W0=", 3))   g_w24 = strstr(line, "=up") != NULL;
-        else if (!strncmp(line, "W2=", 3))   g_w5  = strstr(line, "=up") != NULL;
+        if (!strncmp(line, "W0=", 3) || !strncmp(line, "W2=", 3)) {
+            /* operstate is only the fallback for a datad that is not answering */
+            if (!have_datad && (int32_t)(now - g_wifi_hold_until) >= 0) {
+                if (line[1] == '0') g_w24 = strstr(line, "=up") != NULL;
+                else                g_w5  = strstr(line, "=up") != NULL;
+            }
+        }
         else if (!strncmp(line, "PSM=", 4))  g_wpsm = atoi(line + 4);
         else if (!strncmp(line, "POOL=", 5)) {
             char *nl = strchr(line, '\n'); if (nl) *nl = 0;
@@ -752,10 +837,6 @@ static void wifi_aux_refresh(void)
         else if (!strncmp(line, "MACS=", 5)) {
             char *nl = strchr(line, '\n'); if (nl) *nl = 0;
             snprintf(g_assoc_macs, sizeof g_assoc_macs, "%s", line + 5);
-        }
-        else if (!strncmp(line, "DPS=", 4)) {
-            if (strstr(line, "disable")) g_dps = 0;
-            else if (strstr(line, "enable")) g_dps = 1;
         }
         else if (!strncmp(line, "USBNET=", 7)) {
             g_usb_net = atoi(line + 7) ? 1 : 0;
@@ -2308,6 +2389,16 @@ static void band_summary(char *buf, size_t cap, const char *uni, const char *sel
         o += snprintf(buf + o, cap - o, "%s%s%s", o ? " " : "已锁 ", pfx, tk);
 }
 
+static void net_mode_apply(const char *mode)
+{
+    char params[64], cmd[160];
+
+    snprintf(params, sizeof params, "{\"mode\":\"%s\"}", mode);
+    snprintf(cmd, sizeof cmd,
+             "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1", mode);
+    datad_control_async("network.set_mode", params, cmd);
+}
+
 /* segmented-control cells (shared with the touch handler). */
 static const struct { const char *v, *lab; } g_netmodes[4] = {
     { "WL_AND_5G", "自动" }, { "Only_5G", "5G SA" },
@@ -2331,40 +2422,79 @@ static int normalize_refresh_ms(int ms)
     }
 }
 
+/* The /modem/... signaling API only exists in the private datad build; the public
+ * datad serves neighbors through /state and its own control actions instead.
+ * Probe once datad answers and re-check rarely, so a public datad costs no
+ * per-refresh requests. -1 = not known yet. */
+static int g_modem_api = -1;
+static uint32_t g_modem_api_probe_at;
+
+static int modem_api_available(void)
+{
+    uint32_t now = millis();
+    int status;
+
+    if (g_modem_api >= 0 && (uint32_t)(now - g_modem_api_probe_at) < 300000)
+        return g_modem_api;
+    if (g_modem_api < 0 && g_modem_api_probe_at &&
+        (uint32_t)(now - g_modem_api_probe_at) < 5000)
+        return 0;
+    g_modem_api_probe_at = now;
+    status = datad_request("GET", "/modem/signal-metrics", NULL, NULL, 0,
+                           DATAD_HTTP_TIMEOUT_MS);
+    if (status > 0) g_modem_api = status != 404;
+    return g_modem_api > 0;
+}
+
+static void datad_modem_control(const char *query)
+{
+    char path[160];
+
+    if (snprintf(path, sizeof path, "/modem/control?%s", query) >= (int)sizeof path)
+        return;
+    (void)datad_request("POST", path, "", NULL, 0, DATAD_HTTP_TIMEOUT_MS);
+}
+
 static int datad_set_refresh_ms(int ms)
 {
-    char cmd[192];
+    char params[48];
 
     ms = normalize_refresh_ms(ms);
-    if (snprintf(cmd, sizeof cmd,
-                 "/usr/bin/wget -qO- --post-data='' 'http://%s:%d/modem/control?poll_ms=%d' >/dev/null 2>&1",
-                 DATAD_HTTP_ADDR, DATAD_HTTP_PORT, ms) >= (int)sizeof cmd)
-        return -1;
-    return system(cmd) == 0 ? 0 : -1;
+    if (modem_api_available()) {
+        char q[32];
+        snprintf(q, sizeof q, "poll_ms=%d", ms);
+        datad_modem_control(q);
+    }
+    /* 0 only pauses the screen; datad keeps sampling at its own period. */
+    if (ms <= 0) return 0;
+    snprintf(params, sizeof params, "{\"milliseconds\":%d}", ms);
+    datad_control_async("state.set_interval", params, NULL);
+    return 0;
 }
 
 static int datad_set_signal_read(int on)
 {
-    char cmd[224];
-    int active = on || g_sig_parse;
-
-    if (snprintf(cmd, sizeof cmd,
-                 "/usr/bin/wget -qO- --post-data='' 'http://%s:%d/modem/control?ml1_raw=%d&active=%d' >/dev/null 2>&1",
-                 DATAD_HTTP_ADDR, DATAD_HTTP_PORT, on ? 1 : 0, active ? 1 : 0) >= (int)sizeof cmd)
-        return -1;
-    return system(cmd) == 0 ? 0 : -1;
+    if (modem_api_available()) {
+        char q[48];
+        snprintf(q, sizeof q, "ml1_raw=%d&active=%d", on ? 1 : 0, (on || g_sig_parse) ? 1 : 0);
+        datad_modem_control(q);
+        return 0;
+    }
+    /* Public datad: "read signaling" drives the DIAG neighbor collector. */
+    datad_control_async("neighbor.set", on ? "{\"enabled\":true}" : "{\"enabled\":false}", NULL);
+    return 0;
 }
 
 static int datad_set_signal_parse(int on)
 {
-    char cmd[256];
-    int active = g_sig_read || on;
-
-    if (snprintf(cmd, sizeof cmd,
-                 "/usr/bin/wget -qO- --post-data='' 'http://%s:%d/modem/control?lte=%d&nr=%d&active=%d' >/dev/null 2>&1",
-                 DATAD_HTTP_ADDR, DATAD_HTTP_PORT, on ? 1 : 0, on ? 1 : 0, active ? 1 : 0) >= (int)sizeof cmd)
-        return -1;
-    return system(cmd) == 0 ? 0 : -1;
+    if (modem_api_available()) {
+        char q[48];
+        snprintf(q, sizeof q, "lte=%d&nr=%d&active=%d", on ? 1 : 0, on ? 1 : 0,
+                 (g_sig_read || on) ? 1 : 0);
+        datad_modem_control(q);
+    }
+    /* Public datad has no decoder switch; parse only gates the UI pages. */
+    return 0;
 }
 
 #define SIGNAL_CACHE_PATH "/data/plugins/u60pro-devui/signal.cache"
@@ -2818,7 +2948,7 @@ static void signal_bundle_apply_metrics(struct signal_bundle *b)
     size_t n;
     int rc;
 
-    if (!b || !g_sig_read)
+    if (!b || !g_sig_read || !modem_api_available())
         return;
     fp = popen("/usr/bin/wget -T 1 -qO- 'http://127.0.0.1:9460/modem/signal-metrics' 2>/dev/null", "r");
     if (!fp)
@@ -2931,7 +3061,8 @@ static int fetch_signal_raw_int_field(const char *kind, const char *const *keys,
     size_t n;
     int rc;
 
-    if (!dst || cap == 0 || !kind || !keys || nkeys == 0 || !g_sig_read)
+    if (!dst || cap == 0 || !kind || !keys || nkeys == 0 || !g_sig_read ||
+        !modem_api_available())
         return 0;
     if (snprintf(cmd, sizeof cmd,
                  "/usr/bin/wget -T 1 -qO- 'http://127.0.0.1:9460/modem/latest?kind=%s' 2>/dev/null",
@@ -3089,6 +3220,10 @@ static int fetch_signal_bundle(struct signal_bundle *out)
     cached_at = now;
     cached_valid = 0;
     signal_bundle_reset(&cached);
+    if (!modem_api_available()) {
+        if (out) *out = cached;
+        return 0;
+    }
     fp = popen("/usr/bin/wget -T 1 -qO- 'http://127.0.0.1:9460/modem/latest-signals' 2>/dev/null", "r");
     if (!fp) {
         if (out) *out = cached;
@@ -3312,7 +3447,7 @@ static int fetch_signal_raw_field(const char *kind, const char *const *keys, siz
 
     if (!dst || cap == 0) return 0;
     snprintf(dst, cap, "-");
-    if (!g_sig_read) return 0;
+    if (!g_sig_read || !modem_api_available()) return 0;
     if (snprintf(cmd, sizeof cmd,
                  "/usr/bin/wget -T 1 -qO- 'http://127.0.0.1:9460/modem/latest?kind=%s' 2>/dev/null",
                  kind) >= (int)sizeof cmd)
@@ -3394,7 +3529,7 @@ static int fetch_signal_recent_raw_field(const char *kind, const char *const *ke
     int rc;
 
     if (!dst || cap == 0) return 0;
-    if (!g_sig_read) return 0;
+    if (!g_sig_read || !modem_api_available()) return 0;
     if (snprintf(cmd, sizeof cmd,
                  "/usr/bin/wget -T 1 -qO- 'http://127.0.0.1:9460/modem/recent?kind=%s&limit=96' 2>/dev/null",
                  kind) >= (int)sizeof cmd)
@@ -3418,7 +3553,7 @@ static int fetch_signal_raw_vendor(const char *kind, char *dst, size_t cap)
     size_t n;
     int rc;
 
-    if (!dst || cap == 0 || !g_sig_read)
+    if (!dst || cap == 0 || !g_sig_read || !modem_api_available())
         return 0;
     if (snprintf(cmd, sizeof cmd,
                  "/usr/bin/wget -T 1 -qO- 'http://127.0.0.1:9460/modem/latest?kind=%s' 2>/dev/null",
@@ -3631,7 +3766,7 @@ static int fetch_lte_ta(int *ta_out)
     int fresh_ta = -1;
 
     if (ta_out) *ta_out = -1;
-    if (!g_sig_read) return 0;
+    if (!g_sig_read || !modem_api_available()) return 0;
     if (cached_ta < 0) {
         char cached_text[24];
         if (signal_cache_get("ta", cached_text, sizeof cached_text)) {
@@ -3816,8 +3951,58 @@ static int signal_neighbor_section(char *buf, int o, int cap, const char *title,
     return o;
 }
 
+/* Set when neighbors come from /state.neighbor (public datad) instead of the
+ * private /modem/signal-metrics feed. */
+static const char *g_neighbor_src;
+static char g_neighbor_wait[96];
+
+static const char *neighbor_status_text(const char *status)
+{
+    static const struct { const char *k, *v; } map[] = {
+        { "disabled", "未开启" }, { "starting", "启动中" }, { "stopping", "停止中" },
+        { "collecting", "采集中" }, { "ready", "就绪" }, { "empty", "暂无邻区" },
+        { "stale", "数据过期" }, { "blocked", "诊断口被占用" },
+        { "dependency_missing", "采集器缺失" }, { "error", "出错" },
+    };
+    for (size_t i = 0; i < sizeof map / sizeof map[0]; i++)
+        if (!strcmp(status, map[i].k)) return map[i].v;
+    return status[0] ? status : "-";
+}
+
+static void signal_bundle_neighbors_from_state(struct signal_bundle *b, const devui_data_t *d)
+{
+    b->lte_neighbor_n = b->nr_neighbor_n = 0;
+    for (int i = 0; i < d->neighbor_n; i++) {
+        const devui_neighbor_t *c = &d->neighbor[i];
+        int is_nr = !strcmp(c->rat, "NR");
+        struct signal_neighbor_metric *m;
+
+        if (is_nr ? b->nr_neighbor_n >= SIGNAL_MAX_NEIGHBORS
+                  : b->lte_neighbor_n >= SIGNAL_MAX_NEIGHBORS)
+            continue;
+        m = is_nr ? &b->nr_neighbors[b->nr_neighbor_n++] : &b->lte_neighbors[b->lte_neighbor_n++];
+        signal_neighbor_metric_reset(m);
+        snprintf(m->pci, sizeof m->pci, "%d", c->pci);
+        if (c->has_arfcn) snprintf(m->arfcn, sizeof m->arfcn, "%ld", c->arfcn);
+        if (c->has_band) snprintf(m->band, sizeof m->band, "%s%d", is_nr ? "n" : "B", c->band);
+        else if (is_nr) signal_nr_band_from_nrarfcn(m->arfcn, m->band, sizeof m->band);
+        else signal_lte_band_from_earfcn(m->arfcn, m->band, sizeof m->band);
+        if (c->has_rsrp) snprintf(m->rsrp, sizeof m->rsrp, "%d", c->rsrp);
+        if (c->has_rsrq) snprintf(m->rsrq, sizeof m->rsrq, "%d", c->rsrq);
+        m->valid = 1;
+    }
+    g_neighbor_src = d->neighbor_enabled == 1 ? "诊断采集" : "厂商扫描";
+    if (d->neighbor_enabled == 1)
+        snprintf(g_neighbor_wait, sizeof g_neighbor_wait, "邻区采集：%s。",
+                 neighbor_status_text(d->neighbor_status));
+    else
+        snprintf(g_neighbor_wait, sizeof g_neighbor_wait,
+                 "暂无 4G 邻区；开启“读取信令”可采集 5G 邻区。");
+}
+
 static const char *signal_neighbor_empty_text(void)
 {
+    if (g_neighbor_src) return g_neighbor_wait;
     return "等待 LTE / NR ML1 邻区测量。";
 }
 
@@ -3827,7 +4012,7 @@ static const char *signal_neighbors_html(const struct signal_bundle *sig)
     int nr_count = sig ? signal_neighbor_count(sig->nr_neighbors, sig->nr_neighbor_n) : 0;
     int lte_count = sig ? signal_neighbor_count(sig->lte_neighbors, sig->lte_neighbor_n) : 0;
     int total = nr_count + lte_count;
-    const char *source = g_sig_parse ? "信令解析" : "";
+    const char *source = !g_sig_parse ? "" : g_neighbor_src ? g_neighbor_src : "信令解析";
     int o = 0;
 
     if (!g_sig_parse) {
@@ -3925,6 +4110,9 @@ static int build_kv(struct kv *t, const char *path)
     snprintf(s_mem, sizeof s_mem, "%ld", d.mem_used_pct);
     snprintf(s_oper, sizeof s_oper, "%s", d.operator_name[0] ? d.operator_name : "--");
     snprintf(s_ssid, sizeof s_ssid, "%s", d.wifi_ssid[0] ? d.wifi_ssid : "-");
+    if (!d.wifi_key[0])
+        snprintf(d.wifi_key, sizeof d.wifi_key, "%s", wifi_key_for(d.wifi_ssid));
+    if (d.dps >= 0 && (int32_t)(millis() - g_dps_hold_until) >= 0) g_dps = d.dps;
     if (!d.wifi_key[0]) strcpy(s_key, "-");
     else if (g_show_key) snprintf(s_key, sizeof s_key, "%s", d.wifi_key);
     else { int kn = (int)strlen(d.wifi_key); if (kn > 16) kn = 16; memset(s_key, '*', kn); s_key[kn] = 0; }
@@ -3986,6 +4174,9 @@ static int build_kv(struct kv *t, const char *path)
                 signal_async_publish(&sig, 1);
         }
     }
+    g_neighbor_src = NULL;
+    if (signal_live_enabled() && is_signalhome && !modem_api_available())
+        signal_bundle_neighbors_from_state(&sig, &d);
     snprintf(s_neighborcards, sizeof s_neighborcards, "%s",
              is_signalhome ? signal_neighbors_html(&sig) : "");
 
@@ -5387,16 +5578,19 @@ static void handle_modal_tap(drm_disp_t *disp, int x, int y, uint32_t now,
             *animating = 1;
         } else if (!strcmp(a, "mapply")) {
             if (sel[0]) {
-                char cmd[360];
+                char params[300], cmd[360];
+                snprintf(params, sizeof params, "{\"bands\":\"%s\"}", sel);
                 if (g_modal == 3)
                     snprintf(cmd, sizeof cmd,
-                             "ubus call zte_nwinfo_api nwinfo_set_lte_ext_band '{\"lte_band\":\"%s\"}' >/dev/null 2>&1 &",
+                             "ubus call zte_nwinfo_api nwinfo_set_lte_ext_band '{\"lte_band\":\"%s\"}' >/dev/null 2>&1",
                              sel);
                 else
                     snprintf(cmd, sizeof cmd,
-                             "ubus call zte_nwinfo_api nwinfo_set_nrbandlock '{\"nr5g_type\":\"%s\",\"nr5g_band\":\"%s\"}' >/dev/null 2>&1 &",
+                             "ubus call zte_nwinfo_api nwinfo_set_nrbandlock '{\"nr5g_type\":\"%s\",\"nr5g_band\":\"%s\"}' >/dev/null 2>&1",
                              g_modal == 1 ? "0" : "1", sel);
-                system(cmd);
+                datad_control_async(g_modal == 3 ? "band.set_lte" :
+                                    g_modal == 1 ? "band.set_nr_sa" : "band.set_nr_nsa",
+                                    params, cmd);
             }
             snprintf(g_toast, sizeof g_toast, "锁频成功");
             g_toast_until = now + 1600;
@@ -5543,6 +5737,7 @@ int main(void)
         render_charge_boot(&disp);
     }
     uint32_t last_data = millis(), last_act = millis();
+    unsigned datad_generation = data_backend_generation();
     int state_pending = 0;
 
     while (g_run) {
@@ -6008,10 +6203,7 @@ int main(void)
                 else if (segging) {   /* snap to nearest cell + apply */
                     int c = clampi((x - seg_x) * seg_n / (seg_w > 0 ? seg_w : 1), 0, seg_n - 1);
                     if (seg_which == 1) {
-                        char cmd[160];
-                        snprintf(cmd, sizeof cmd,
-                            "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1 &", g_netmodes[c].v);
-                        system(cmd);
+                        net_mode_apply(g_netmodes[c].v);
                         snprintf(g_net_pending, sizeof g_net_pending, "%s", g_netmodes[c].v);
                     } else if (seg_which == 2) {
                         g_autooff_ms = g_autooffs[c].ms; last_act = now; save_conf();
@@ -6062,11 +6254,11 @@ int main(void)
                         const char *a = act + 4;
                         if (!strcmp(a, "poweroff")) {
                             if (g_pwr_confirm == 1) {        /* confirmed: blank first (instant feedback), then power off */
-                                screen_off(&disp); system("poweroff");
+                                screen_off(&disp); datad_control_async("device.poweroff", NULL, "poweroff");
                             } else { g_pwr_confirm = 1; g_pwr_until = now + 4000; need_render = 1; }
                         }
                         else if (!strcmp(a, "reboot")) {
-                            if (g_pwr_confirm == 2) { screen_off(&disp); system("reboot"); }
+                            if (g_pwr_confirm == 2) { screen_off(&disp); datad_control_async("device.reboot", NULL, "reboot"); }
                             else { g_pwr_confirm = 2; g_pwr_until = now + 4000; need_render = 1; }
                         }
                         else if (!strcmp(a, "close"))     { menu = 0; g_pwr_confirm = 0; need_render = 1; }
@@ -6111,7 +6303,7 @@ int main(void)
                         else if (!strcmp(a, "revealcell")) { g_show_cellid = !g_show_cellid; need_render = 1; }
                         else if (!strcmp(a, "revealimei")) { g_show_imei = !g_show_imei; need_render = 1; }
                         else if (!strcmp(a, "refreshambr")) {
-                            system("(kill -USR1 $(pidof zwrt-datad 2>/dev/null) >/dev/null 2>&1) || true");
+                            datad_control_async("qos.reload", NULL, NULL);
                             snprintf(g_toast, sizeof g_toast, "已请求刷新 AMBR");
                             g_toast_until = now + 1600;
                             need_render = 1;
@@ -6128,8 +6320,9 @@ int main(void)
                             static devui_data_t dd; char cmd[120];
                             int on = (data_refresh_live(&dd) && dd.nfc_switch) ? 0 : 1;
                             snprintf(cmd, sizeof cmd,
-                                "ubus call zwrt_nfc zwrt_nfc_wifi_set '{\"switch\":%d,\"flag\":2}'", on);
-                            system(cmd);
+                                "ubus call zwrt_nfc zwrt_nfc_wifi_set '{\"switch\":%d,\"flag\":2}' >/dev/null 2>&1", on);
+                            /* without flag datad keeps the vendor's current NFC Wi-Fi target */
+                            datad_control_async("nfc.set", on ? "{\"enabled\":true}" : "{\"enabled\":false}", cmd);
                             need_render = 1;
                         }
                         else if (!strcmp(a, "wifi")) {   /* master: both main bands (wlan0+wlan2) */
@@ -6137,29 +6330,38 @@ int main(void)
                             const char *ic = on ? "down" : "up";
                             char cmd[160];
                             snprintf(cmd, sizeof cmd,
-                                "(ifconfig wlan0 %s; ifconfig wlan2 %s) >/dev/null 2>&1 &", ic, ic);
-                            system(cmd);
+                                "(ifconfig wlan0 %s; ifconfig wlan2 %s) >/dev/null 2>&1", ic, ic);
+                            datad_control_async("wifi.set_module",
+                                                on ? "{\"enabled\":false}" : "{\"enabled\":true}", cmd);
                             g_w24 = g_w5 = !on;
+                            g_wifi_hold_until = now + 8000;
                             need_render = 1;
                         }
                         else if (!strcmp(a, "wifi24") || !strcmp(a, "wifi5")) {
                             int is24 = !strcmp(a, "wifi24");
                             int on = (is24 ? g_w24 : g_w5) == 1;
-                            char cmd[120];
-                            snprintf(cmd, sizeof cmd, "ifconfig %s %s >/dev/null 2>&1 &",
+                            char cmd[120], params[48];
+                            snprintf(cmd, sizeof cmd, "ifconfig %s %s >/dev/null 2>&1",
                                      is24 ? "wlan0" : "wlan2", on ? "down" : "up");
-                            system(cmd);
+                            snprintf(params, sizeof params, "{\"band\":\"%s\",\"enabled\":%s}",
+                                     is24 ? "2g" : "5g", on ? "false" : "true");
+                            /* datad refuses layouts the firmware cannot start (last band,
+                             * three APs on U60 Pro); the next wifi.state read shows that. */
+                            datad_control_async("wifi.radio.set", params, cmd);
                             if (is24) g_w24 = !on; else g_w5 = !on;
+                            g_wifi_hold_until = now + 8000;
                             need_render = 1;
                         }
                         else if (!strcmp(a, "dps")) {   /* power direct-supply mode */
                             int on = (g_dps == 1);
                             char cmd[160];
                             snprintf(cmd, sizeof cmd,
-                                "ubus call zwrt_bsp.charger set '{\"direct_power_supply_mode\":\"%s\"}' >/dev/null 2>&1 &",
+                                "ubus call zwrt_bsp.charger set '{\"direct_power_supply_mode\":\"%s\"}' >/dev/null 2>&1",
                                 on ? "disable" : "enable");
-                            system(cmd);
+                            datad_control_async("power.direct_supply.set",
+                                                on ? "{\"enabled\":false}" : "{\"enabled\":true}", cmd);
                             g_dps = !on;
+                            g_dps_hold_until = now + 5000;
                             need_render = 1;
                         }
                         else if (!strcmp(a, "psm")) {
@@ -6200,8 +6402,11 @@ int main(void)
                                     "/sbin/usb_composition 9059 n n y y >/dev/null 2>&1 &");
                             else
                                 snprintf(cmd, sizeof cmd,
-                                    "ubus call zwrt_bsp.usb set '{\"mode\":\"user\"}' >/dev/null 2>&1 &");
-                            system(cmd);
+                                    "ubus call zwrt_bsp.usb set '{\"mode\":\"user\"}' >/dev/null 2>&1");
+                            /* Turning ADB on keeps the existing 9059 composition switch;
+                             * datad has no action for it. */
+                            if (g_adb_pending) system(cmd);
+                            else datad_control_async("usb.set", "{\"mode\":\"user\"}", cmd);
                             need_render = 1;
                         }
                         else if (!strcmp(a, "usbpower")) {
@@ -6361,10 +6566,7 @@ int main(void)
                             need_render = 1;
                         }
                         else if (!strncmp(a, "net:", 4)) {   /* segmented control tap fallback */
-                            char cmd[160];
-                            snprintf(cmd, sizeof cmd,
-                                "ubus call zte_nwinfo_api nwinfo_set_netselect '{\"net_select\":\"%s\"}' >/dev/null 2>&1 &", a + 4);
-                            system(cmd);
+                            net_mode_apply(a + 4);
                             snprintf(g_net_pending, sizeof g_net_pending, "%s", a + 4);
                             snprintf(g_toast, sizeof g_toast, "网络模式已切换"); g_toast_until = now + 1600;
                         }
@@ -6393,11 +6595,13 @@ int main(void)
                                         snprintf(g_sms_text, sizeof g_sms_text, "%s", sd.sms[i].text);
                                         g_sms_open = sid;
                                         if (sd.sms[i].unread && sd.sms[i].id > 0) {
-                                            char cmd[128];
+                                            char cmd[128], params[64];
                                             snprintf(cmd, sizeof cmd,
-                                                "ubus call zwrt_wms zwrt_wms_modify_tag '{\"id\":\"%ld;\",\"tag\":0}' >/dev/null 2>&1 &",
+                                                "ubus call zwrt_wms zwrt_wms_modify_tag '{\"id\":\"%ld;\",\"tag\":0}' >/dev/null 2>&1",
                                                 sd.sms[i].id);
-                                            system(cmd);
+                                            snprintf(params, sizeof params,
+                                                     "{\"ids\":\"%ld;\",\"tag\":0}", sd.sms[i].id);
+                                            datad_control_async("sms.mark_read", params, cmd);
                                         }
                                         need_render = 1;
                                         break;
@@ -6406,7 +6610,9 @@ int main(void)
                             }
                         }
                         else if (!strcmp(a, "resetband")) {
-                            system("ubus call zte_nwinfo_api nwinfo_reset_band_cell_setting '{}' >/dev/null 2>&1 &");
+                            /* no datad action resets bands and cells in one vendor call */
+                            datad_ubus_call_async("zte_nwinfo_api", "nwinfo_reset_band_cell_setting", NULL,
+                                                  "ubus call zte_nwinfo_api nwinfo_reset_band_cell_setting '{}' >/dev/null 2>&1");
                             snprintf(g_toast, sizeof g_toast, "锁频已恢复默认"); g_toast_until = now + 1600;
                             need_render = 1;   /* selection re-syncs from the live lock automatically */
                         }
@@ -6475,6 +6681,15 @@ action_done:
 
         /* reconcile page-2 WiFi switch states from uci/iw on a slow throttle */
         if (!dragging && !scroll_inertia && now - g_wifi_aux_at >= 4000) { g_wifi_aux_at = now; wifi_aux_refresh(); }
+        if (!g_charge_boot && data_backend_generation() != datad_generation) {
+            /* new datad connection (first contact or a restarted datad) */
+            datad_generation = data_backend_generation();
+            g_modem_api = -1;
+            g_modem_api_probe_at = 0;
+            (void)datad_set_refresh_ms(g_refresh_ms);
+            (void)datad_set_signal_read(g_sig_read);
+            (void)datad_set_signal_parse(g_sig_parse);
+        }
 
         if (!g_charge_boot && now - g_pages_scan_at >= 1000) {
             g_pages_scan_at = now;
