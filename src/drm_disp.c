@@ -225,6 +225,7 @@ int drm_disp_init(drm_disp_t *d)
     }
     d->fb = (uint16_t *)addr;
     memset(d->fb, 0, dumb.size);
+    d->shadow = (uint16_t *)calloc((size_t)d->pitch_px * d->height, sizeof(uint16_t));
 
     /* Scan out our framebuffer on the chosen crtc + connector. */
     struct drm_mode_crtc set;
@@ -271,6 +272,24 @@ void drm_disp_dirty(drm_disp_t *d, int x1, int y1, int x2, int y2)
     dirty.clips_ptr = (uint64_t)(uintptr_t)&clip;
     /* Some KMS drivers don't implement DIRTYFB; ignore -EINVAL/-ENOSYS. */
     (void)xioctl(d->fd, DRM_IOCTL_MODE_DIRTYFB, &dirty);
+    if (d->shadow)
+        memcpy(d->shadow + (size_t)y1 * d->pitch_px, d->fb + (size_t)y1 * d->pitch_px,
+               (size_t)(y2 - y1 + 1) * d->pitch_px * sizeof(uint16_t));
+}
+
+void drm_disp_present(drm_disp_t *d, int y1, int y2)
+{
+    if (!d->shadow) {
+        drm_disp_dirty(d, 0, y1, d->width - 1, y2);
+        return;
+    }
+    if (y1 < 0) y1 = 0;
+    if (y2 >= d->height) y2 = d->height - 1;
+    const size_t row = (size_t)d->pitch_px * sizeof(uint16_t);
+    while (y1 <= y2 && !memcmp(d->fb + (size_t)y1 * d->pitch_px, d->shadow + (size_t)y1 * d->pitch_px, row)) y1++;
+    while (y2 >= y1 && !memcmp(d->fb + (size_t)y2 * d->pitch_px, d->shadow + (size_t)y2 * d->pitch_px, row)) y2--;
+    if (y1 <= y2)
+        drm_disp_dirty(d, 0, y1, d->width - 1, y2);   /* one call: each costs a full transfer on the U60 */
 }
 
 void drm_disp_close(drm_disp_t *d)
@@ -279,6 +298,8 @@ void drm_disp_close(drm_disp_t *d)
         munmap(d->fb, d->map_size);
     if (d->fd >= 0)
         close(d->fd);
+    free(d->shadow);
+    d->shadow = NULL;
     d->fb = NULL;
     d->fd = -1;
 }

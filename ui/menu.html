@@ -2,11 +2,17 @@
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
 <body class="{{THEME}}">
-  <div class="pm-title">电源</div>
+  <!-- power menu (long press on the power key): discs and glyphs drawn natively;
+       a first tap arms an action, a second tap within 4 s runs it -->
+  <div class="pm-head">
+    <div class="pm-title">电源</div>
+    <div class="pm-sub">电量 {{BAT}}% · 已运行 {{UPSHORT}}</div>
+  </div>
   <div class="pm-row">
     <a class="pmbtn {{PWROFFCLS}}" href="act:poweroff"><span class="pmc" id="pmc-off"></span><span class="pmlab">{{PWROFFLBL}}</span></a>
     <a class="pmbtn {{PWRREBCLS}}" href="act:reboot"><span class="pmc" id="pmc-reboot"></span><span class="pmlab">{{PWRREBLBL}}</span></a>
     <a class="pmbtn" href="act:close"><span class="pmc" id="pmc-cancel"></span><span class="pmlab">取消</span></a>
   </div>
+  <div class="pm-hint">点一下选择，再点一次确认</div>
 </body>
 </html>

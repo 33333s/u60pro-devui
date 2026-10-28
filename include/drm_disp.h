@@ -23,6 +23,7 @@ typedef struct {
     uint32_t  crtc_id;
     uint32_t  connector_id;
     uint64_t  map_size;
+    uint16_t *shadow;         /* copy of what the panel shows (drm_disp_present) */
 } drm_disp_t;
 
 /* Returns 0 on success, negative errno-style code on failure. */
@@ -30,6 +31,11 @@ int  drm_disp_init(drm_disp_t *d);
 
 /* Push the given rectangle (inclusive coords, framebuffer space) to the panel. */
 void drm_disp_dirty(drm_disp_t *d, int x1, int y1, int x2, int y2);
+
+/* Push the rows within [y1, y2] that differ from what the panel shows, and
+ * nothing at all when the frame is unchanged (on the U60 each DIRTYFB costs a
+ * full ~30 ms panel transfer whatever the clip). */
+void drm_disp_present(drm_disp_t *d, int y1, int y2);
 
 void drm_disp_close(drm_disp_t *d);
 

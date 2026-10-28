@@ -18,7 +18,9 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <sys/stat.h>
+#include <unordered_map>
 
 using namespace litehtml;
 
@@ -42,6 +44,44 @@ static inline void put_px(int x, int y, int r, int g, int b, int a)
         b = (b * a + ob * (255 - a)) / 255;
     }
     *p = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+}
+
+/* put_px with 4x4 ordered dithering: a smooth gradient quantized straight to
+ * RGB565 (5/6/5 bits) shows bands; spreading the rounding error over a fixed
+ * pattern hides them. */
+static const uint8_t k_bayer4[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+
+static inline void put_px_dither(int x, int y, int r, int g, int b, int a)
+{
+    if (y < g_clip_top) return;
+    if (x < 0 || y < 0 || x >= g_w || y >= g_h || a <= 0) return;
+    int dx = g_rotate ? (g_w - 1 - x) : x;
+    int dy = g_rotate ? (g_h - 1 - y) : y;
+    uint16_t *p = &g_fb[dy * g_pitch_px + dx];
+    if (a < 255) {
+        uint16_t o = *p;
+        int orr = ((o >> 11) & 0x1F) << 3, og = ((o >> 5) & 0x3F) << 2, ob = (o & 0x1F) << 3;
+        r = (r * a + orr * (255 - a)) / 255;
+        g = (g * a + og * (255 - a)) / 255;
+        b = (b * a + ob * (255 - a)) / 255;
+    }
+    int t = k_bayer4[y & 3][x & 3];          /* 0..15: threshold within one quantization step */
+    r += t >> 1; g += t >> 2; b += t >> 1;
+    if (r > 255) r = 255;
+    if (g > 255) g = 255;
+    if (b > 255) b = 255;
+    *p = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+}
+
+/* The opaque RGB565 pixel put_px_dither writes at (x, y). */
+static inline uint16_t dither565(int x, int y, int r, int g, int b)
+{
+    int t = k_bayer4[y & 3][x & 3];
+    r += t >> 1; g += t >> 2; b += t >> 1;
+    if (r > 255) r = 255;
+    if (g > 255) g = 255;
+    if (b > 255) b = 255;
+    return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
 static inline uint16_t get_px565(int x, int y)
@@ -72,6 +112,45 @@ static FT_Library g_ft;
 static FT_Face    g_face;
 
 struct ft_font { int size; int ascent, descent, height; };
+
+/* Rendered glyphs by (pixel size, code point). Loading and rasterizing a glyph
+ * through FreeType costs far more than drawing it, and a page uses the same few
+ * dozen glyphs on every refresh. */
+struct glyph {
+    int adv = 0, left = 0, top = 0, w = 0, h = 0;
+    std::vector<uint8_t> px;   /* w*h coverage */
+};
+static std::unordered_map<uint32_t, glyph> g_glyphs;
+static int g_ascent[256];      /* ascender per pixel size, 0 = not looked up */
+
+static const glyph &glyph_get(unsigned cp, int size)
+{
+    uint32_t key = ((uint32_t)(size & 0x7FF) << 21) | (cp & 0x1FFFFF);
+    auto it = g_glyphs.find(key);
+    if (it != g_glyphs.end()) return it->second;
+    if (g_glyphs.size() >= 4096) g_glyphs.clear();
+    glyph gl;
+    FT_Set_Pixel_Sizes(g_face, 0, size);
+    if (!FT_Load_Char(g_face, cp, FT_LOAD_RENDER)) {
+        FT_GlyphSlot s = g_face->glyph;
+        gl.adv = (int)(s->advance.x >> 6);
+        gl.left = s->bitmap_left; gl.top = s->bitmap_top;
+        gl.w = (int)s->bitmap.width; gl.h = (int)s->bitmap.rows;
+        gl.px.resize((size_t)gl.w * gl.h);
+        for (int r = 0; r < gl.h; r++)
+            memcpy(&gl.px[(size_t)r * gl.w], s->bitmap.buffer + r * s->bitmap.pitch, (size_t)gl.w);
+    }
+    return g_glyphs.emplace(key, std::move(gl)).first->second;
+}
+
+static int font_ascent(int size)
+{
+    if (size > 0 && size < 256 && g_ascent[size]) return g_ascent[size];
+    FT_Set_Pixel_Sizes(g_face, 0, size);
+    int a = (int)(g_face->size->metrics.ascender >> 6);
+    if (size > 0 && size < 256) g_ascent[size] = a;
+    return a;
+}
 
 /* UI base dir (for <link> CSS / images) and last-clicked anchor href. */
 static std::string g_ui_dir = "/data/plugins/u60pro-devui/ui";
@@ -164,6 +243,13 @@ static unsigned utf8_next(const char *&s)
     c &= (0x3F >> n);
     while (n-- && (*s & 0xC0) == 0x80) c = (c << 6) | (*s++ & 0x3F);
     return c;
+}
+
+static int text_advance(const char *text, int size)
+{
+    int w = 0;
+    for (const char *s = text; *s; ) w += glyph_get(utf8_next(s), size).adv;
+    return w;
 }
 
 /* ---- container ---- */
@@ -265,40 +351,28 @@ public:
     void delete_font(uint_ptr h) override { delete (ft_font *)h; }
 
     pixel_t text_width(const char *text, uint_ptr h) override {
-        auto *f = (ft_font *)h;
-        FT_Set_Pixel_Sizes(g_face, 0, f->size);
-        pixel_t w = 0;
-        for (const char *s = text; *s; ) {
-            unsigned cp = utf8_next(s);
-            if (FT_Load_Char(g_face, cp, FT_LOAD_DEFAULT)) continue;
-            w += g_face->glyph->advance.x >> 6;
-        }
-        return w;
+        return (pixel_t)text_advance(text, ((ft_font *)h)->size);
     }
 
     void draw_text(uint_ptr, const char *text, uint_ptr h, web_color color, const position &pos) override {
         auto *f = (ft_font *)h;
-        FT_Set_Pixel_Sizes(g_face, 0, f->size);
         int pen = (int)pos.x;
         int base = (int)pos.y + f->ascent;
         position cl = eff_clip();
         for (const char *s = text; *s; ) {
-            unsigned cp = utf8_next(s);
-            if (FT_Load_Char(g_face, cp, FT_LOAD_RENDER)) continue;
-            FT_GlyphSlot gl = g_face->glyph;
-            FT_Bitmap &bm = gl->bitmap;
-            int ox = pen + gl->bitmap_left, oy = base - gl->bitmap_top;
-            for (int r = 0; r < (int)bm.rows; r++) {
+            const glyph &gl = glyph_get(utf8_next(s), f->size);
+            int ox = pen + gl.left, oy = base - gl.top;
+            for (int r = 0; r < gl.h; r++) {
                 int yy = oy + r;
                 if (yy < (int)cl.top() || yy >= (int)cl.bottom()) continue;
-                for (int cx = 0; cx < (int)bm.width; cx++) {
+                for (int cx = 0; cx < gl.w; cx++) {
                     int xx = ox + cx;
                     if (xx < (int)cl.left() || xx >= (int)cl.right()) continue;
-                    int a = bm.buffer[r * bm.pitch + cx];
+                    int a = gl.px[(size_t)r * gl.w + cx];
                     if (a) put_px(xx, yy, color.red, color.green, color.blue, a * color.alpha / 255);
                 }
             }
-            pen += gl->advance.x >> 6;
+            pen += gl.adv;
         }
     }
 
@@ -309,12 +383,103 @@ public:
     void draw_solid_fill(uint_ptr, const background_layer &layer, const web_color &color) override {
         fill_background_box(layer, color);
     }
-    /* Approximate gradients with a representative flat dark color. */
-    void draw_linear_gradient(uint_ptr, const background_layer &l, const background_layer::linear_gradient &) override {
-        fill_background_box(l, web_color(45, 46, 50));
+    /* Color of a gradient at t (0..1 along the gradient line) from its stops. */
+    static web_color gradient_at(const std::vector<background_layer::color_point> &pts, float t) {
+        if (pts.empty()) return web_color(0, 0, 0, 0);
+        if (t <= pts.front().offset) return pts.front().color;
+        if (t >= pts.back().offset) return pts.back().color;
+        for (size_t i = 1; i < pts.size(); i++) {
+            if (t > pts[i].offset) continue;
+            const web_color &a = pts[i - 1].color, &b = pts[i].color;
+            float span = pts[i].offset - pts[i - 1].offset;
+            float k = span > 0 ? (t - pts[i - 1].offset) / span : 1.f;
+            return web_color((byte)(a.red + (b.red - a.red) * k), (byte)(a.green + (b.green - a.green) * k),
+                             (byte)(a.blue + (b.blue - a.blue) * k), (byte)(a.alpha + (b.alpha - a.alpha) * k));
+        }
+        return pts.back().color;
     }
-    void draw_radial_gradient(uint_ptr, const background_layer &l, const background_layer::radial_gradient &) override {
-        fill_background_box(l, web_color(45, 46, 50));
+    /* Opaque gradients repaint the same pixels on every refresh (the page
+     * background), so the last few are kept and copied back. */
+    struct grad_cache { std::string key; std::vector<uint16_t> px; };
+    grad_cache m_grad[4];
+    int m_grad_next = 0;
+
+    /* Paint the layer's (rounded) box with color_of(x, y) -> t. `kind` names
+     * the gradient geometry for the cache. */
+    template <class F>
+    void fill_gradient_box(const background_layer &l, const std::vector<background_layer::color_point> &pts,
+                           const std::string &kind, F t_of) {
+        const position &b = l.border_box;
+        const border_radiuses &br = l.border_radius;
+        int rtl = (int)br.top_left_x, rtr = (int)br.top_right_x, rbr = (int)br.bottom_right_x, rbl = (int)br.bottom_left_x;
+        position cl = eff_clip();
+        int x1 = std::max({(int)b.left(), (int)cl.left(), (int)l.clip_box.left()});
+        int y1 = std::max({(int)b.top(), (int)cl.top(), (int)l.clip_box.top()});
+        int x2 = std::min({(int)b.right(), (int)cl.right(), (int)l.clip_box.right()});
+        int y2 = std::min({(int)b.bottom(), (int)cl.bottom(), (int)l.clip_box.bottom()});
+        if (x2 <= x1 || y2 <= y1) return;
+        bool opaque = !(rtl || rtr || rbr || rbl);
+        for (const auto &p : pts) if (p.color.alpha != 255) opaque = false;
+        if (opaque) {
+            char geo[96];
+            snprintf(geo, sizeof geo, "|%d,%d,%d,%d|%d,%d,%d,%d|", (int)b.x, (int)b.y, (int)b.width, (int)b.height, x1, y1, x2, y2);
+            std::string key = kind + geo;
+            for (const auto &p : pts) {
+                char st[48];
+                snprintf(st, sizeof st, "%g:%02x%02x%02x;", p.offset, p.color.red, p.color.green, p.color.blue);
+                key += st;
+            }
+            grad_cache *c = nullptr;
+            for (auto &e : m_grad) if (e.key == key) c = &e;
+            if (!c) {
+                c = &m_grad[m_grad_next];
+                m_grad_next = (m_grad_next + 1) % 4;
+                c->key = key;
+                c->px.resize((size_t)(x2 - x1) * (y2 - y1));
+                uint16_t *o = c->px.data();
+                for (int y = y1; y < y2; y++)
+                    for (int x = x1; x < x2; x++) {
+                        web_color col = gradient_at(pts, t_of((float)x + .5f, (float)y + .5f));
+                        *o++ = dither565(x, y, col.red, col.green, col.blue);
+                    }
+            }
+            const uint16_t *src = c->px.data();
+            for (int y = y1; y < y2; y++, src += x2 - x1) {
+                if (y < g_clip_top) continue;
+                if (g_rotate) {
+                    uint16_t *dp = &g_fb[(g_h - 1 - y) * g_pitch_px + (g_w - 1 - x1)];
+                    for (int i = 0; i < x2 - x1; i++) *dp-- = src[i];
+                } else {
+                    memcpy(&g_fb[y * g_pitch_px + x1], src, (size_t)(x2 - x1) * sizeof(uint16_t));
+                }
+            }
+            return;
+        }
+        for (int y = y1; y < y2; y++)
+            for (int x = x1; x < x2; x++) {
+                if ((rtl || rtr || rbr || rbl) &&
+                    !pt_in_round(x, y, (int)b.x, (int)b.y, (int)b.width, (int)b.height, rtl, rtr, rbr, rbl))
+                    continue;
+                web_color c = gradient_at(pts, t_of((float)x + .5f, (float)y + .5f));
+                put_px_dither(x, y, c.red, c.green, c.blue, c.alpha);
+            }
+    }
+    void draw_linear_gradient(uint_ptr, const background_layer &l, const background_layer::linear_gradient &g) override {
+        float vx = g.end.x - g.start.x, vy = g.end.y - g.start.y, len2 = vx * vx + vy * vy;
+        char kind[96];
+        snprintf(kind, sizeof kind, "L%g,%g,%g,%g", g.start.x, g.start.y, g.end.x, g.end.y);
+        fill_gradient_box(l, g.color_points, kind, [&](float x, float y) {
+            return len2 > 0 ? ((x - g.start.x) * vx + (y - g.start.y) * vy) / len2 : 0.f;
+        });
+    }
+    void draw_radial_gradient(uint_ptr, const background_layer &l, const background_layer::radial_gradient &g) override {
+        float rx = g.radius.x > 0 ? g.radius.x : 1.f, ry = g.radius.y > 0 ? g.radius.y : 1.f;
+        char kind[96];
+        snprintf(kind, sizeof kind, "R%g,%g,%g,%g", g.position.x, g.position.y, rx, ry);
+        fill_gradient_box(l, g.color_points, kind, [&](float x, float y) {
+            float dx = (x - g.position.x) / rx, dy = (y - g.position.y) / ry;
+            return std::sqrt(dx * dx + dy * dy);
+        });
     }
     void draw_conic_gradient(uint_ptr, const background_layer &l, const background_layer::conic_gradient &) override {
         fill_background_box(l, web_color(45, 46, 50));
@@ -525,6 +690,84 @@ extern "C" void html_view_fill_poly(const int *xs, const int *ys, int n, int r, 
     }
 }
 
+static inline float clampf01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
+
+/* Anti-aliased filled circle (coverage from the signed distance to the edge). */
+extern "C" void html_view_fill_circle(float cx, float cy, float rad, int r, int g, int b, int a)
+{
+    for (int y = (int)std::floor(cy - rad - 1); y <= (int)std::ceil(cy + rad + 1); y++)
+        for (int x = (int)std::floor(cx - rad - 1); x <= (int)std::ceil(cx + rad + 1); x++) {
+            float dx = (float)x + .5f - cx, dy = (float)y + .5f - cy;
+            float cov = clampf01(rad - std::sqrt(dx * dx + dy * dy) + .5f);
+            if (cov > 0.f) put_px(x, y, r, g, b, (int)(cov * (float)a + .5f));
+        }
+}
+
+/* Anti-aliased line segment of thickness th with round ends. */
+extern "C" void html_view_line(float x0, float y0, float x1, float y1, float th, int r, int g, int b, int a)
+{
+    float half = th * .5f, vx = x1 - x0, vy = y1 - y0, len2 = vx * vx + vy * vy;
+    for (int y = (int)std::floor(std::min(y0, y1) - half - 1); y <= (int)std::ceil(std::max(y0, y1) + half + 1); y++)
+        for (int x = (int)std::floor(std::min(x0, x1) - half - 1); x <= (int)std::ceil(std::max(x0, x1) + half + 1); x++) {
+            float px = (float)x + .5f - x0, py = (float)y + .5f - y0;
+            float t = len2 > 0 ? clampf01((px * vx + py * vy) / len2) : 0.f;
+            float dx = px - t * vx, dy = py - t * vy;
+            float cov = clampf01(half - std::sqrt(dx * dx + dy * dy) + .5f);
+            if (cov > 0.f) put_px(x, y, r, g, b, (int)(cov * (float)a + .5f));
+        }
+}
+
+/* Anti-aliased arc of thickness th around radius rad with round caps. Angles in
+ * degrees, 0 = 12 o'clock, clockwise, a0 < a1 (a span of 360 draws a ring). */
+extern "C" void html_view_arc(float cx, float cy, float rad, float th, float a0, float a1,
+                              int r, int g, int b, int a)
+{
+    const float pi = 3.14159265f;
+    float half = th * .5f, r0 = rad - half, r1 = rad + half;
+    int ring = a1 - a0 >= 359.9f;
+
+    if (a1 <= a0) return;
+    for (int y = (int)std::floor(cy - r1 - 1); y <= (int)std::ceil(cy + r1 + 1); y++)
+        for (int x = (int)std::floor(cx - r1 - 1); x <= (int)std::ceil(cx + r1 + 1); x++) {
+            float dx = (float)x + .5f - cx, dy = (float)y + .5f - cy, d2 = dx * dx + dy * dy;
+            if (d2 > (r1 + 1) * (r1 + 1) || d2 < (r0 - 1) * (r0 - 1)) continue;
+            float d = std::sqrt(d2);
+            float cov = clampf01(d - r0 + .5f) * clampf01(r1 - d + .5f);
+            if (!ring) {
+                float deg = std::atan2(dx, -dy) * 180.f / pi;
+                while (deg < a0) deg += 360.f;
+                while (deg >= a0 + 360.f) deg -= 360.f;
+                if (deg > a1) continue;
+            }
+            if (cov > 0.f) put_px(x, y, r, g, b, (int)(cov * (float)a + .5f));
+        }
+    if (!ring) {
+        float ra0 = a0 * pi / 180.f, ra1 = a1 * pi / 180.f;
+        html_view_fill_circle(cx + rad * std::sin(ra0), cy - rad * std::cos(ra0), half, r, g, b, a);
+        html_view_fill_circle(cx + rad * std::sin(ra1), cy - rad * std::cos(ra1), half, r, g, b, a);
+    }
+}
+
+/* Anti-aliased rounded rectangle: filled when th <= 0, else an outline of
+ * thickness th inside the edge (coverage from the signed distance). */
+extern "C" void html_view_round_rect_aa(float x, float y, float w, float h, float rad, float th,
+                                        int r, int g, int b, int a)
+{
+    if (w <= 0.f || h <= 0.f) return;
+    float hw = w * .5f, hh = h * .5f, cx = x + hw, cy = y + hh;
+    if (rad > hw) rad = hw;
+    if (rad > hh) rad = hh;
+    for (int py = (int)std::floor(y) - 1; py <= (int)std::ceil(y + h); py++)
+        for (int px = (int)std::floor(x) - 1; px <= (int)std::ceil(x + w); px++) {
+            float qx = std::fabs((float)px + .5f - cx) - (hw - rad), qy = std::fabs((float)py + .5f - cy) - (hh - rad);
+            float ox = qx > 0.f ? qx : 0.f, oy = qy > 0.f ? qy : 0.f;
+            float d = std::sqrt(ox * ox + oy * oy) + std::min(std::max(qx, qy), 0.f) - rad;
+            float cov = clampf01(.5f - d);
+            if (th > 0.f) cov *= clampf01(.5f + d + th);
+            if (cov > 0.f) put_px(px, py, r, g, b, (int)(cov * (float)a + .5f));
+        }
+}
+
 /* Filled rounded rectangle directly (host overlays like the lock icon). */
 extern "C" void html_view_fill_round_rect(int x, int y, int w, int h, int rad, int r, int g, int b, int a)
 {
@@ -538,14 +781,7 @@ extern "C" void html_view_fill_round_rect(int x, int y, int w, int h, int rad, i
 extern "C" int html_view_text_width_px(const char *text, int size)
 {
     if (!g_face || !text) return 0;
-    FT_Set_Pixel_Sizes(g_face, 0, size);
-    int w = 0;
-    for (const char *s = text; *s; ) {
-        unsigned cp = utf8_next(s);
-        if (FT_Load_Char(g_face, cp, FT_LOAD_DEFAULT)) continue;
-        w += g_face->glyph->advance.x >> 6;
-    }
-    return w;
+    return text_advance(text, size);
 }
 
 extern "C" void html_view_text_bounds_px(const char *text, int size,
@@ -556,17 +792,14 @@ extern "C" void html_view_text_bounds_px(const char *text, int size,
     if (x1) *x1 = 0;
     if (y1) *y1 = 0;
     if (!g_face || !text) return;
-    FT_Set_Pixel_Sizes(g_face, 0, size);
-    int ascent = g_face->size->metrics.ascender >> 6;
+    int ascent = font_ascent(size);
     int pen = 0, minx = 0, miny = 0, maxx = 0, maxy = 0, seen = 0;
     for (const char *s = text; *s; ) {
-        unsigned cp = utf8_next(s);
-        if (FT_Load_Char(g_face, cp, FT_LOAD_RENDER)) continue;
-        FT_GlyphSlot gl = g_face->glyph;
-        int gx0 = pen + gl->bitmap_left;
-        int gy0 = ascent - gl->bitmap_top;
-        int gx1 = gx0 + (int)gl->bitmap.width;
-        int gy1 = gy0 + (int)gl->bitmap.rows;
+        const glyph &gl = glyph_get(utf8_next(s), size);
+        int gx0 = pen + gl.left;
+        int gy0 = ascent - gl.top;
+        int gx1 = gx0 + gl.w;
+        int gy1 = gy0 + gl.h;
         if (!seen) {
             minx = gx0; miny = gy0; maxx = gx1; maxy = gy1; seen = 1;
         } else {
@@ -575,7 +808,7 @@ extern "C" void html_view_text_bounds_px(const char *text, int size,
             if (gx1 > maxx) maxx = gx1;
             if (gy1 > maxy) maxy = gy1;
         }
-        pen += gl->advance.x >> 6;
+        pen += gl.adv;
     }
     if (!seen) return;
     if (x0) *x0 = minx;
@@ -588,23 +821,18 @@ extern "C" void html_view_draw_text_px(int x, int y, const char *text, int size,
                                        int r, int g, int b, int a)
 {
     if (!g_face || !text) return;
-    FT_Set_Pixel_Sizes(g_face, 0, size);
-    int ascent = g_face->size->metrics.ascender >> 6;
-    int pen = x, base = y + ascent;
+    int pen = x, base = y + font_ascent(size);
     for (const char *s = text; *s; ) {
-        unsigned cp = utf8_next(s);
-        if (FT_Load_Char(g_face, cp, FT_LOAD_RENDER)) continue;
-        FT_GlyphSlot gl = g_face->glyph;
-        FT_Bitmap &bm = gl->bitmap;
+        const glyph &gl = glyph_get(utf8_next(s), size);
         for (int pass = 0; pass < (bold ? 2 : 1); pass++) {
-            int ox = pen + gl->bitmap_left + pass, oy = base - gl->bitmap_top;
-            for (int row = 0; row < (int)bm.rows; row++)
-                for (int col = 0; col < (int)bm.width; col++) {
-                    int aa = bm.buffer[row * bm.pitch + col];
+            int ox = pen + gl.left + pass, oy = base - gl.top;
+            for (int row = 0; row < gl.h; row++)
+                for (int col = 0; col < gl.w; col++) {
+                    int aa = gl.px[(size_t)row * gl.w + col];
                     if (aa) put_px(ox + col, oy + row, r, g, b, aa * a / 255);
                 }
         }
-        pen += gl->advance.x >> 6;
+        pen += gl.adv;
     }
 }
 
@@ -612,19 +840,14 @@ extern "C" void html_view_draw_text_contrast_px(int x, int y, const char *text, 
                                                 int dr, int dg, int db, int lr, int lg, int lb, int a)
 {
     if (!g_face || !text) return;
-    FT_Set_Pixel_Sizes(g_face, 0, size);
-    int ascent = g_face->size->metrics.ascender >> 6;
-    int pen = x, base = y + ascent;
+    int pen = x, base = y + font_ascent(size);
     for (const char *s = text; *s; ) {
-        unsigned cp = utf8_next(s);
-        if (FT_Load_Char(g_face, cp, FT_LOAD_RENDER)) continue;
-        FT_GlyphSlot gl = g_face->glyph;
-        FT_Bitmap &bm = gl->bitmap;
+        const glyph &gl = glyph_get(utf8_next(s), size);
         for (int pass = 0; pass < (bold ? 2 : 1); pass++) {
-            int ox = pen + gl->bitmap_left + pass, oy = base - gl->bitmap_top;
-            for (int row = 0; row < (int)bm.rows; row++)
-                for (int col = 0; col < (int)bm.width; col++) {
-                    int aa = bm.buffer[row * bm.pitch + col];
+            int ox = pen + gl.left + pass, oy = base - gl.top;
+            for (int row = 0; row < gl.h; row++)
+                for (int col = 0; col < gl.w; col++) {
+                    int aa = gl.px[(size_t)row * gl.w + col];
                     if (!aa) continue;
                     uint16_t bg = get_px565(ox + col, oy + row);
                     int br = ((bg >> 11) & 0x1F) * 255 / 31;
@@ -637,7 +860,7 @@ extern "C" void html_view_draw_text_contrast_px(int x, int y, const char *text, 
                     put_px(ox + col, oy + row, r, g, b, aa * a / 255);
                 }
         }
-        pen += gl->advance.x >> 6;
+        pen += gl.adv;
     }
 }
 

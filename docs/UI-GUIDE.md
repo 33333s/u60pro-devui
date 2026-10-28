@@ -30,11 +30,12 @@
 
 ```text
 /data/plugins/u60pro-devui/ui/
-├── 01-signal.html    # 第 1 页（按文件名排序）：信号 / 载波
+├── 00-home.html      # 第 1 页（按文件名排序）：时钟、电量环、网络与速率；锁屏预览也显示这一页
+├── 01-signal.html    # 第 2 页：RSRP/SINR 表盘 + 信号 / 载波
 ├── 02-functions.html # 第 2 页：更多功能入口
 ├── 05-charts.html    # 第 5 页：CPU / 内存 / 网速 图表
 ├── 06-system.html    # 第 6 页：系统信息 / 屏幕 / 开关（含锁屏开关）
-├── subpages/         # 内置二级页面：wifi / sms / cell / lock / speedtest
+├── subpages/         # 内置二级页面：wifi / sms / cell / lock / speedtest，以及下拉的控制中心 control
 ├── functions/        # 用户自定义功能页，*.html 会自动出现在更多功能页
 ├── menu.html         # 电源键长按弹出的菜单（不算翻页）
 ├── lockscreen.html   # 锁屏 PIN 键盘（不算翻页，开启锁屏后覆盖显示）
@@ -43,6 +44,7 @@
 
 - 文件名 `NN-名字.html` 的数字前缀决定**顺序**。想加一页，丢一个 `04-xxx.html` 进去即可，圆点指示会自动变成 4 个。
 - `menu.html` 是特殊页：电源键长按时覆盖显示，里面放关机/重启/取消。
+- 锁屏：启动、熄屏后、自动息屏为“关”时 60 秒无触摸，屏幕都会锁上，显示第 1 页（不响应点按）和底部“长按解锁”胶囊（原生绘制）。没设密码时按住 600 ms 解锁；设了密码时滑动或按住 450 ms 打开 `lockscreen.html` 密码盘。锁定时 `{{DOTS}}` 为空。
 - `lockscreen.html` 是特殊页：开启锁屏后，超时/电源键锁屏时全屏显示 PIN 键盘（解锁正确才回到界面）；系统页锁屏开关从关→开时也用它设置新密码。
 - `subpages/*.html` 是内置二级页面，通过 `act:sub:<文件名>` 打开，`act:backfunc` 返回顶层页。
 - `functions/*.html` 是用户自定义二级页面，通过更多功能页自动扫描，示例见 `examples/custom-functions/`；示例不放进默认 `ui/`，避免安装后默认出现测试页面。
@@ -106,7 +108,7 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 
 | 令牌 | 内容 |
 |------|------|
-| `{{STATUSBAR}}` | 顶部状态栏：时间（有未读短信时右侧由程序原生绘制一个蓝色信封图标）· 实时网速 · 制式 · 信号格 · 电池 · 电量 |
+| `{{STATUSBAR}}` | 顶部状态栏：时间（有未读短信时右侧由程序原生绘制一个主题第二强调色的信封图标）· 实时网速 · 制式 · 信号格 · 电池 · 电量 |
 | `{{DOTS}}` | 底部翻页圆点，自动高亮当前页 |
 | `{{SMSLIST}}` | 短信页折叠列表（整段）：最多 32 条，每条号码 / 时间 + 一行预览，是可点的 `act:sms:ID` 卡片（点开弹完整内容的二级页面并标为已读）；详情仅在正文真实超出视口时允许滚动，且只能点底部关闭按钮退出。未读条目红点 + 蓝色号码高亮；无短信显示「暂无短信」 |
 | `{{SIGNALCARDS}}` | 默认第一页的完整信号区：运营商/制式/QCI/AMBR、载波卡片、信令解析附加指标、TA/品牌等高级卡片 |
@@ -124,7 +126,9 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 
 | 令牌 | 含义 | 例 |
 |------|------|----|
-| `{{TIME}}` `{{THEME}}` | 时间 / 主题类名 | `14:30` / `dark` |
+| `{{TIME}}` `{{DATE}}` | 时间 / 日期和星期 | `14:30` / `10月28日 周二` |
+| `{{THEME}}` | body 类名：`dark` + 主题类 | `dark th-ocean` |
+| `{{SIGGAUGES}}` | 信号表盘卡片：SA 只有 NR 一排，纯 LTE 只有 LTE 一排，NSA / EN-DC 是 NR 和 LTE 两排 | 一段 HTML |
 | `{{OPER}}` `{{NETTYPE}}` | 运营商（大陆四家中文）/ 制式 | `中国移动` / `SA` |
 | `{{GEN}}` `{{GENCLASS}}` | 网络代际文字 / 样式类 | `5G+` / `g5p` |
 | `{{BAT}}` `{{BATCLASS}}` | 电量% / 低电量类 | `100` / `low` |
@@ -146,7 +150,7 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `{{BRIGHT}}` | 屏幕亮度% | `80` |
 | `{{AUTOOFF}}` | 自动息屏预设按钮组(整段，当前项高亮) | |
 | `{{CURSA}}` `{{CURNSA}}` `{{CURLTE}}` | 各制式当前锁定频段摘要 | `已锁 n41 n78` |
-| `{{USBPWRCLASS}}/{{USBPWRSTATE}}` `{{USBNETCLASS}}/{{USBNETSTATE}}` `{{BATPCTCLASS}}/{{BATPCTSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{WIFI24CLASS}}/{{WIFI24STATE}}` `{{WIFI5CLASS}}/{{WIFI5STATE}}` `{{PSMCLASS}}/{{PSMSTATE}}` `{{DPSCLASS}}/{{DPSSTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMECLASS}}/{{THEMESTATE}}` `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{LOCKCLASS}}/{{LOCKSTATE}}` | 各开关的类(`on`/`off`) 与状态文字 | `on` / `已开启` |
+| `{{USBPWRCLASS}}/{{USBPWRSTATE}}` `{{USBNETCLASS}}/{{USBNETSTATE}}` `{{BATPCTCLASS}}/{{BATPCTSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{WIFI24CLASS}}/{{WIFI24STATE}}` `{{WIFI5CLASS}}/{{WIFI5STATE}}` `{{PSMCLASS}}/{{PSMSTATE}}` `{{DPSCLASS}}/{{DPSSTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMESTATE}}`（主题名，如 `海洋`） `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{LOCKCLASS}}/{{LOCKSTATE}}` | 各开关的类(`on`/`off`) 与状态文字 | `on` / `已开启` |
 | `{{LOCKTITLE}}` | 锁屏键盘标题（设置时「设置锁屏密码」/ 解锁时「请输入锁屏密码」） | |
 | `{{PAGE}}` `{{NPAGES}}` | 当前页 / 总页数 | `3` / `5` |
 
@@ -160,7 +164,7 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 
 | 动作 | 效果 |
 |------|------|
-| `act:theme` | 深色 / 浅色切换 |
+| `act:theme` | 按顺序切换四套主题（海洋 → 极光 → 日落 → 紫罗兰），并弹出主题名 |
 | `act:revealkey` `act:revealcell` `act:revealimei` | 明文/打码 显示 WiFi 密码 / Cell ID / IMEI |
 | `act:spunit` | 网速单位 Mbps(比特率) / MB/s(字节率) |
 | `act:usbpower` | 切换 USB-C 供电方向：给 U60 充电 / U60 反向供电 |
@@ -191,28 +195,56 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 例：一个开关按钮
 
 ```html
-<a href="act:theme" class="sw {{THEMECLASS}}"><span class="kn"></span></a>
+<a href="act:spunit" class="sw {{SPUNITCLASS}}"><span class="kn"></span></a>
 ```
 
-`{{THEMECLASS}}` 是 `on`/`off`，配合 CSS 的 `.sw.on` / `.sw.off` 把圆钮画在右/左，就是一个拨动开关。
+`{{SPUNITCLASS}}` 是 `on`/`off`，配合 CSS 的 `.sw.on` / `.sw.off` 把圆钮画在右/左，就是一个拨动开关。
 
 > 滑条/分段控件类（亮度 `id="bright-bar"`、选网 `id="netseg"`）由程序按元素 `id` 定位并处理点击/拖动，所以这些元素**要带对应的 `id`**。
 
 ---
 
-## 7. 主题（深色 / 浅色）
+## 7. 主题与原生绘制
 
-因为 `var()` 不可靠，主题用 **body 类名 + 两套规则**实现：
+默认界面照 U30 Pro 屏幕的风格：深蓝底带一圈柔光、半透明卡片、两种强调色。共有四套主题，都是深色，区别只在强调色：
+
+| 主题 | 类名 | 强调色 a / b |
+|------|------|------|
+| 海洋 | `th-ocean` | `#38D0FF` / `#FF7AC8` |
+| 极光 | `th-aurora` | `#4ADE80` / `#FFC857` |
+| 日落 | `th-sunset` | `#FF9F43` / `#6C8CFF` |
+| 紫罗兰 | `th-violet` | `#A78BFA` / `#2DD4BF` |
+
+`<body class="{{THEME}}">` 会变成 `dark th-ocean` 这样的两个类。因为 `var()` 不可靠，强调色按主题类各写一条规则：
 
 ```css
-body.dark  { background: #15161a; color: #e9ebee; }
-body.light { background: #eceef1; color: #1b1d22; }
-
-body.dark  .card { background: #23262c; }
-body.light .card { background: #ffffff; }
+.th-ocean  .seg-on { background: #38d0ff; color: #0b1220; }
+.th-aurora .seg-on { background: #4ade80; color: #0b1220; }
 ```
 
-`<body class="{{THEME}}">` 会自动是 `dark` 或 `light`，你只要为两个主题各写一套颜色即可。
+背景支持 `linear-gradient` 和 `radial-gradient`（默认页面底色就是一个径向渐变）。状态栏由程序原生绘制在 `#070C15` 上，和渐变边缘同色。
+旧版保存的“浅色模式”升级后会落到“极光”。
+
+有些图形 CSS 画不出来，程序会在页面渲染完后，按元素 `id` 找到占位框，把图形原生画进去。占位框只需要给出位置和大小：
+
+| `id` | 画什么 |
+|------|------|
+| `chart-cpu` `chart-mem` `chart-net` `chart-batt` | 折线图（图表页） |
+| `gauge-nr-rsrp` `gauge-nr-sinr` `gauge-lte-rsrp` `gauge-lte-sinr` | 270° 圆弧表盘：NR / LTE 那一路的 RSRP 和 SINR，中间是数值，开口处是名称；那一路没有读数时显示 `--`。`{{SIGGAUGES}}` 会按制式生成这些占位框 |
+| `gauge-rsrp` `gauge-sinr` | 同上，但只画服务小区（NR 在用时是 NR，否则 LTE），给自定义模板用 |
+| `home-ring` | 电量环（绕首页时钟），充电或电量 > 30% 为绿色，≤ 30% 黄色，≤ 15% 红色 |
+| `home-bars` `home-wifi` `home-bolt` | 首页的信号格、Wi-Fi 图标、充电闪电（只在充电时画） |
+| `fic-wifi` `fic-sms` `fic-cell` `fic-lock` `fic-speed` `fic-custom-N` | 功能列表左侧圆圈里的线条图标（主题色），自定义页面是四宫格 |
+| `cc-wifi` `cc-nfc` `cc-dps` `cc-theme` | 控制中心的圆形开关图标，开着时圆盘是主题色、图标深色 |
+
+渐变写进帧缓冲时带 4×4 有序抖动：屏幕是 RGB565，直接量化会出现一条条色带。
+
+### 上下拉面板
+
+和 U30 Pro 一样：在顶层页面上，从状态栏（顶部 30 px）往下拉打开**控制中心** `subpages/control.html`，从屏幕底边（底部 30 px）往上拉打开**短信列表** `subpages/sms.html`。
+面板就是普通二级页，点按、滚动、`act:backfunc` 都照常；控制中心从底边上拉收起，短信列表从状态栏下拉收起。打开和收起带一段竖向滑动动画。
+
+想在宿主机上看效果，见 [DEVELOPMENT.md](DEVELOPMENT.md) 的“界面预览”。
 
 ---
 

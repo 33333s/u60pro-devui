@@ -5,7 +5,7 @@ Serves /state, /events (one SSE snapshot, then holds the stream), /control and
 /ubus/call with reply shapes taken from zwrt-datad, and 404 for the private
 /modem/... routes. Every POST is appended to the log file as one JSON line.
 
-usage: mock_datad.py PORT LOGFILE
+usage: mock_datad.py PORT LOGFILE [STATE.json]
 """
 import http.server
 import json
@@ -31,6 +31,9 @@ STATE = {
         ]},
     },
 }
+if len(sys.argv) > 3:
+    with open(sys.argv[3], encoding="utf-8") as f:
+        STATE = json.load(f)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):

@@ -42,6 +42,14 @@ jobs:
           done
       - name: datad client against a mock datad
         run: sh tests/run_host_tests.sh
+      - name: Render every page on the host
+        run: bash tests/ui/preview.sh ui-preview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-preview
+          path: ui-preview/sheet.png
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: u60pro-devui-aarch64
