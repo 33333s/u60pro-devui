@@ -11,6 +11,15 @@
 - 第二页各字段的显示语义
 - 与后端 `/modem/*` 接口的对接边界
 
+## 后端兼容
+
+`/modem/*`（`signal-metrics`、`latest`、`latest-signals`、`recent`、`control`）只有私有版 datad 提供，公开版 datad（0.10.x Rust）没有这些路由。DevUI 在连上 datad 后探测一次 `GET /modem/signal-metrics`：
+
+- 返回 404：按公开版处理，不再请求任何 `/modem/*`。“读取信令”改为 `neighbor.set` 开关 DIAG 邻区采集，“解析信令”只控制页面显示，刷新频率走 `state.set_interval`。第二页依赖解码的 RRC/NAS、TA、MCS、BLER、Grant/RB、Ports/SSB 等字段公开版不提供，显示为等待态 `-`；载波卡片本身来自 `/state.net`，不受影响。
+- 其他状态：按私有版处理，行为与下文一致。
+
+探测结果约 5 分钟复查一次，datad 重连（重启或换版本）时立即重测。
+
 ## 页面入口
 
 当前入口在“设置 -> 高级设置”里，相关开关包括：

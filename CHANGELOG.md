@@ -1,6 +1,17 @@
 # 更新日志
 
-> 当前正式命名与安装路径已经统一为：`zwrt-datad`、`/data/plugins/zwrt-datad/zwrt-datad`、`/data/plugins/u60pro-devui/`、`/data/plugins/u60pro-devui/ui`。历史条目里如果出现 `u60-datad`、`/data/u60pro` 或 `/data/ui`，表示当时版本记录。
+> 当前正式命名与安装路径：`zwrt-datad` 在 `/data/zwrt-datad/`（datad 自己的安装脚本与 `service.sh` 管理），DevUI 在 `/data/plugins/u60pro-devui/`、`/data/plugins/u60pro-devui/ui`。历史条目里如果出现 `u60-datad`、`/data/plugins/zwrt-datad`、`/data/u60pro` 或 `/data/ui`，表示当时版本记录。
+
+## 未发布
+
+### 适配 zwrt-datad 0.10.79
+
+- **启动方式**：`start.sh` 不再自己带参数拉起 datad，改为调用 `/data/zwrt-datad/service.sh start`（带锁、幂等，与 datad 写入 `rc.local` 的启动项并存不会重复启动）；去掉 Token 生成、`/tmp/zwrt-datad.log` 和已失效的 `DATAD_MODEM_REMOTE_*` 变量。`install-autostart.sh` 不再停止、杀掉或移动 datad。
+- **设备操作走 `/control`**：网络模式、锁频、NFC、Wi-Fi 总开关/分频段、直供电、关闭 ADB、短信已读、关机重启都改为调用 datad 控制接口；datad 不可达时才回退本机命令。
+- **修复“刷新 AMBR”杀掉 datad**：原来向 datad 发 `SIGUSR1`，新版 datad 未处理该信号会直接退出；改为 `qos.reload`。
+- **修复 Wi-Fi 密码显示为 `-`**：`/state.wlan` 已不带密码，改从 `wifi.status` 读取。
+- **邻小区与信令**：公开版 datad 没有 `/modem/*`，探测到后改用 `/state.neighbor` 显示邻区，“读取信令”对应 `neighbor.set`；私有版 datad 行为不变。
+- **刷新频率**：改用 `state.set_interval`；datad 重启后自动重放刷新频率与邻区采集开关。
 
 ## v1.2.12 - 2026-07-15
 

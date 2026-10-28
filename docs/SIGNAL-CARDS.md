@@ -26,8 +26,12 @@ modem 解码、回放和 raw log 归 `zwrt-datad` 维护；这里只记录 DevUI
 
 ## 邻小区
 
-- 邻小区来自 `zwrt-datad` 的 `/modem/signal-metrics` 中 `lte.neighbors` 和
-  `nr.neighbors` 数组。
+- 公开版 datad：邻小区来自 `/state.neighbor`。“读取信令”开启时下发
+  `neighbor.set` 打开 DIAG 采集，显示合并后的 `neighbor.cells`（含 NR）；
+  未开启时显示厂商扫描的 `neighbor.lte.cells`（仅驻留 LTE / NSA 时有）。
+  `null` 的频点、频段、RSRP/RSRQ 显示为 `-`，不按频点猜测。
+- 私有版 datad（提供 `/modem/*`）：仍读 `/modem/signal-metrics` 中
+  `lte.neighbors` 和 `nr.neighbors` 数组。
 - 默认首页只显示一张“邻小区”入口卡，点击后展开列表；再次点击“收起”折叠。
 - 每个 LTE/NR 邻区一行，从左到右固定显示 `PCI / 频段 / RSRP / RSRQ`。
 - 信令解析开关关闭时，`{{NEIGHBORCARDS}}` 返回空串，入口和展开卡片都隐藏。

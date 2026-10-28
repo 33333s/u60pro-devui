@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,6 +75,7 @@ struct backend_state {
     int inited;
     int sse_fd;
     unsigned sse_parse_fail_streak;
+    unsigned generation;
     uint32_t next_retry_ms;
     char sse_buf[DEVUI_SSE_BUF_MAX];
     size_t sse_len;
@@ -176,12 +178,72 @@ static char *find_next_object(const char *p)
     return NULL;
 }
 
+/* JSON true/false/0/1 -> 1/0, or def when missing/null/unrecognized. */
+static int json_get_bool(const char *obj, const char *key, int def)
+{
+    char v[16];
+    if (!json_get(obj, key, v, sizeof v)) return def;
+    if (!strcmp(v, "true") || !strcmp(v, "1")) return 1;
+    if (!strcmp(v, "false") || !strcmp(v, "0")) return 0;
+    return def;
+}
+
+/* Integer field that may be JSON null. Returns 1 and stores it when present. */
+static int json_get_opt_long(const char *obj, const char *key, long *out)
+{
+    char v[32];
+    char *end;
+    long n;
+    if (!json_get(obj, key, v, sizeof v) || !v[0] || !strcmp(v, "null")) return 0;
+    n = strtol(v, &end, 10);
+    if (end == v) return 0;
+    *out = n;
+    return 1;
+}
+
+static int parse_neighbor_cells(devui_data_t *d, const char *cells)
+{
+    static char obj[1024];
+    const char *p = cells;
+
+    d->neighbor_n = 0;
+    while (p && d->neighbor_n < DEVUI_NEIGHBOR_MAX) {
+        char *start = find_next_object(p);
+        char *end;
+        size_t L;
+        long v;
+        if (!start) break;
+        end = obj_end(start);
+        if (!end) break;
+        p = end + 1;
+        L = (size_t)(end - start) + 1;
+        if (L >= sizeof obj) continue;
+        memcpy(obj, start, L);
+        obj[L] = 0;
+        {
+            devui_neighbor_t *n = &d->neighbor[d->neighbor_n];
+            memset(n, 0, sizeof *n);
+            if (!json_get_opt_long(obj, "pci", &v)) continue;
+            n->pci = (int)v;
+            getstr(obj, "rat", n->rat, sizeof n->rat);
+            if (json_get_opt_long(obj, "arfcn", &v)) { n->arfcn = v; n->has_arfcn = 1; }
+            if (json_get_opt_long(obj, "band", &v))  { n->band = (int)v; n->has_band = 1; }
+            if (json_get_opt_long(obj, "rsrp_dbm", &v)) { n->rsrp = (int)v; n->has_rsrp = 1; }
+            if (json_get_opt_long(obj, "rsrq_db", &v))  { n->rsrq = (int)v; n->has_rsrq = 1; }
+            d->neighbor_n++;
+        }
+    }
+    return d->neighbor_n;
+}
+
 static int parse_snapshot(devui_data_t *d, const char *buf)
 {
     static char sec[DEVUI_STATE_BUF_MAX];
 
     memset(d, 0, sizeof *d);
     d->cpu_usage = -1;
+    d->dps = -1;
+    d->neighbor_enabled = -1;
     d->valid = 0;
     if (!buf || !buf[0]) return 0;
 
@@ -314,6 +376,29 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
 
     if (json_get(buf, "nfc", sec, sizeof sec))
         d->nfc_switch = (int)json_get_int(sec, "switch", 0);
+
+    if (json_get(buf, "power", sec, sizeof sec)) {
+        char ds[256];
+        if (json_get(sec, "direct_supply", ds, sizeof ds))
+            d->dps = json_get_bool(ds, "enabled", -1);
+    }
+
+    if (json_get(buf, "neighbor", sec, sizeof sec)) {
+        static char cells[DEVUI_STATE_BUF_MAX / 8];
+        char lte[16384];
+        d->neighbor_enabled = json_get_bool(sec, "enabled", 0);
+        getstr(sec, "status", d->neighbor_status, sizeof d->neighbor_status);
+        /* The collector list already merges the vendor LTE scan; without the
+         * collector only neighbor.lte carries cells. */
+        if (!(json_get(sec, "cells", cells, sizeof cells) && parse_neighbor_cells(d, cells)) &&
+            json_get(sec, "lte", lte, sizeof lte) &&
+            json_get(lte, "cells", cells, sizeof cells))
+            (void)parse_neighbor_cells(d, cells);
+    }
+
+    d->sample_interval_ms = (int)json_get_int(buf, "sample_interval_ms", 0);
+    if (json_get(buf, "datad", sec, sizeof sec))
+        getstr(sec, "version", d->datad_version, sizeof d->datad_version);
 
     if (json_get(buf, "dhcp", sec, sizeof sec)) {
         getstr(sec, "ip",        d->dhcp_ip,        sizeof d->dhcp_ip);
@@ -687,6 +772,7 @@ static int open_sse_stream(void)
             }
             memcpy(g_backend.sse_buf, body, g_backend.sse_len);
             g_backend.next_retry_ms = 0;
+            g_backend.generation++;
             return 0;
         }
     }
@@ -788,6 +874,12 @@ int data_backend_commit_latest(void)
     return 1;
 }
 
+unsigned data_backend_generation(void)
+{
+    backend_init_once();
+    return g_backend.generation;
+}
+
 void data_backend_close(void)
 {
     backend_init_once();
@@ -824,4 +916,250 @@ int data_refresh_live(devui_data_t *d)
     *d = g_backend.live_data;
     if (force_hsr_enabled()) d->hsr = 1;
     return 1;
+}
+
+/* ---- datad request/control client ---- */
+
+#ifndef DEVUI_CONTROL_TIMEOUT_MS
+#define DEVUI_CONTROL_TIMEOUT_MS 30000
+#endif
+
+#ifndef DEVUI_RESPONSE_SLACK
+#define DEVUI_RESPONSE_SLACK 16384
+#endif
+
+/* Decode a chunked transfer body in place; returns the decoded length. */
+static size_t dechunk(char *body, size_t len)
+{
+    size_t in = 0, out = 0;
+
+    while (in < len) {
+        char *end;
+        char *nl;
+        unsigned long n = strtoul(body + in, &end, 16);
+        if (end == body + in) break;
+        nl = memchr(end, '\n', len - (size_t)(end - body));
+        if (!nl) break;
+        in = (size_t)(nl - body) + 1;
+        if (n == 0) break;
+        if (n > len - in) n = len - in;
+        memmove(body + out, body + in, n);
+        out += n;
+        in += n;
+        if (in < len && body[in] == '\r') in++;
+        if (in < len && body[in] == '\n') in++;
+    }
+    body[out] = 0;
+    return out;
+}
+
+int datad_request(const char *method, const char *path, const char *body,
+                  char *out, size_t cap, int timeout_ms)
+{
+    size_t body_len = body ? strlen(body) : 0;
+    size_t resp_cap = (out ? cap : 0) + DEVUI_RESPONSE_SLACK;
+    size_t n = 0;
+    char req[512];
+    char *resp, *hdr_end, *payload;
+    int fd, status = -1, req_len;
+
+    if (out && cap) out[0] = 0;
+    if (!method || !path) return -1;
+    req_len = snprintf(req, sizeof req,
+                       "%s %s HTTP/1.1\r\n"
+                       "Host: %s:%d\r\n"
+                       "Content-Type: application/json\r\n"
+                       "Content-Length: %zu\r\n"
+                       "Connection: close\r\n"
+                       "\r\n",
+                       method, path, DEVUI_BACKEND_HOST, DEVUI_BACKEND_PORT, body_len);
+    if (req_len <= 0 || (size_t)req_len >= sizeof req) return -1;
+    resp = malloc(resp_cap);
+    if (!resp) return -1;
+    fd = connect_tcp(DEVUI_BACKEND_HOST, DEVUI_BACKEND_PORT, DEVUI_BACKEND_IO_TIMEOUT_MS);
+    if (fd < 0) {
+        free(resp);
+        return -1;
+    }
+    if (!send_all(fd, req, (size_t)req_len, timeout_ms) ||
+        (body_len && !send_all(fd, body, body_len, timeout_ms))) {
+        close(fd);
+        free(resp);
+        return -1;
+    }
+    for (;;) {
+        ssize_t rd;
+        if (n + 1 >= resp_cap) break;   /* keep what fits; the caller sees a truncated body */
+        if (wait_fd_ready(fd, 0, timeout_ms) <= 0) {
+            close(fd);
+            free(resp);
+            return -1;
+        }
+        rd = read(fd, resp + n, resp_cap - 1 - n);
+        if (rd == 0) break;
+        if (rd < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            free(resp);
+            return -1;
+        }
+        n += (size_t)rd;
+    }
+    close(fd);
+    resp[n] = 0;
+
+    if (strncmp(resp, "HTTP/1.", 7) == 0 && n > 12)
+        status = atoi(resp + 9);
+    hdr_end = strstr(resp, "\r\n\r\n");
+    if (status <= 0 || !hdr_end) {
+        free(resp);
+        return -1;
+    }
+    *hdr_end = 0;
+    payload = hdr_end + 4;
+    {
+        size_t plen = n - (size_t)(payload - resp);
+        if (strcasestr(resp, "\ntransfer-encoding: chunked"))
+            plen = dechunk(payload, plen);
+        if (out && cap) {
+            if (plen >= cap) plen = cap - 1;
+            memcpy(out, payload, plen);
+            out[plen] = 0;
+        }
+    }
+    free(resp);
+    return status;
+}
+
+static int reply_ok(const char *reply)
+{
+    char ok[8];
+    return reply && json_get(reply, "ok", ok, sizeof ok) && !strcmp(ok, "true");
+}
+
+/* Returns the HTTP status (-1 unreachable); *ok is set from the reply body. */
+static int datad_post_json(const char *path, const char *body,
+                           char *out, size_t cap, int timeout_ms, int *ok)
+{
+    char small[512];
+    char *buf = out && cap ? out : small;
+    size_t bcap = out && cap ? cap : sizeof small;
+    int status = datad_request("POST", path, body, buf, bcap, timeout_ms);
+
+    *ok = status == 200 && reply_ok(buf);
+    return status;
+}
+
+static char *control_body(const char *action, const char *params_json)
+{
+    size_t len = strlen(action) + (params_json ? strlen(params_json) : 2) + 32;
+    char *body = malloc(len);
+    if (body)
+        snprintf(body, len, "{\"action\":\"%s\",\"params\":%s}",
+                 action, params_json && params_json[0] ? params_json : "{}");
+    return body;
+}
+
+int datad_control(const char *action, const char *params_json,
+                  char *out, size_t cap, int timeout_ms)
+{
+    char *body;
+    int ok = 0;
+
+    if (!action) return 0;
+    body = control_body(action, params_json);
+    if (!body) return 0;
+    (void)datad_post_json("/control", body, out, cap, timeout_ms, &ok);
+    free(body);
+    return ok;
+}
+
+struct datad_job {
+    char label[96];
+    char *path;
+    char *body;
+    char *fallback;
+};
+
+static void run_fallback(const char *cmd)
+{
+    if (cmd && system(cmd) != 0)
+        fprintf(stderr, "devui: fallback command failed: %s\n", cmd);
+}
+
+static void datad_job_free(struct datad_job *job)
+{
+    free(job->path);
+    free(job->body);
+    free(job->fallback);
+    free(job);
+}
+
+static void *datad_job_run(void *arg)
+{
+    struct datad_job *job = arg;
+    int ok = 0;
+    int status = datad_post_json(job->path, job->body, NULL, 0,
+                                 DEVUI_CONTROL_TIMEOUT_MS, &ok);
+
+    if (!ok) {
+        fprintf(stderr, "devui: datad %s failed (HTTP %d)\n", job->label, status);
+        /* Only stand in for datad when it is not there to answer (down, or an
+         * old build without the route/action). A refusal from a live datad is
+         * deliberate, e.g. a Wi-Fi layout the firmware cannot start. */
+        if (status < 0 || status == 404)
+            run_fallback(job->fallback);
+    }
+    datad_job_free(job);
+    return NULL;
+}
+
+static void datad_job_start(const char *label, const char *path, char *body,
+                            const char *fallback_cmd)
+{
+    struct datad_job *job = calloc(1, sizeof *job);
+    pthread_attr_t attr;
+    pthread_t tid;
+
+    if (!job || !body) {
+        free(job);
+        free(body);
+        run_fallback(fallback_cmd);
+        return;
+    }
+    snprintf(job->label, sizeof job->label, "%s", label);
+    job->path = strdup(path);
+    job->body = body;
+    job->fallback = fallback_cmd ? strdup(fallback_cmd) : NULL;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (!job->path || pthread_create(&tid, &attr, datad_job_run, job) != 0) {
+        run_fallback(fallback_cmd);
+        datad_job_free(job);
+    }
+    pthread_attr_destroy(&attr);
+}
+
+void datad_control_async(const char *action, const char *params_json,
+                         const char *fallback_cmd)
+{
+    if (!action) return;
+    datad_job_start(action, "/control", control_body(action, params_json), fallback_cmd);
+}
+
+void datad_ubus_call_async(const char *service, const char *method,
+                           const char *args_json, const char *fallback_cmd)
+{
+    char label[96];
+    size_t len;
+    char *body;
+
+    if (!service || !method) return;
+    len = strlen(service) + strlen(method) + (args_json ? strlen(args_json) : 2) + 48;
+    body = malloc(len);
+    if (body)
+        snprintf(body, len, "{\"service\":\"%s\",\"method\":\"%s\",\"args\":%s}",
+                 service, method, args_json && args_json[0] ? args_json : "{}");
+    snprintf(label, sizeof label, "ubus %s.%s", service, method);
+    datad_job_start(label, "/ubus/call", body, fallback_cmd);
 }

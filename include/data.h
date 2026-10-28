@@ -10,10 +10,20 @@
 #ifndef U60PRO_DATA_H
 #define U60PRO_DATA_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define DEVUI_SMS_MAX 32
 #define DEVUI_SMS_TEXT_MAX 16384
+#define DEVUI_NEIGHBOR_MAX 32
+
+/* One neighbor cell; has_* is 0 where datad reported null. */
+typedef struct {
+    char rat[4];                  /* "LTE" / "NR" */
+    int  pci, band, rsrp, rsrq;   /* band number, dBm, dB */
+    long arfcn;
+    unsigned char has_band, has_arfcn, has_rsrp, has_rsrq;
+} devui_neighbor_t;
 
 typedef struct {
     int  valid;
@@ -58,6 +68,21 @@ typedef struct {
     /* nfc tap-to-share */
     int  nfc_switch;
 
+    /* power.direct_supply: -1 when the block is absent or the mode is unknown */
+    int  dps;
+
+    /* neighbor: DIAG collector state plus the merged cell list
+     * (neighbor.cells while the collector runs, else the vendor neighbor.lte scan).
+     * neighbor_enabled is -1 when the block is absent. */
+    int  neighbor_enabled;
+    char neighbor_status[20];
+    devui_neighbor_t neighbor[DEVUI_NEIGHBOR_MAX];
+    int  neighbor_n;
+
+    /* datad runtime: global sample/SSE period (0 if absent) and own version */
+    int  sample_interval_ms;
+    char datad_version[24];
+
     /* dhcp / lan */
     char dhcp_ip[24], dhcp_start[24], dhcp_limit[8], dhcp_leasetime[12];
 
@@ -83,6 +108,11 @@ int  data_backend_poll(uint32_t now_ms);
 /* Promote the latest live snapshot to the UI-visible snapshot. */
 int  data_backend_commit_latest(void);
 
+/* Bumped on every new SSE connection. datad keeps runtime switches such as
+ * neighbor.set and state.set_interval only per process, so a change here means
+ * they may need to be applied again. */
+unsigned data_backend_generation(void);
+
 /* Close the transport socket. Safe to call during shutdown. */
 void data_backend_close(void);
 
@@ -91,5 +121,27 @@ int data_refresh(devui_data_t *d);
 
 /* Copy the latest live snapshot even if UI-visible refresh is paused. */
 int data_refresh_live(devui_data_t *d);
+
+/* One request to the local datad listener (127.0.0.1:9460, no token needed
+ * there). Copies the response body into out (may be NULL) and returns the HTTP
+ * status, or -1 when datad is unreachable or the reply is malformed. Blocking. */
+int datad_request(const char *method, const char *path, const char *body,
+                  char *out, size_t cap, int timeout_ms);
+
+/* POST /control {"action":action,"params":params_json}. params_json is a JSON
+ * object or NULL for {}. Returns 1 when datad answered ok:true. The full reply
+ * (including "result") is copied into out when given. Blocking. */
+int datad_control(const char *action, const char *params_json,
+                  char *out, size_t cap, int timeout_ms);
+
+/* Fire-and-forget datad_control on a detached thread. When the call fails and
+ * fallback_cmd is non-NULL it is run with system() instead, so device actions
+ * keep working while datad is down. */
+void datad_control_async(const char *action, const char *params_json,
+                         const char *fallback_cmd);
+
+/* Fire-and-forget POST /ubus/call for vendor calls datad has no action for. */
+void datad_ubus_call_async(const char *service, const char *method,
+                           const char *args_json, const char *fallback_cmd);
 
 #endif /* U60PRO_DATA_H */
