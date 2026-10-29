@@ -73,7 +73,8 @@ static void        maybe_dump_fb(drm_disp_t *d);
  * preview) pins the UI folder. */
 #define DEVUI_DEFAULT_DIR "/data/plugins/zwrt-devui"
 #ifdef UI_DIR
-#define DEVUI_FIXED_UI_DIR UI_DIR
+static const char g_fixed_ui_dir[] = UI_DIR;   /* copied now: UI_DIR is redefined below */
+#define DEVUI_FIXED_UI_DIR g_fixed_ui_dir
 #undef UI_DIR
 #endif
 static char g_app_dir[160] = DEVUI_DEFAULT_DIR;
