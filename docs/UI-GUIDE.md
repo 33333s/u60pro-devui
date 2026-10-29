@@ -265,7 +265,7 @@ TopFlow（MU5252）专用令牌，在其他机型上为空或 `—`：
 和 U30 Pro 一样：在顶层页面上，从状态栏（顶部 30 px）往下拉打开**控制中心** `subpages/control.html`，从屏幕底边（底部 30 px）往上拉打开**短信列表** `subpages/sms.html`。
 面板就是普通二级页，点按、滚动、`act:backfunc` 都照常；控制中心从底边上拉收起，短信列表从状态栏下拉收起。打开和收起带一段竖向滑动动画。
 
-想在宿主机上看效果，见 [DEVELOPMENT.md](DEVELOPMENT.md) 的“界面预览”。
+想在宿主机上看效果：`bash tests/ui/preview.sh 输出目录 [主题] [状态.json]`，会把每一页渲染成 PNG 并拼一张总览图（需要 Linux、gcc/g++、Python Pillow 和中文字体）。
 
 ---
 
@@ -322,10 +322,7 @@ adb push 04-about.html /data/plugins/zwrt-devui/ui/
 
 滑到第 4 页就能看到，圆点也自动变 4 个。完成。
 
----
-
-更深入的实现细节（渲染管线、令牌如何在 C 里生成、硬件接口）见 [DEVELOPMENT.md](DEVELOPMENT.md) 和 [HARDWARE.md](HARDWARE.md)。
 
 ## Optional speedtest page
 
-The "更多功能" page may show a `网络测速` tile when `/data/plugins/better-speedtest/better-speedtest` is installed and executable. The tile opens `ui/subpages/speedtest.html`, which uses DevUI-native drawing for the gauge and line charts. Duration `0` is loop mode: the button turns into a loop start action and the page shows an orange traffic warning until the user taps stop. Locked preview mode does not expose speedtest controls; backend detection still runs for after unlock. See [`SPEEDTEST.md`](SPEEDTEST.md) for paths, actions, rendering notes, and install/uninstall conventions.
+The "更多功能" page may show a `网络测速` tile when `/data/plugins/better-speedtest/better-speedtest` is installed and executable. The tile opens `ui/subpages/speedtest.html`, which uses DevUI-native drawing for the gauge and line charts. Duration `0` is loop mode: the button turns into a loop start action and the page shows an orange traffic warning until the user taps stop. Locked preview mode does not expose speedtest controls; backend detection still runs for after unlock.
