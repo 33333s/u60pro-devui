@@ -4,7 +4,7 @@ Push a DevUI test frame to a U60Pro over SSH.
 
 This is a host-side helper intended for macOS first. It does not use adb.
 Instead, it opens an SSH session, then forwards one DevUI-IPC command to the
-device-local Unix socket `/tmp/u60-devui.sock`.
+device-local Unix socket `/tmp/zwrt-devui.sock`.
 
 Examples:
   python3 scripts/devui_ssh_frame.py ping user@device-host
@@ -29,7 +29,7 @@ import sys
 from typing import Iterable, List
 
 
-DEFAULT_SOCK = "/tmp/u60-devui.sock"
+DEFAULT_SOCK = "/tmp/zwrt-devui.sock"
 DEFAULT_W = 320
 DEFAULT_H = 454
 

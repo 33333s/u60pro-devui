@@ -1,6 +1,6 @@
 /*
  * htmlmain.c - HTML UI shell. The program is fixed; the UI lives in
- * /data/plugins/u60pro-devui/ui
+ * /data/plugins/zwrt-devui/ui
  * as plain HTML/CSS. Each *.html (except menu.html) is a swipeable page;
  * {{TOKENS}} are filled from the zwrt-datad snapshot. Touch swipes pages and
  * taps fire anchor actions (href="act:..."). Power key: short = backlight,
@@ -67,10 +67,49 @@ extern int         html_view_render_tall(uint16_t *buf, const char *html, int bu
 extern int         html_view_render_overlay(const char *html);
 static void        maybe_dump_fb(drm_disp_t *d);
 
-#ifndef UI_DIR
-#define UI_DIR "/data/plugins/u60pro-devui/ui"
+/* Install directory: the folder the binary runs from when it holds ui/, else
+ * the default. An install the old plugin made under /data/plugins/zwrt-devui
+ * therefore keeps its pages and settings. UI_DIR given at build time (the host
+ * preview) pins the UI folder. */
+#define DEVUI_DEFAULT_DIR "/data/plugins/zwrt-devui"
+#ifdef UI_DIR
+#define DEVUI_FIXED_UI_DIR UI_DIR
+#undef UI_DIR
 #endif
-#define FUNCTIONS_DIR UI_DIR "/functions"
+static char g_app_dir[160] = DEVUI_DEFAULT_DIR;
+static char g_ui_dir[176];
+static char g_functions_dir[192];
+static char g_device_file[192], g_conf_file[192], g_signal_cache_file[192], g_lockpin_file[192];
+#define UI_DIR g_ui_dir
+#define FUNCTIONS_DIR g_functions_dir
+
+static void paths_init(void)
+{
+    char exe[160], ui[176];
+    struct stat st;
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n > 0) {
+        char *slash;
+        exe[n] = 0;
+        slash = strrchr(exe, '/');
+        if (slash && slash != exe) {
+            *slash = 0;
+            snprintf(ui, sizeof ui, "%s/ui", exe);
+            if (stat(ui, &st) == 0 && S_ISDIR(st.st_mode))
+                snprintf(g_app_dir, sizeof g_app_dir, "%s", exe);
+        }
+    }
+#ifdef DEVUI_FIXED_UI_DIR
+    snprintf(g_ui_dir, sizeof g_ui_dir, "%s", DEVUI_FIXED_UI_DIR);
+#else
+    snprintf(g_ui_dir, sizeof g_ui_dir, "%s/ui", g_app_dir);
+#endif
+    snprintf(g_functions_dir, sizeof g_functions_dir, "%s/functions", g_ui_dir);
+    snprintf(g_device_file, sizeof g_device_file, "%s/.device", g_app_dir);
+    snprintf(g_conf_file, sizeof g_conf_file, "%s/devui.conf", g_app_dir);
+    snprintf(g_signal_cache_file, sizeof g_signal_cache_file, "%s/signal.cache", g_app_dir);
+    snprintf(g_lockpin_file, sizeof g_lockpin_file, "%s/.lockpin", g_ui_dir);
+}
 #define UI_FONT "/usr/ui/fonts/ZTEZhengYuan.ttf"
 
 /* The rootfs is read-only and the vendor font is thin at small sizes, so allow
@@ -158,7 +197,7 @@ static unsigned theme_b(void) { return g_themes[g_theme].b; }
 enum { DEV_U60 = 0, DEV_TOPFLOW };
 static int g_dev = DEV_U60;
 static int g_dev_forced;
-#define DEVICE_FILE "/data/plugins/u60pro-devui/.device"
+#define DEVICE_FILE g_device_file
 
 static int dev_is_tf(void) { return g_dev == DEV_TOPFLOW; }
 static const char *dev_tag(void) { return dev_is_tf() ? "mu5252" : "mu5250"; }
@@ -1109,7 +1148,7 @@ static void aux_apply(void)
 /* ---- screen lock (PIN) persistence. The PIN lives in a dotfile under the UI
  * dir (which always exists) so it survives reboots and isn't clobbered by
  * pushing the .html pages. lock_enabled() == "a PIN is set". ---- */
-#define LOCK_PIN_FILE UI_DIR "/.lockpin"
+#define LOCK_PIN_FILE g_lockpin_file
 static int lock_enabled(void) { return g_pin[0] != 0; }
 static void load_pin(void)
 {
@@ -1151,9 +1190,9 @@ static void enter_lock(int setup)
 }
 
 /* ---- persisted UI settings (theme / speed unit / auto-off / refresh interval).
- * Stored next to the binary in /data/plugins/u60pro-devui so they survive reinstalling the
+ * Stored next to the binary (devui.conf in the install directory) so they survive reinstalling the
  * binary and re-pushing UI files (the PIN persists separately in .lockpin). */
-#define CONF_FILE "/data/plugins/u60pro-devui/devui.conf"
+#define CONF_FILE g_conf_file
 static void load_conf(void)
 {
     FILE *fp = fopen(CONF_FILE, "r");
@@ -2984,7 +3023,7 @@ static int datad_set_signal_parse(int on)
     return 0;
 }
 
-#define SIGNAL_CACHE_PATH "/data/plugins/u60pro-devui/signal.cache"
+#define SIGNAL_CACHE_PATH g_signal_cache_file
 
 static int signal_cache_get(const char *key, char *dst, size_t cap)
 {
@@ -6073,8 +6112,13 @@ static void render(drm_disp_t *disp, const char *path)
     size_t html_len = strlen(html);
     int is_speedtest = path_is_speedtest(path);
     int has_charts = strstr(path, "charts.html") != NULL || is_speedtest;
-    long long css_mtime = file_mtime_ns(UI_DIR "/style.css");
-    if (is_speedtest) css_mtime ^= file_mtime_ns(UI_DIR "/speedtest.css");
+    char css_path[200];
+    snprintf(css_path, sizeof css_path, "%s/style.css", UI_DIR);
+    long long css_mtime = file_mtime_ns(css_path);
+    if (is_speedtest) {
+        snprintf(css_path, sizeof css_path, "%s/speedtest.css", UI_DIR);
+        css_mtime ^= file_mtime_ns(css_path);
+    }
     int cacheable = html_len > 0 && html_len < sizeof(g_render_html_cache);
     int reuse = cacheable && !has_charts &&
                  g_render_html_cache_scroll == scroll &&
@@ -6506,6 +6550,7 @@ int main(void)
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
 
+    paths_init();
     g_charge_boot = boot_is_charge_mode();
     device_init();
     if (!g_charge_boot) {

@@ -2,7 +2,7 @@
   "schema": 1,
   "devui": {
     "version": "1.3.1",
-    "asset": "u60pro-devui-aarch64",
+    "asset": "zwrt-devui-aarch64",
     "notes": "适配 TopFlow（MU5252）：按机型选择页面与屏幕方向，新增多基带、聚合与散热界面。"
   },
   "ui": {

@@ -7,8 +7,8 @@
  *
  * SPDX-License-Identifier: MIT
  */
-#ifndef U60PRO_TOUCH_INPUT_H
-#define U60PRO_TOUCH_INPUT_H
+#ifndef ZWRT_DEVUI_TOUCH_INPUT_H
+#define ZWRT_DEVUI_TOUCH_INPUT_H
 
 #define TOUCH_INPUT_QUEUE_LEN 16
 
@@ -72,4 +72,4 @@ unsigned long touch_input_report_count(void);
 
 void touch_input_close(touch_input_t *t);
 
-#endif /* U60PRO_TOUCH_INPUT_H */
+#endif /* ZWRT_DEVUI_TOUCH_INPUT_H */

@@ -1,22 +1,22 @@
 /*
- * devui_ext.h - optional external display channel for u60pro-devui.
+ * devui_ext.h - optional external display channel for zwrt-devui.
  *
- * The normal /data/plugins/u60pro-devui/ui page flow remains the owner of the
+ * The normal /data/plugins/zwrt-devui/ui page flow remains the owner of the
  * screen until a local client submits an external frame. External content is
  * held in a logical RGB565 canvas and can be closed explicitly or by TTL.
  *
  * SPDX-License-Identifier: MIT
  */
-#ifndef U60PRO_DEVUI_EXT_H
-#define U60PRO_DEVUI_EXT_H
+#ifndef ZWRT_DEVUI_EXT_H
+#define ZWRT_DEVUI_EXT_H
 
 #include "drm_disp.h"
 
 #include <stdint.h>
 
 #define DEVUI_EXT_STATUSBAR_H 26
-#define DEVUI_EXT_SOCK_PATH  "/tmp/u60-devui.sock"
-#define DEVUI_EXT_EVENT_PATH "/tmp/u60-devui-events.log"
+#define DEVUI_EXT_SOCK_PATH  "/tmp/zwrt-devui.sock"
+#define DEVUI_EXT_EVENT_PATH "/tmp/zwrt-devui-events.log"
 
 typedef struct {
     int srv_fd;
@@ -45,4 +45,4 @@ int  devui_ext_content_point(const devui_ext_t *s, int screen_x, int screen_y, i
 void devui_ext_render(devui_ext_t *s, drm_disp_t *disp);
 void devui_ext_handle_tap(devui_ext_t *s, int x, int y, uint32_t now_ms);
 
-#endif /* U60PRO_DEVUI_EXT_H */
+#endif /* ZWRT_DEVUI_EXT_H */

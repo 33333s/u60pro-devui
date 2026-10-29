@@ -1,10 +1,10 @@
 # Build artifacts (binaries are published as GitHub Releases, not committed)
 *.o
 *.a
-/u60pro-devui
-/u60pro-devui.stripped
-/u60pro-devui-aarch64
-/u60pro-devui.sse
+/zwrt-devui
+/zwrt-devui.stripped
+/zwrt-devui-aarch64
+/zwrt-devui.sse
 /html-poc
 /html-poc.stripped
 /html-poc.zig
@@ -29,7 +29,7 @@ screenshot.png
 /label-*.png
 /lockscreen-*.png
 /screen-*.png
-/u60pro-devui.new
+/zwrt-devui.new
 /previews/
 /-S
 
@@ -61,3 +61,7 @@ drm_text
 /docs/WORKFLOW-LOCAL.md
 /docs/WORKFLOW-LOCAL-U60.md
 /docs/WORKFLOW-PRIVATE.md
+# pre-rename build outputs
+/u60pro-devui
+/u60pro-devui.stripped
+/u60pro-devui-aarch64

@@ -1,4 +1,4 @@
-/* Shared styles for /data/plugins/u60pro-devui/ui. 320x480, litehtml (no grid/JS/animation).
+/* Shared styles for /data/plugins/zwrt-devui/ui. 320x480, litehtml (no grid/JS/animation).
    The look follows the U30 Pro screen UI: light text on a dark navy page with a soft
    glow, translucent cards, and two accent colours per theme.
    <body class="{{THEME}}"> is "dark" plus one of th-ocean | th-aurora | th-sunset | th-violet.

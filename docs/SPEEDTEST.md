@@ -1,6 +1,6 @@
 # Optional speedtest integration
 
-This document describes the optional `better-speedtest` integration in `u60pro-devui`.
+This document describes the optional `better-speedtest` integration in `zwrt-devui`.
 
 ## Current model
 
@@ -16,7 +16,7 @@ This document describes the optional `better-speedtest` integration in `u60pro-d
 
 - Binary: `/data/plugins/better-speedtest/better-speedtest`
 - Log: `/tmp/better-speedtest.log`
-- DevUI config: `/data/plugins/u60pro-devui/devui.conf`
+- DevUI config: `/data/plugins/zwrt-devui/devui.conf`
 - Loop flag: `/tmp/better-speedtest.loop`
 - Loop pid: `/tmp/better-speedtest.loop.pid`
 
@@ -83,8 +83,8 @@ rm -f /tmp/better-speedtest.log
 If an old deployment still has standalone page files, remove them so the deleted page does not reappear:
 
 ```sh
-rm -f /data/plugins/u60pro-devui/ui/07-speedtest.html
-rm -f /data/plugins/u60pro-devui/ui/speedtest.css
+rm -f /data/plugins/zwrt-devui/ui/07-speedtest.html
+rm -f /data/plugins/zwrt-devui/ui/speedtest.css
 ```
 
 ## Public repository boundary

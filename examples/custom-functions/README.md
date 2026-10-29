@@ -1,6 +1,6 @@
 # More Functions Custom Pages
 
-Put custom `*.html` files in `/data/plugins/u60pro-devui/ui/functions/`.
+Put custom `*.html` files in `/data/plugins/zwrt-devui/ui/functions/`.
 DevUI scans that directory and adds one entry per file to the "更多功能" page.
 
 This example is kept outside the packaged `ui/` directory on purpose. Copy it

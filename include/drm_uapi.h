@@ -7,8 +7,8 @@
  *
  * SPDX-License-Identifier: MIT
  */
-#ifndef U60PRO_DRM_UAPI_H
-#define U60PRO_DRM_UAPI_H
+#ifndef ZWRT_DEVUI_DRM_UAPI_H
+#define ZWRT_DEVUI_DRM_UAPI_H
 
 #include <stdint.h>
 
@@ -160,4 +160,4 @@ struct drm_mode_fb_dirty_cmd {
 
 #define DRM_MODE_CONNECTED 1
 
-#endif /* U60PRO_DRM_UAPI_H */
+#endif /* ZWRT_DEVUI_DRM_UAPI_H */

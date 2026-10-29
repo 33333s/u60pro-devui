@@ -7,8 +7,8 @@
  *
  * SPDX-License-Identifier: MIT
  */
-#ifndef U60PRO_DRM_DISP_H
-#define U60PRO_DRM_DISP_H
+#ifndef ZWRT_DEVUI_DRM_DISP_H
+#define ZWRT_DEVUI_DRM_DISP_H
 
 #include <stdint.h>
 
@@ -41,4 +41,4 @@ void drm_disp_present(drm_disp_t *d, int y1, int y2);
 
 void drm_disp_close(drm_disp_t *d);
 
-#endif /* U60PRO_DRM_DISP_H */
+#endif /* ZWRT_DEVUI_DRM_DISP_H */

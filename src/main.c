@@ -1,5 +1,5 @@
 /*
- * main.c - u60pro-devui entry point.
+ * main.c - zwrt-devui entry point.
  *
  * Wires the clean-room DRM display and evdev touch backends into LVGL, then
  * runs the GUI event loop. No vendor libraries are linked.

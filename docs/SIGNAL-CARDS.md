@@ -1,6 +1,6 @@
 # 信号卡片与锁屏预览
 
-这份文档收口 `u60pro-devui` 第一页信号卡片的当前行为。后端抓取、
+这份文档收口 `zwrt-devui` 第一页信号卡片的当前行为。后端抓取、
 modem 解码、回放和 raw log 归 `zwrt-datad` 维护；这里只记录 DevUI 如何
 消费已经归一化的值并渲染到屏幕。
 
@@ -78,19 +78,19 @@ modem 解码、回放和 raw log 归 `zwrt-datad` 维护；这里只记录 DevUI
 `.coff`、`.chsr` 的最小预览页。检查完必须恢复正式模板。
 
 ```sh
-cp /data/plugins/u60pro-devui/ui/01-signal.html \
-   /data/plugins/u60pro-devui/ui/01-signal.html.bak-label-preview
+cp /data/plugins/zwrt-devui/ui/01-signal.html \
+   /data/plugins/zwrt-devui/ui/01-signal.html.bak-label-preview
 # 在这里推送临时预览版 01-signal.html
 touch /tmp/u60-dumpfb
-killall -9 u60pro-devui
-nohup sh /data/plugins/u60pro-devui/start.sh legacy >/tmp/u60pro-boot.log 2>&1 &
+killall -9 zwrt-devui
+nohup sh /data/plugins/zwrt-devui/start.sh legacy >/tmp/zwrt-devui-boot.log 2>&1 &
 
 # 检查 framebuffer 后恢复
-mv /data/plugins/u60pro-devui/ui/01-signal.html.bak-label-preview \
-   /data/plugins/u60pro-devui/ui/01-signal.html
+mv /data/plugins/zwrt-devui/ui/01-signal.html.bak-label-preview \
+   /data/plugins/zwrt-devui/ui/01-signal.html
 rm -f /tmp/u60-dumpfb /tmp/u60-force-hsr
-killall -9 u60pro-devui
-nohup sh /data/plugins/u60pro-devui/start.sh legacy >/tmp/u60pro-boot.log 2>&1 &
+killall -9 zwrt-devui
+nohup sh /data/plugins/zwrt-devui/start.sh legacy >/tmp/zwrt-devui-boot.log 2>&1 &
 ```
 
 Framebuffer dump、截图和临时二进制都是本地 QA 产物，不能提交。
