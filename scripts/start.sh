@@ -88,17 +88,33 @@ boot_trace() {
 }
 
 stop_vendor_ui() {
-    had_vendor=0
-    pidof zte_topsw_devui >/dev/null 2>&1 && had_vendor=1
-    /etc/init.d/zte_topsw_devui stop 2>/dev/null
-    killall -9 zte_topsw_devui 2>/dev/null
+    # Drop the vendor screen program's procd instance rather than running its
+    # init script's stop: on TopFlow (MU5252) that stop_service also unloads
+    # the touch driver (rmmod sitronix_ts_spi), and loading it straight back is
+    # unreliable. Deleting the instance also keeps procd from respawning it.
+    ubus call service delete '{"name":"zte_topsw_devui"}' >/dev/null 2>&1
+    # It can take a few seconds to exit on SIGTERM (procd allows 5 s). Wait for
+    # it, kill what is left, and give DRM a moment to drop the old master, or
+    # our SETCRTC fails with EACCES.
+    i=0
+    while pidof zte_topsw_devui >/dev/null 2>&1 && [ "$i" -lt 50 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    if pidof zte_topsw_devui >/dev/null 2>&1; then
+        killall -9 zte_topsw_devui 2>/dev/null
+        i=0
+        while pidof zte_topsw_devui >/dev/null 2>&1 && [ "$i" -lt 20 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+    fi
+    sleep 0.5
     # a pre-rename u60pro-devui still holding the screen would block ours
     killall u60pro-devui 2>/dev/null
-    [ "$had_vendor" -eq 1 ] && sleep 1
-    # TopFlow (MU5252): the vendor stop script also unloads the touch driver
-    # (rmmod sitronix_ts_spi); load it back or the screen has no touch. Right
-    # after the unload the controller still reads chip ID 0 and the probe
-    # fails, so wait a few seconds, and unload a failed probe before retrying.
+    # TopFlow: if an earlier stop already unloaded the touch driver, load it
+    # back. Right after an unload the controller can still read chip ID 0 and
+    # the probe fails, so wait a few seconds and unload a failed probe first.
     [ -f "$TOUCH_KO" ] || return 0
     tries=0
     while ! grep -q 'sitronix_ts' /proc/bus/input/devices 2>/dev/null && [ "$tries" -lt 3 ]; do
