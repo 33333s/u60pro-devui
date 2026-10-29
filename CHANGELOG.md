@@ -2,7 +2,7 @@
 
 > 当前正式命名与安装路径：`zwrt-datad` 在 `/data/zwrt-datad/`（datad 自己的安装脚本与 `service.sh` 管理），DevUI 在 `/data/plugins/u60pro-devui/`、`/data/plugins/u60pro-devui/ui`。历史条目里如果出现 `u60-datad`、`/data/plugins/zwrt-datad`、`/data/u60pro` 或 `/data/ui`，表示当时版本记录。
 
-## 未发布
+## v1.3.0 - 2026-10-29
 
 ### 界面：U30 Pro 风格
 
