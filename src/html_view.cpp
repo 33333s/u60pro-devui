@@ -108,8 +108,8 @@ static float round_cov(int x, int y, int fx, int fy, int fw, int fh,
     if (r > hw) r = hw;
     if (r > hh) r = hh;
     float qx = std::fabs(px) - (hw - r), qy = std::fabs(py) - (hh - r);
-    float ox = qx > 0.f ? qx : 0.f, oy = qy > 0.f ? qy : 0.f;
-    float d = std::sqrt(ox * ox + oy * oy) + std::min(std::max(qx, qy), 0.f) - r;
+    /* only the corner squares need the distance to an arc */
+    float d = qx > 0.f && qy > 0.f ? std::sqrt(qx * qx + qy * qy) - r : std::max(qx, qy) - r;
     float c = .5f - d;
     return c <= 0.f ? 0.f : c >= 1.f ? 1.f : c;
 }
@@ -684,8 +684,9 @@ extern "C" void html_view_fill_rect(int x, int y, int w, int h, int r, int g, in
 
 /* Fill an arbitrary (possibly concave) polygon, even-odd rule. Used by the
  * host to draw shapes litehtml/CSS can't, e.g. the battery charging bolt.
- * Vertex coordinates name pixel centres, as with the old scanline fill; each
- * pixel is sampled 4x4 so slanted edges are anti-aliased. */
+ * Vertex coordinates name pixel centres, as with the old scanline fill. Each
+ * pixel row is cut by four sub-scanlines and every span adds its exact
+ * horizontal coverage, so slanted edges are anti-aliased at scanline cost. */
 extern "C" void html_view_fill_poly(const int *xs, const int *ys, int n, int r, int g, int b, int a)
 {
     if (n < 3) return;
@@ -694,23 +695,33 @@ extern "C" void html_view_fill_poly(const int *xs, const int *ys, int n, int r, 
         xmin = std::min(xmin, xs[i]); xmax = std::max(xmax, xs[i]);
         ymin = std::min(ymin, ys[i]); ymax = std::max(ymax, ys[i]);
     }
-    for (int y = ymin; y <= ymax; y++)
-        for (int x = xmin; x <= xmax; x++) {
-            int hits = 0;
-            for (int sy = 0; sy < 4; sy++)
-                for (int sx = 0; sx < 4; sx++) {
-                    float px = (float)x - .375f + sx * .25f, py = (float)y - .375f + sy * .25f;
-                    bool in = false;
-                    for (int i = 0, j = n - 1; i < n; j = i++) {
-                        float yi = (float)ys[i], yj = (float)ys[j];
-                        if ((yi > py) != (yj > py) &&
-                            px < (float)xs[j] + (py - yj) * (float)(xs[i] - xs[j]) / (yi - yj))
-                            in = !in;
-                    }
-                    hits += in;
-                }
-            if (hits) put_px(x, y, r, g, b, (hits * a + 8) / 16);
+    const int W = xmax - xmin + 1;             /* pixel p covers [p - .5, p + .5) around xmin + p */
+    std::vector<float> acc((size_t)W), xi((size_t)n);
+    for (int y = ymin; y <= ymax; y++) {
+        std::fill(acc.begin(), acc.end(), 0.f);
+        for (int sub = 0; sub < 4; sub++) {
+            float py = (float)y - .375f + sub * .25f;
+            int cnt = 0;
+            for (int i = 0, j = n - 1; i < n; j = i++) {
+                float yi = (float)ys[i], yj = (float)ys[j];
+                if ((yi > py) != (yj > py))
+                    xi[cnt++] = (float)xs[j] + (py - yj) * (float)(xs[i] - xs[j]) / (yi - yj);
+            }
+            std::sort(xi.begin(), xi.begin() + cnt);
+            for (int k = 0; k + 1 < cnt; k += 2) {
+                float u0 = std::max(xi[k] - (float)xmin + .5f, 0.f);
+                float u1 = std::min(xi[k + 1] - (float)xmin + .5f, (float)W);
+                if (u1 <= u0) continue;
+                int i0 = (int)u0, i1 = (int)u1;
+                if (i0 == i1) { acc[i0] += (u1 - u0) * .25f; continue; }
+                acc[i0] += ((float)(i0 + 1) - u0) * .25f;
+                for (int p = i0 + 1; p < i1; p++) acc[p] += .25f;
+                if (i1 < W) acc[i1] += (u1 - (float)i1) * .25f;
+            }
         }
+        for (int p = 0; p < W; p++)
+            if (acc[p] > 0.f) put_px(xmin + p, y, r, g, b, (int)(std::min(acc[p], 1.f) * (float)a + .5f));
+    }
 }
 
 static inline float clampf01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }

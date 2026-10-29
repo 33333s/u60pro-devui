@@ -1267,22 +1267,41 @@ static int speedtest_binary_ready(void)
 }
 
 /* Is a better-speedtest process running (started here or elsewhere)? Polled
- * about once a second, so /proc is read directly instead of `pidof`. */
+ * every 300 ms while the page is open, and a /proc walk over a few hundred
+ * processes costs 10-25 ms on TopFlow, so the pid found last is checked
+ * first and a full walk that found nothing is repeated at most every
+ * ST_SCAN_MS (speedtest_start forces the next one). */
+#define ST_SCAN_MS 2000
+static long g_st_pid;
+static uint32_t g_st_scan_at;
+static int g_st_scan_due = 1;
+
+static int speedtest_is_pid(long pid)
+{
+    char path[48], comm[32];
+    snprintf(path, sizeof path, "/proc/%ld/comm", pid);
+    return pid > 0 && read_line_file(path, comm, sizeof comm) && !strcmp(comm, "better-speedtes");
+}
+
 static int speedtest_running(void)
 {
     if (!speedtest_binary_ready()) return 0;
+    if (g_st_pid > 0 && speedtest_is_pid(g_st_pid)) return 1;
+    g_st_pid = 0;
+    uint32_t now = millis();
+    if (!g_st_scan_due && (uint32_t)(now - g_st_scan_at) < ST_SCAN_MS) return 0;
+    g_st_scan_due = 0;
+    g_st_scan_at = now;
     DIR *d = opendir("/proc");
     if (!d) return 0;
     struct dirent *e;
-    int found = 0;
-    while (!found && (e = readdir(d))) {
+    while ((e = readdir(d))) {
         if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
-        char path[300], comm[32];
-        snprintf(path, sizeof path, "/proc/%s/comm", e->d_name);
-        found = read_line_file(path, comm, sizeof comm) && !strcmp(comm, "better-speedtes");
+        long pid = strtol(e->d_name, NULL, 10);
+        if (speedtest_is_pid(pid)) { g_st_pid = pid; break; }
     }
     closedir(d);
-    return found;
+    return g_st_pid > 0;
 }
 
 static int speedtest_loop_running(void)
@@ -1512,6 +1531,7 @@ static void speedtest_start(void)
                  "rm -f " SPEEDTEST_LOG "; : > " SPEEDTEST_LOG "; " SPEEDTEST_BIN " test --json --src %s --dur %d%s > " SPEEDTEST_LOG " 2>&1 &",
                  g_st_src, g_st_dur, extra);
     }
+    g_st_scan_due = 1;                         /* look for the new process on the next poll */
     if (system(cmd) != 0) {
         speedtest_hist_clear();
         snprintf(g_st_err, sizeof g_st_err, "启动失败");
