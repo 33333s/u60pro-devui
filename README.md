@@ -90,8 +90,8 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 ```jsonc
 // 本仓库 version.json
 { "schema": 1,
-  "devui": { "version": "1.3.1", "asset": "zwrt-devui-aarch64" },
-  "ui":    { "version": "0.5.1", "asset": "ui.tar.gz" } }
+  "devui": { "version": "1.3.2", "asset": "zwrt-devui-aarch64" },
+  "ui":    { "version": "1.0.0", "asset": "ui.tar.gz" } }
 ```
 
 插件读各项目 **latest release** 的 `version.json`，与本地记录比对，支持**单独更新** datad / devui / ui 或一键更新全部。默认更新源就是 GitHub release；如果你自己在外部做镜像，只要保持 `zwrt-devui-aarch64` / `ui.tar.gz` / `version.json` 这些文件名不变即可，本仓库不再维护单独的网盘同步流程。
