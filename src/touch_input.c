@@ -94,6 +94,7 @@ int touch_input_init(touch_input_t *t, int screen_w, int screen_h)
     t->fd = -1;
     t->screen_w = screen_w;
     t->screen_h = screen_h;
+    t->rot180 = DEVUI_TOUCH_ROTATE_180;
     t->raw_min_x = 0; t->raw_max_x = screen_w - 1;
     t->raw_min_y = 0; t->raw_max_y = screen_h - 1;
 
@@ -157,11 +158,10 @@ static void apply_transform(touch_input_t *t, int *x, int *y)
 #if DEVUI_TOUCH_INVERT_Y
     *y = (t->screen_h - 1) - *y;
 #endif
-#if DEVUI_TOUCH_ROTATE_180
-    *x = (t->screen_w - 1) - *x;
-    *y = (t->screen_h - 1) - *y;
-#endif
-    (void)t;
+    if (t->rot180) {
+        *x = (t->screen_w - 1) - *x;
+        *y = (t->screen_h - 1) - *y;
+    }
 }
 
 void touch_input_read(touch_input_t *t, int *x, int *y, int *pressed)

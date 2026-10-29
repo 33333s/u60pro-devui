@@ -43,11 +43,15 @@ jobs:
       - name: datad client against a mock datad
         run: sh tests/run_host_tests.sh
       - name: Render every page on the host
-        run: bash tests/ui/preview.sh ui-preview
+        run: |
+          bash tests/ui/preview.sh ui-preview
+          bash tests/ui/preview.sh ui-preview-mu5252 0 tests/ui/sample_state_mu5252.json
       - uses: actions/upload-artifact@v4
         with:
           name: ui-preview
-          path: ui-preview/sheet.png
+          path: |
+            ui-preview/sheet.png
+            ui-preview-mu5252/sheet.png
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@v4

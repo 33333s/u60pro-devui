@@ -1,0 +1,869 @@
+{
+ "ts": 1792000000,
+ "datad": {
+  "name": "zwrt-datad",
+  "version": "0.10.79"
+ },
+ "aggregation": {
+  "controller": {
+   "icg_process_running": true,
+   "mwan3_running": true
+  },
+  "enabled": true,
+  "mode": "SMULTIWAN",
+  "online": true,
+  "online_path_count": 3,
+  "path_count": 3,
+  "paths": [
+   {
+    "configured_tunnels": 2,
+    "id": "10.0.0.11",
+    "interface": "rmnet_data0",
+    "label": "5G",
+    "latency_ms": 34.962500000000006,
+    "online": true,
+    "packet_loss_percent": 0.16513572092063164,
+    "packet_loss_source": "quic_tx_lifetime",
+    "quic_tunnel_count": 2,
+    "rx_bps": 0.0,
+    "tx_bps": 0.0,
+    "uptime_seconds": 2398.0
+   },
+   {
+    "configured_tunnels": 2,
+    "id": "10.0.0.12",
+    "interface": "V3E1net0",
+    "label": "4G2",
+    "latency_ms": 35.253,
+    "online": true,
+    "packet_loss_percent": 0.6913470115967886,
+    "packet_loss_source": "quic_tx_lifetime",
+    "quic_tunnel_count": 2,
+    "rx_bps": 162.0,
+    "tx_bps": 161.0,
+    "uptime_seconds": 2394.0
+   },
+   {
+    "configured_tunnels": 2,
+    "id": "10.0.0.13",
+    "interface": "V3E2net0",
+    "label": "4G1",
+    "latency_ms": 34.473,
+    "online": true,
+    "packet_loss_percent": 0.6193174331268941,
+    "packet_loss_source": "quic_tx_lifetime",
+    "quic_tunnel_count": 2,
+    "rx_bps": 80.0,
+    "tx_bps": 81.0,
+    "uptime_seconds": 2104.0
+   }
+  ],
+  "quic_tunnel_count": 6,
+  "server": {
+   "ip": "203.0.113.10",
+   "source": "runtime",
+   "udp_port": 19000
+  },
+  "source": "icg-v3",
+  "state": "online",
+  "telemetry_fresh": true,
+  "traffic": {
+   "remaining_bytes": null,
+   "source": "unavailable"
+  },
+  "transport": "quic"
+ },
+ "battery": {
+  "bat_ua": -785541,
+  "bat_uv": 4336356,
+  "charge_protection": {
+   "active": false,
+   "mode": 1
+  },
+  "charger_connect": 0,
+  "charger_type": 0,
+  "charging": 2,
+  "chg_ua": 0,
+  "chg_uv": 25000,
+  "health": 1,
+  "online": 1,
+  "percent": 95,
+  "temp": 38,
+  "time_to_full": -1
+ },
+ "clients": {
+  "total": 4,
+  "wifi": 3,
+  "lan": 1,
+  "list": [
+   {
+    "name": "iPhone-Alex",
+    "ip": "192.168.0.101",
+    "mac": "02:00:00:00:00:01",
+    "band": "5g",
+    "guest": false
+   },
+   {
+    "name": "MacBook-Pro",
+    "ip": "192.168.0.102",
+    "mac": "a4:83:e7:11:22:33",
+    "band": "5g",
+    "guest": false
+   },
+   {
+    "name": "Xiaomi-TV",
+    "ip": "192.168.0.115",
+    "mac": "64:09:80:aa:bb:cc",
+    "band": "2g",
+    "guest": false
+   },
+   {
+    "name": "NAS",
+    "ip": "192.168.0.20",
+    "mac": "00:11:32:de:ad:01"
+   }
+  ],
+  "blocked": [],
+  "acl_mode": "deny",
+  "allowed": []
+ },
+ "cooling": {
+  "curve": [
+   {
+    "pwm": 0,
+    "speed_percent": 0,
+    "temperature_celsius": 40
+   },
+   {
+    "pwm": 41,
+    "speed_percent": 16,
+    "temperature_celsius": 47
+   },
+   {
+    "pwm": 74,
+    "speed_percent": 29,
+    "temperature_celsius": 58
+   },
+   {
+    "pwm": 120,
+    "speed_percent": 47,
+    "temperature_celsius": 65
+   },
+   {
+    "pwm": 128,
+    "speed_percent": 50,
+    "temperature_celsius": 73
+   },
+   {
+    "pwm": 255,
+    "speed_percent": 100,
+    "temperature_celsius": 80
+   }
+  ],
+  "custom_curve": [
+   {
+    "pwm": 0,
+    "speed_percent": 0,
+    "temperature_celsius": 40
+   },
+   {
+    "pwm": 41,
+    "speed_percent": 16,
+    "temperature_celsius": 47
+   },
+   {
+    "pwm": 74,
+    "speed_percent": 29,
+    "temperature_celsius": 58
+   },
+   {
+    "pwm": 120,
+    "speed_percent": 47,
+    "temperature_celsius": 65
+   },
+   {
+    "pwm": 128,
+    "speed_percent": 50,
+    "temperature_celsius": 73
+   },
+   {
+    "pwm": 255,
+    "speed_percent": 100,
+    "temperature_celsius": 80
+   }
+  ],
+  "factory_curve": [
+   {
+    "hysteresis_celsius": 4,
+    "level": 1,
+    "pwm": 76,
+    "speed_percent": 30,
+    "temperature_celsius": 44
+   },
+   {
+    "hysteresis_celsius": 4,
+    "level": 2,
+    "pwm": 128,
+    "speed_percent": 50,
+    "temperature_celsius": 48
+   },
+   {
+    "hysteresis_celsius": 4,
+    "level": 3,
+    "pwm": 179,
+    "speed_percent": 70,
+    "temperature_celsius": 53
+   }
+  ],
+  "fan": {
+   "always_on": false,
+   "enabled": false,
+   "hard_full_speed_celsius": 80,
+   "kernel_zone_enabled": false,
+   "levels_percent": [
+    0,
+    30,
+    50,
+    70
+   ],
+   "manual_speed_percent": 54,
+   "max_pwm": 255,
+   "mode": "custom",
+   "policy": {
+    "applied": true,
+    "attempted": true,
+    "error": ""
+   },
+   "pwm": 44,
+   "speed_percent": 17,
+   "temperature_celsius": 48,
+   "temperature_source": "/sys/class/thermal/thermal_zone32",
+   "thermal_enabled": true
+  },
+  "liquid": {
+   "active": false,
+   "always_on": false,
+   "amplitude": 0,
+   "driver_playing": false,
+   "enabled": true,
+   "kernel_max_state": 2,
+   "kernel_state": 0,
+   "level": 0,
+   "levels_percent": [
+    30,
+    100
+   ],
+   "mode": "automatic",
+   "speed_percent": 0,
+   "thermal_enabled": true
+  },
+  "vendor_sync_error": null
+ },
+ "device": {
+  "alias_name": "TOPFLOW",
+  "api_template": "MU5252",
+  "api_template_label": "MU5252",
+  "api_template_supported": 1,
+  "board_name": "qcom,sdxpinn-idp",
+  "full_ubus": 1,
+  "hardware_version": "MU5252_HW1.0",
+  "market_name": "TOPFLOW",
+  "model_name": "MU5252",
+  "profile": "mu5252",
+  "profile_source": "model_name",
+  "vendor": "ZTE"
+ },
+ "modems": [
+  {
+   "id": "5G",
+   "ifname": "rmnet_data0",
+   "net": {
+    "band": "LTE BAND 7",
+    "bandwidth": "",
+    "bars": 5,
+    "cell_id": 123456789,
+    "lte_pci": 288,
+    "lte_rsrp": -93,
+    "lte_rsrq": -8,
+    "lte_tac": 40203,
+    "nr_cell_id": 123456789,
+    "nr_channel": 628704,
+    "nr_pci": 654,
+    "nr_rsrp": -74,
+    "nr_rsrq": -14,
+    "nr_snr": "25.0",
+    "nr_tac": 0,
+    "operator": "CMHK",
+    "roaming": "Home",
+    "type": "ENDC"
+   },
+   "qos": {
+    "ambr_dl": "4294.000",
+    "ambr_ul": "4294.000",
+    "qci": 9,
+    "sampled_at": 0
+   },
+   "role": "integrated_5g",
+   "sim": {
+    "iccid": "89850000000000000001",
+    "imei": "860000000000001",
+    "imsi": "454000000000001",
+    "msisdn": "",
+    "slot": 1,
+    "state": "sim ready"
+   },
+   "subid": 1,
+   "traffic": {
+    "max_rx_speed": 93196,
+    "max_tx_speed": 93465,
+    "rx_bytes": 1156902,
+    "rx_speed": 0,
+    "session_time": 2402,
+    "tx_bytes": 1316899,
+    "tx_speed": 2712
+   },
+   "transport": "rmnet",
+   "wan_interface": "zte_mwan2",
+   "wwan": {
+    "ipv4_ifname": "rmnet_data0",
+    "ipv6_ifname": "null",
+    "status": "ipv4_connected"
+   }
+  },
+  {
+   "debug": {
+    "available": false,
+    "serial": "V3E2T12345",
+    "transport": "adb"
+   },
+   "id": "4G1",
+   "ifname": "V3E2net0",
+   "net": {
+    "band": "LTE BAND 3",
+    "bandwidth": "20",
+    "bars": 5,
+    "cell_id": 123456789,
+    "channel": 1400,
+    "lte_pci": 192,
+    "lte_rsrp": -82,
+    "lte_rsrq": -7,
+    "lte_rssi": -55,
+    "lte_snr": "22.0",
+    "mode": "Only_LTE",
+    "operate_mode": "ONLINE",
+    "operator": "csl.",
+    "plmn": "45400",
+    "roaming": "Home",
+    "type": "LTE"
+   },
+   "qos": {
+    "ambr_dl": "",
+    "ambr_ul": "",
+    "qci": 0,
+    "sampled_at": 0
+   },
+   "role": "external_4g",
+   "sim": {
+    "iccid": "89850000000000000001",
+    "imei": "860000000000001",
+    "imsi": "454000000000001",
+    "msisdn": "",
+    "slot": 0,
+    "state": "modem_init_complete"
+   },
+   "subid": 5,
+   "traffic": {
+    "max_rx_speed": 6794331,
+    "max_tx_speed": 1997383,
+    "rx_bytes": 640295452,
+    "rx_speed": 253,
+    "session_time": 354877,
+    "tx_bytes": 264689727,
+    "tx_speed": 253
+   },
+   "transport": "cdc-ecm",
+   "usb": {
+    "carrier": 0,
+    "id": "19d2:1716",
+    "path": "1-2",
+    "present": false
+   },
+   "wan_interface": "zte_mwan4",
+   "wwan": {
+    "ipv4_ifname": "wan1",
+    "ipv6_ifname": "",
+    "status": "ipv4_connected"
+   }
+  },
+  {
+   "debug": {
+    "available": false,
+    "serial": "V3E1T12345",
+    "transport": "adb"
+   },
+   "id": "4G2",
+   "ifname": "V3E1net0",
+   "net": {
+    "band": "LTE BAND 7",
+    "bandwidth": "20",
+    "bars": 5,
+    "cell_id": 123456789,
+    "channel": 2850,
+    "lte_pci": 288,
+    "lte_rsrp": -89,
+    "lte_rsrq": -8,
+    "lte_rssi": -59,
+    "lte_snr": "23.0",
+    "mode": "Only_LTE",
+    "operate_mode": "ONLINE",
+    "operator": "CMHK",
+    "plmn": "45412",
+    "roaming": "Home",
+    "type": "LTE"
+   },
+   "qos": {
+    "ambr_dl": "",
+    "ambr_ul": "",
+    "qci": 0,
+    "sampled_at": 0
+   },
+   "role": "external_4g",
+   "sim": {
+    "iccid": "89850000000000000001",
+    "imei": "860000000000001",
+    "imsi": "454000000000001",
+    "msisdn": "",
+    "slot": 0,
+    "state": "modem_init_complete"
+   },
+   "subid": 3,
+   "traffic": {
+    "max_rx_speed": 6291087,
+    "max_tx_speed": 781782,
+    "rx_bytes": 687648472,
+    "rx_speed": 0,
+    "session_time": 354882,
+    "tx_bytes": 240668862,
+    "tx_speed": 0
+   },
+   "transport": "cdc-ecm",
+   "usb": {
+    "carrier": 0,
+    "id": "19d2:0581",
+    "path": "1-1",
+    "present": false
+   },
+   "wan_interface": "zte_mwan3",
+   "wwan": {
+    "ipv4_ifname": "wan1",
+    "ipv6_ifname": "",
+    "status": "ipv4_connected"
+   }
+  }
+ ],
+ "multiwan": {
+  "active": false,
+  "mode": "SMULTIWAN",
+  "service_running": true
+ },
+ "neighbor": {
+  "age_ms": null,
+  "ambiguous_measurements": 0,
+  "capture_bytes": 0,
+  "cells": [],
+  "collector_running": false,
+  "collector_supported": true,
+  "discarded": 0,
+  "enabled": false,
+  "frames": 0,
+  "generation": 0,
+  "lte": {
+   "age_ms": 1284,
+   "cells": [],
+   "reason": "no_neighbours_reported",
+   "sampled_at": 1793283063,
+   "source": "vendor_scan",
+   "status": "empty",
+   "supported": true
+  },
+  "malformed": 0,
+  "partial": false,
+  "reason": "disabled_by_default",
+  "sampled_at": null,
+  "source": "",
+  "status": "disabled"
+ },
+ "net": {
+  "HSR": false,
+  "band": "LTE BAND 7",
+  "band_capabilities": {
+   "complete": true,
+   "lte": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    7,
+    8,
+    18,
+    19,
+    20,
+    26,
+    28,
+    34,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    48,
+    66
+   ],
+   "nr_nsa": [
+    1,
+    2,
+    3,
+    5,
+    7,
+    8,
+    18,
+    20,
+    26,
+    28,
+    38,
+    40,
+    41,
+    48,
+    66,
+    77,
+    78,
+    79
+   ],
+   "nr_sa": [
+    1,
+    2,
+    3,
+    5,
+    7,
+    8,
+    18,
+    20,
+    26,
+    28,
+    38,
+    40,
+    41,
+    48,
+    66,
+    77,
+    78,
+    79
+   ],
+   "source": "device_default_band_lock"
+  },
+  "bars": 5,
+  "gw_band_lock": "0x000000000",
+  "high_speed_rail": {
+   "active": false,
+   "raw": null
+  },
+  "lock_lte_cell": "0,0",
+  "lock_nr_cell": "",
+  "lte_action_channel": 2850,
+  "lte_band_lock": "0x87e20a0e00df",
+  "lte_bands": "1,2,3,4,5,7,8,18,19,20,26,28,34,38,39,40,41,42,43,48,66",
+  "lte_cell_id": 123456789,
+  "lte_channel": 2850,
+  "lte_pci": 288,
+  "lte_rsrp": -93,
+  "lte_rsrq": -8,
+  "lte_rssi": -71,
+  "lte_snr": "17.0",
+  "lte_supported_bands": "1,2,3,4,5,7,8,18,19,20,26,28,34,38,39,40,41,42,43,48,66",
+  "lte_tac": 40203,
+  "lteca": "288,7,0,2850,20;",
+  "ltecasig": "",
+  "mcc": 454,
+  "mnc": 12,
+  "net_select": "4G_AND_5G",
+  "nr5g_nrdc_band_lock": "",
+  "nr5g_nsa_band_lock": "1,2,3,5,7,8,18,20,26,28,38,40,41,48,66,77,78,79",
+  "nr5g_sa_band_lock": "1,2,3,5,7,8,18,20,26,28,38,40,41,48,66,77,78,79",
+  "nr_band": "n78",
+  "nr_bw": "80",
+  "nr_cell_id": 123456789,
+  "nr_channel": 628704,
+  "nr_nsa_supported_bands": "1,2,3,5,7,8,18,20,26,28,38,40,41,48,66,77,78,79",
+  "nr_pci": 654,
+  "nr_rsrp": -74,
+  "nr_rsrq": -14,
+  "nr_rssi": -63,
+  "nr_sa_supported_bands": "1,2,3,5,7,8,18,20,26,28,38,40,41,48,66,77,78,79",
+  "nr_snr": "25.0",
+  "nr_tac": 0,
+  "nrca": "0,1002,1,1,424130,10,0,-140.0,-43.0,-23.0,-120.0;",
+  "nsa_bands": "1,2,3,5,7,8,18,20,26,28,38,40,41,48,66,77,78,79",
+  "operator": "CMHK",
+  "roaming": "Home",
+  "roaming_allowed": 0,
+  "rssi": 0,
+  "sa_bands": "1,2,3,5,7,8,18,20,26,28,38,40,41,48,66,77,78,79",
+  "type": "ENDC",
+  "wan_status": "ipv4_connected"
+ },
+ "nfc": {
+  "enabled": true,
+  "flag": 2,
+  "switch": 1
+ },
+ "power": {
+  "direct_supply": {
+   "enabled": false,
+   "mode": "disable",
+   "supported": true
+  }
+ },
+ "qos": {
+  "ambr_dl": "4294.000",
+  "ambr_ul": "4294.000",
+  "qci": 9,
+  "usb_mode": "user"
+ },
+ "sample_interval_ms": 1000,
+ "sim": {
+  "current_slot": 1,
+  "dual_sim": 0,
+  "iccid": "89850000000000000001",
+  "imsi": "454000000000001",
+  "modem_state": "modem_init_complete",
+  "msisdn": "",
+  "pin_status": "0",
+  "sim1_provision": 0,
+  "sim2_provision": 0,
+  "state": "sim ready"
+ },
+ "sms": {
+  "unread": 1,
+  "list": [
+   {
+    "id": 53,
+    "num": "10086",
+    "date": "10-28 14:57",
+    "received_at": 1791993420,
+    "unread": 1,
+    "text": "【中国移动】尊敬的客户，您本月已使用流量 32.6GB，剩余 67.4GB。"
+   },
+   {
+    "id": 52,
+    "num": "+8613800138000",
+    "date": "10-27 20:11",
+    "received_at": 1791900000,
+    "unread": 0,
+    "text": "晚上到家说一声"
+   },
+   {
+    "id": 51,
+    "num": "95588",
+    "date": "10-26 09:03",
+    "received_at": 1791800000,
+    "unread": 0,
+    "text": "您的验证码为 482913，5 分钟内有效。"
+   }
+  ]
+ },
+ "system": {
+  "cpu_temp": 53,
+  "cpu_usage": 28,
+  "fw": "OpenWrt 23.05.4 r24012-d8dd03c46f",
+  "hostname": "TopFlow",
+  "imei": "860000000000001",
+  "mem_avail": 1143783424,
+  "mem_total": 1668501504,
+  "mem_used_pct": 31,
+  "model": "Qualcomm Technologies, Inc. SDXPINN IDP MBB",
+  "sw_version": "BD_ENCNMU5252V1.0.0B20",
+  "uptime": 355542
+ },
+ "thermal": {
+  "cpu_celsius": 53,
+  "modems": [
+   {
+    "available": true,
+    "celsius": 53,
+    "id": "5G"
+   },
+   {
+    "available": false,
+    "celsius": null,
+    "id": "4G1",
+    "sampled_at": 0
+   },
+   {
+    "available": false,
+    "celsius": null,
+    "id": "4G2",
+    "sampled_at": 0
+   }
+  ],
+  "protection": {
+   "active": false,
+   "level": 0,
+   "network_restricted": false,
+   "raw": "0",
+   "speed_limited": false
+  },
+  "zones": [
+   {
+    "celsius": 49.8,
+    "name": "aoss-0"
+   },
+   {
+    "celsius": 38.0,
+    "name": "battery"
+   },
+   {
+    "celsius": 54.2,
+    "name": "cpuss-0"
+   },
+   {
+    "celsius": 53.4,
+    "name": "cpuss-1"
+   },
+   {
+    "celsius": 53.4,
+    "name": "cpuss-2"
+   },
+   {
+    "celsius": 53.4,
+    "name": "cpuss-3"
+   },
+   {
+    "celsius": 50.6,
+    "name": "ctile"
+   },
+   {
+    "celsius": 51.8,
+    "name": "ethphy-0"
+   },
+   {
+    "celsius": 51.0,
+    "name": "mdmq6-0"
+   },
+   {
+    "celsius": 48.2,
+    "name": "mdmss-0"
+   },
+   {
+    "celsius": 49.0,
+    "name": "mdmss-1"
+   },
+   {
+    "celsius": 50.2,
+    "name": "mdmss-2"
+   },
+   {
+    "celsius": 44.0,
+    "name": "mmw_ific0"
+   },
+   {
+    "celsius": 49.8,
+    "name": "mvmss-0"
+   },
+   {
+    "celsius": 42.299,
+    "name": "pm7550ba_tz"
+   },
+   {
+    "celsius": 37.0,
+    "name": "pmg1110_tz"
+   },
+   {
+    "celsius": 48.518,
+    "name": "pmx75_tz"
+   },
+   {
+    "celsius": 44.0,
+    "name": "sdr0"
+   },
+   {
+    "celsius": 45.585,
+    "name": "sys-therm-1"
+   },
+   {
+    "celsius": 45.972,
+    "name": "sys-therm-2"
+   },
+   {
+    "celsius": 95.002,
+    "name": "sys-therm-3"
+   },
+   {
+    "celsius": 48.485,
+    "name": "sys-therm-4"
+   },
+   {
+    "celsius": 94.971,
+    "name": "sys-therm-5"
+   },
+   {
+    "celsius": 46.733,
+    "name": "sys-therm-6"
+   },
+   {
+    "celsius": 40.0,
+    "name": "usb"
+   },
+   {
+    "celsius": 47.16,
+    "name": "xo-therm"
+   }
+  ]
+ },
+ "traffic": {
+  "clear_day": {},
+  "day_rx_bytes": 10668218,
+  "day_tx_bytes": 12896209,
+  "limit": {
+   "cid": 1,
+   "enable": 0,
+   "overflow": 0,
+   "ratio": 0,
+   "subid": 1,
+   "type": 2,
+   "value": "0"
+  },
+  "max_rx_speed": 93196,
+  "max_tx_speed": 93465,
+  "month_rx_bytes": 24336840555,
+  "month_time": 1615777,
+  "month_tx_bytes": 5578450325,
+  "rx_bytes": 1156902,
+  "rx_speed": 0,
+  "session_time": 2402,
+  "total_rx_bytes": 24336840555,
+  "total_tx_bytes": 5578450325,
+  "tx_bytes": 1316899,
+  "tx_speed": 2712
+ },
+ "wlan": {
+  "bands": [
+   {
+    "band": "2g",
+    "enabled": 1,
+    "enc": "sae-mixed",
+    "ssid": "TopFlow-5G"
+   },
+   {
+    "band": "5g",
+    "enabled": 1,
+    "enc": "sae-mixed",
+    "ssid": "TopFlow-5G"
+   }
+  ],
+  "enabled": 1,
+  "enc": "sae-mixed",
+  "ssid": "TopFlow-5G"
+ }
+}

@@ -236,6 +236,128 @@ static int parse_neighbor_cells(devui_data_t *d, const char *cells)
     return d->neighbor_n;
 }
 
+/* Copy the next object of a JSON array into dst; *pp advances past it.
+ * Objects larger than dst are skipped. Returns 0 at the end of the array. */
+static int next_array_object(const char **pp, char *dst, size_t cap)
+{
+    while (*pp) {
+        char *start = find_next_object(*pp);
+        char *end;
+        size_t L;
+        if (!start) return 0;
+        end = obj_end(start);
+        if (!end) return 0;
+        *pp = end + 1;
+        L = (size_t)(end - start) + 1;
+        if (L >= cap) continue;
+        memcpy(dst, start, L);
+        dst[L] = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static double json_get_double(const char *obj, const char *key, double def)
+{
+    char v[32];
+    if (!json_get(obj, key, v, sizeof v) || !v[0] || !strcmp(v, "null")) return def;
+    return atof(v);
+}
+
+/* modems[] plus their temperatures from thermal.modems[] */
+static void parse_modems(devui_data_t *d, const char *buf)
+{
+    static char list[DEVUI_STATE_BUF_MAX / 8], obj[32768];
+    char sec[2048];
+    const char *p;
+
+    d->modem_n = 0;
+    if (!json_get(buf, "modems", list, sizeof list)) return;
+    for (p = list; d->modem_n < DEVUI_MODEM_MAX && next_array_object(&p, obj, sizeof obj); ) {
+        devui_modem_t *m = &d->modem[d->modem_n];
+        memset(m, 0, sizeof *m);
+        getstr(obj, "id", m->id, sizeof m->id);
+        if (!m->id[0]) continue;
+        if (json_get(obj, "net", sec, sizeof sec)) {
+            getstr(sec, "type", m->type, sizeof m->type);
+            getstr(sec, "band", m->band, sizeof m->band);
+            getstr(sec, "operator", m->oper, sizeof m->oper);
+            getstr(sec, "lte_snr", m->lte_snr, sizeof m->lte_snr);
+            getstr(sec, "nr_snr", m->nr_snr, sizeof m->nr_snr);
+            m->bars     = (int)json_get_int(sec, "bars", 0);
+            m->lte_rsrp = (int)json_get_int(sec, "lte_rsrp", 0);
+            m->nr_rsrp  = (int)json_get_int(sec, "nr_rsrp", 0);
+        }
+        if (json_get(obj, "sim", sec, sizeof sec))
+            getstr(sec, "state", m->sim_state, sizeof m->sim_state);
+        if (json_get(obj, "wwan", sec, sizeof sec))
+            getstr(sec, "status", m->wwan, sizeof m->wwan);
+        if (json_get(obj, "traffic", sec, sizeof sec)) {
+            m->rx_speed = json_get_int(sec, "rx_speed", 0);
+            m->tx_speed = json_get_int(sec, "tx_speed", 0);
+        }
+        d->modem_n++;
+    }
+
+    if (json_get(buf, "thermal", obj, sizeof obj) &&
+        json_get(obj, "modems", list, sizeof list)) {
+        for (p = list; next_array_object(&p, sec, sizeof sec); ) {
+            char id[8];
+            long c;
+            getstr(sec, "id", id, sizeof id);
+            if (!json_get_opt_long(sec, "celsius", &c)) continue;
+            for (int i = 0; i < d->modem_n; i++)
+                if (!strcmp(d->modem[i].id, id)) { d->modem[i].temp = (int)c; d->modem[i].has_temp = 1; }
+        }
+    }
+}
+
+static void parse_aggregation(devui_data_t *d, const char *buf)
+{
+    static char sec[65536];
+    char paths[16384], obj[1024];
+    const char *p;
+
+    if (!json_get(buf, "aggregation", sec, sizeof sec)) return;
+    d->agg_present = 1;
+    d->agg_enabled = json_get_bool(sec, "enabled", 0);
+    d->agg_online = json_get_bool(sec, "online", 0);
+    d->agg_paths = (int)json_get_int(sec, "path_count", 0);
+    d->agg_paths_online = (int)json_get_int(sec, "online_path_count", 0);
+    getstr(sec, "state", d->agg_state, sizeof d->agg_state);
+    getstr(sec, "transport", d->agg_transport, sizeof d->agg_transport);
+    if (!json_get(sec, "paths", paths, sizeof paths)) return;
+    for (p = paths; d->agg_path_n < DEVUI_AGG_PATH_MAX && next_array_object(&p, obj, sizeof obj); ) {
+        devui_agg_path_t *a = &d->agg_path[d->agg_path_n];
+        getstr(obj, "label", a->label, sizeof a->label);
+        if (!a->label[0]) getstr(obj, "interface", a->label, sizeof a->label);
+        a->online = json_get_bool(obj, "online", 0);
+        a->latency_ms = json_get_double(obj, "latency_ms", -1.0);
+        a->loss_pct = json_get_double(obj, "packet_loss_percent", -1.0);
+        d->agg_path_n++;
+    }
+}
+
+static void parse_cooling(devui_data_t *d, const char *buf)
+{
+    static char sec[16384];
+    char part[4096];
+
+    if (!json_get(buf, "cooling", sec, sizeof sec)) return;
+    d->cool_present = 1;
+    if (json_get(sec, "fan", part, sizeof part)) {
+        getstr(part, "mode", d->fan_mode, sizeof d->fan_mode);
+        if (json_get_bool(part, "always_on", 0)) snprintf(d->fan_mode, sizeof d->fan_mode, "always_on");
+        d->fan_pct = (int)json_get_int(part, "speed_percent", 0);
+        d->fan_temp = (int)json_get_int(part, "temperature_celsius", 0);
+    }
+    if (json_get(sec, "liquid", part, sizeof part)) {
+        getstr(part, "mode", d->liquid_mode, sizeof d->liquid_mode);
+        d->liquid_active = json_get_bool(part, "active", 0);
+        d->liquid_pct = (int)json_get_int(part, "speed_percent", 0);
+    }
+}
+
 static int parse_snapshot(devui_data_t *d, const char *buf)
 {
     static char sec[DEVUI_STATE_BUF_MAX];
@@ -434,6 +556,14 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         getstr(sec, "sw_version", d->sw_version, sizeof d->sw_version);
         getstr(sec, "imei", d->imei, sizeof d->imei);
     }
+
+    if (json_get(buf, "device", sec, sizeof sec)) {
+        getstr(sec, "api_template", d->model_tag, sizeof d->model_tag);
+        if (!d->model_tag[0]) getstr(sec, "model_name", d->model_tag, sizeof d->model_tag);
+    }
+    parse_modems(d, buf);
+    parse_aggregation(d, buf);
+    parse_cooling(d, buf);
 
     if (force_hsr_enabled()) d->hsr = 1;
 
@@ -886,6 +1016,12 @@ void data_backend_close(void)
     if (g_backend.sse_fd >= 0) close(g_backend.sse_fd);
     g_backend.sse_fd = -1;
     g_backend.sse_len = 0;
+}
+
+const char *data_model_tag(void)
+{
+    backend_init_once();
+    return g_backend.live_valid ? g_backend.live_data.model_tag : "";
 }
 
 int data_refresh(devui_data_t *d)

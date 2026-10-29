@@ -140,7 +140,9 @@ ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u
 
 - 显示：`/dev/dri/card0`，320x480，RGB565，命令式刷新（DIRTYFB 推帧，`vrefresh=1`），自动枚举 connector/crtc。
 - 旋转：面板安装方向相对 framebuffer 扫描顺序等效旋转 180°；`html_view` 的 `put_px` 把逻辑 (x,y) 映射到物理 (W-1-x, H-1-y)。
-- 触摸：`/dev/input/event3`（sitronix_ts，多点 ABS_MT），自动探测。
+- 屏幕方向：U60 Pro 的面板是倒装的，帧缓冲按 180° 旋转写入，触摸坐标同样转 180°（同一颗 TDDI 芯片）；TopFlow 面板是正装的，两者都不转。`apply_panel_rotation()` 按识别到的机型设置，绕过 litehtml 直写帧缓冲的地方（翻页 `compose_frame`、滚动 `scroll_blit`、外部画面）都经过 `fb_put_row` / `fb_get` 或 `drm_disp_t.rot180`。
+- 触摸：`/dev/input/event3`（sitronix_ts，多点 ABS_MT），自动探测。TopFlow（MU5252）上是 `sitronix_ts_spi`，通常在 `event5`（前面还有光感和接近传感器），同样自动探测。
+- **TopFlow 的触摸驱动会被原厂停止脚本卸载**：`/etc/init.d/zte_topsw_devui stop` 最后执行 `rmmod sitronix_ts_spi.ko`。刚卸载就 `insmod /lib/modules/sitronix-ts-spi.ko` 会读到芯片 ID `0x0`、探测失败（模块已加载但没有输入设备），要等约 3 秒，并先卸掉探测失败的模块再加载。`scripts/start.sh` 的 `stop_vendor_ui` 已经这样处理，最多重试 3 次。
 - 电源键：`/dev/input/event0`（`pmic_pwrkey`），键码 `KEY_POWER`(116)。注意触摸屏也会上报 KEY_POWER，所以探测要求“有 KEY_POWER 且无 EV_ABS”以排除触摸屏。
 - 背光：`/sys/class/leds/led:lcd/brightness`（0..255，没有 `/sys/class/backlight`）。息屏=写 0，与原厂 `ZTD_SetLcdBrightnessByFile` 一致。
 

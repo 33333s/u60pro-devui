@@ -25,8 +25,32 @@ typedef struct {
     unsigned char has_band, has_arfcn, has_rsrp, has_rsrq;
 } devui_neighbor_t;
 
+#define DEVUI_MODEM_MAX 4
+#define DEVUI_AGG_PATH_MAX 6
+
+/* One cellular modem from /state.modems[] (TopFlow: integrated 5G plus two
+ * external 4G modems). Signal values are 0 / "" when datad left them out. */
+typedef struct {
+    char id[8];                   /* "5G", "4G1", "4G2" */
+    char type[16], band[24], oper[32], sim_state[32], wwan[24];
+    int  bars, lte_rsrp, nr_rsrp;
+    char lte_snr[12], nr_snr[12];
+    long rx_speed, tx_speed;
+    int  temp, has_temp;          /* thermal.modems[] matched by id */
+} devui_modem_t;
+
+/* One aggregation (bonding) path from /state.aggregation.paths[]. */
+typedef struct {
+    char label[16];
+    int  online;
+    double latency_ms, loss_pct;
+} devui_agg_path_t;
+
 typedef struct {
     int  valid;
+
+    /* datad model template ("MU5250", "MU5252", ...), "" when not reported */
+    char model_tag[16];
 
     /* network */
     char net_type[16];
@@ -98,6 +122,21 @@ typedef struct {
     /* system */
     long uptime, cpu_temp, cpu_usage, mem_used_pct, mem_total, mem_avail;
     char model[64], fw[80], sw_version[80], imei[24];
+
+    /* multi-modem devices (TopFlow); modem_n is 0 where datad has no modems[] */
+    devui_modem_t modem[DEVUI_MODEM_MAX];
+    int  modem_n;
+
+    /* aggregation: agg_present is 0 when the block is absent */
+    int  agg_present, agg_enabled, agg_online, agg_paths, agg_paths_online;
+    char agg_state[20], agg_transport[12];
+    devui_agg_path_t agg_path[DEVUI_AGG_PATH_MAX];
+    int  agg_path_n;
+
+    /* cooling: cool_present is 0 when the block is absent */
+    int  cool_present;
+    char fan_mode[16], liquid_mode[16];   /* automatic|custom|always_on / automatic|low|high */
+    int  fan_pct, fan_temp, liquid_active, liquid_pct;
 } devui_data_t;
 
 /* Start the backend transport and seed the first visible snapshot if available. */
@@ -116,6 +155,9 @@ unsigned data_backend_generation(void);
 
 /* Close the transport socket. Safe to call during shutdown. */
 void data_backend_close(void);
+
+/* datad device.api_template of the latest live snapshot, "" when unknown. */
+const char *data_model_tag(void);
 
 /* Copy the current UI-visible snapshot. Returns 1 on success. */
 int data_refresh(devui_data_t *d);

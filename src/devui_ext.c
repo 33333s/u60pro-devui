@@ -403,8 +403,11 @@ static void present_canvas(devui_ext_t *s, drm_disp_t *disp)
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             int dy = top + y;
-            disp->fb[(size_t)(disp->height - 1 - dy) * disp->pitch_px + (disp->width - 1 - x)] =
-                s->canvas[y * s->w + x];
+            if (disp->rot180)
+                disp->fb[(size_t)(disp->height - 1 - dy) * disp->pitch_px + (disp->width - 1 - x)] =
+                    s->canvas[y * s->w + x];
+            else
+                disp->fb[(size_t)dy * disp->pitch_px + x] = s->canvas[y * s->w + x];
         }
     }
 }

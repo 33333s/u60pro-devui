@@ -220,6 +220,7 @@ a.rev.r { float: right; }
        border-radius: 14px; overflow: hidden; background: rgba(255,255,255,0.08); }
 .segc { display: table-cell; text-align: center; font-size: 15px; padding: 11px 0;
         text-decoration: none; white-space: nowrap; color: #c7d2de; }
+.seg3 .segc { width: 33.33%; font-size: 14px; padding: 10px 0; }
 .seg4 .segc { width: 25%; }            /* explicit widths = equal cells */
 .seg5 .segc { width: 20%; font-size: 13px; padding: 10px 0; }
 .seg6 { margin-top: 6px; }
@@ -296,6 +297,32 @@ body.mo { background: transparent; }
 .sw.off { background: rgba(255,255,255,0.16); } .sw.on { background: #4ade80; }
 .sw .kn { position: absolute; top: 3px; width: 22px; height: 22px; border-radius: 11px; background: #ffffff; }
 .sw.off .kn { left: 3px; } .sw.on .kn { left: 25px; }
+
+/* ---- per-model differences: <body> carries dev-mu5250 or dev-mu5252 ---- */
+.dev-mu5252 .u60only { display: none; }
+
+/* TopFlow modems (signal page): one block per modem */
+.mrow { padding: 7px 0 6px; border-top: 1px solid rgba(255,255,255,0.07); overflow: hidden; }
+.mh { overflow: hidden; height: 22px; line-height: 22px; }
+.mh .chip { font-size: 12px; height: 18px; line-height: 18px; padding: 0 8px; vertical-align: top; margin-top: 2px; }
+.mo { margin-left: 8px; font-size: 14px; font-weight: 700; vertical-align: top; }
+.mst { float: right; font-size: 12px; font-weight: 700; }
+.mm { margin-top: 3px; font-size: 14px; white-space: nowrap; overflow: hidden; }
+.mm .ml { font-size: 11px; color: #93a4b8; margin-right: 4px; }
+.mm .ml2 { margin-left: 14px; }
+.mm .mb { float: right; font-size: 12px; color: #93a4b8; }
+.mr { margin-top: 2px; font-size: 12px; color: #c7d2de; }
+.mr .acc2 { margin-left: 10px; }
+
+/* TopFlow aggregation paths */
+.aggp { height: 26px; line-height: 26px; overflow: hidden; border-top: 1px solid rgba(255,255,255,0.07); font-size: 13px; }
+.aggp .ad { display: inline-block; width: 8px; height: 8px; margin: 0 8px 0 2px; border-radius: 4px; vertical-align: middle; }
+.aggp .ad.on { background: #4ade80; }
+.aggp .ad.off { background: #f87171; }
+.aggp .an { font-weight: 700; }
+.aggp .av { float: right; }
+.srow.cool2 { margin-top: 10px; }
+.cc-grid.cc2 { padding-top: 6px; }
 
 /* bottom spacer on long pages so the absolute dots don't cover the last card */
 .pgpad { height: 40px; }

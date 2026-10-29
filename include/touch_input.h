@@ -19,6 +19,7 @@ typedef struct {
     int raw_min_x, raw_max_x;
     int raw_min_y, raw_max_y;
     int use_mt;           /* 1 = ABS_MT_POSITION_*, 0 = ABS_X/Y */
+    int rot180;           /* rotate samples 180 degrees (DEVUI_TOUCH_ROTATE_180 by default) */
     /* latest raw + resolved sample */
     int raw_cur_x, raw_cur_y;
     int cur_x, cur_y;
