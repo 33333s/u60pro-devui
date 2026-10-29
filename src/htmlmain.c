@@ -5582,6 +5582,7 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "NEIGHBORCARDS", s_neighborcards };
     t[i++] = (struct kv){ "GENCLASS", genc };
     t[i++] = (struct kv){ "THEME", theme_body_class() };
+    t[i++] = (struct kv){ "SHEETCLASS", g_sheet ? "sheet" : "" };   /* opened by an edge pull */
     t[i++] = (struct kv){ "BATCLASS", d.bat_percent <= 20 ? "low" : "" };
     t[i++] = (struct kv){ "KEYBTN", g_show_key ? "隐藏密码" : "显示密码" };
     t[i++] = (struct kv){ "ADBCLASS", adb_on ? "on" : "off" };
@@ -5984,7 +5985,6 @@ static void draw_speedtest_widgets(void)
 }
 
 /* ---- pulled sheets: open/close with a vertical slide ---- */
-#define EDGE_ZONE_PX 30      /* status bar / page-dot strip a sheet pull starts on */
 #define EDGE_PULL_PX 60      /* vertical travel that commits a sheet pull */
 /* The U60 Pro panel is mounted upside down, so the framebuffer holds the page
  * rotated 180 degrees; the TopFlow panel is upright (set in main()). */
@@ -6072,24 +6072,32 @@ static void sheet_snapshot(drm_disp_t *d, uint16_t *dst)
 static void render(drm_disp_t *disp, const char *path);
 static void maybe_dump_fb(drm_disp_t *d);
 
-/* A vertical pull that started on an edge strip (sy) and travelled dy. On a
- * top-level page: down from the top opens the control center, up from the
- * bottom opens the SMS list; inside a sheet the reverse pull closes it.
- * Returns 1 when the pull was used. */
-static int sheet_edge_pull(drm_disp_t *d, int sy, int dy)
+/* What a vertical pull anywhere on the screen does, by finger direction (dir
+ * > 0 down): on a top-level page down opens the control center and up the
+ * SMS list; inside a sheet the reverse pull closes it. A page that scrolls
+ * gives the pull to the sheet only once it is at that end, so down at the top
+ * and up at the bottom (maxs: the page's scroll range). */
+static int sheet_pull_target(int dir, int maxs, int *which, int *closing)
 {
-    const int H = d->height;
-    int from_top = sy <= EDGE_ZONE_PX, from_bottom = sy >= H - EDGE_ZONE_PX;
-    int which = 0, closing = 0;
-
-    if (dy >= EDGE_PULL_PX && from_top) {
-        if (g_sheet == SHEET_SMS) closing = 1;
-        else if (!g_subpage[0]) which = SHEET_CONTROL;
-    } else if (dy <= -EDGE_PULL_PX && from_bottom) {
-        if (g_sheet == SHEET_CONTROL) closing = 1;
-        else if (!g_subpage[0]) which = SHEET_SMS;
+    *which = *closing = 0;
+    if (dir > 0 ? g_scroll > 0 : g_scroll < maxs) return 0;
+    if (dir > 0) {
+        if (g_sheet == SHEET_SMS) *closing = 1;
+        else if (!g_subpage[0]) *which = SHEET_CONTROL;
+    } else {
+        if (g_sheet == SHEET_CONTROL) *closing = 1;
+        else if (!g_subpage[0]) *which = SHEET_SMS;
     }
-    if (!which && !closing) return 0;
+    return *which || *closing;
+}
+
+/* A quick vertical stroke of dy that was only seen after the release: slide
+ * the sheet the whole way. Returns 1 when the pull was used. */
+static int sheet_edge_pull(drm_disp_t *d, int dy, int maxs)
+{
+    int which, closing;
+    if ((dy < 0 ? -dy : dy) < EDGE_PULL_PX || !sheet_pull_target(dy > 0 ? 1 : -1, maxs, &which, &closing))
+        return 0;
 
     sheet_snapshot(d, g_slide_a);                 /* frame on screen now */
     g_render_quiet = 1;                           /* the next frame only feeds the slide */
@@ -6145,25 +6153,17 @@ static void sheet_pull_draw(drm_disp_t *d, int vis)
     g_pull.vis = vis;
 }
 
-/* An edge drag started at sy heading down (dir > 0) or up: prepare the far
- * frame quietly and leave the state as it was. Returns 1 when a sheet can
- * open or close this way. */
-static int sheet_pull_begin(drm_disp_t *d, int sy, int dir)
+/* A vertical drag heading down (dir > 0) or up: prepare the far frame
+ * quietly and leave the state as it was. Returns 1 when a sheet can open or
+ * close this way. */
+static int sheet_pull_begin(drm_disp_t *d, int dir, int maxs)
 {
     const int H = d->height;
-    int from_top = sy <= EDGE_ZONE_PX, from_bottom = sy >= H - EDGE_ZONE_PX;
-    int which = 0, closing = 0;
+    int which, closing;
     char sub[sizeof g_subpage], sub_path[sizeof g_subpage_path];
     int sheet = g_sheet, scroll = g_scroll;
 
-    if (dir > 0 && from_top) {
-        if (g_sheet == SHEET_SMS) closing = 1;
-        else if (!g_subpage[0]) which = SHEET_CONTROL;
-    } else if (dir < 0 && from_bottom) {
-        if (g_sheet == SHEET_CONTROL) closing = 1;
-        else if (!g_subpage[0]) which = SHEET_SMS;
-    }
-    if (!which && !closing) return 0;
+    if (!sheet_pull_target(dir, maxs, &which, &closing)) return 0;
 
     snprintf(sub, sizeof sub, "%s", g_subpage);
     snprintf(sub_path, sizeof sub_path, "%s", g_subpage_path);
@@ -6228,6 +6228,104 @@ static void sheet_pull_end(drm_disp_t *d, int dy)
     } else if (subpage_open(g_pull.which == SHEET_CONTROL ? "control.html" : "sms.html")) {
         g_sheet = g_pull.which;
     }
+    invalidate_render_html_cache();
+    render(d, active_page_path());
+}
+
+/* Edge swipe back on a second-level page: a drag that starts on the left edge
+ * moves the page right with the finger and uncovers, slightly dimmed, the page
+ * it returns to (g_slide_a: the page as it was, g_slide_b: the one beneath).
+ * Past BACK_COMMIT_PX, or on a quick flick, it slides off and goes back;
+ * otherwise it slides back into place. Pulled sheets close by their own pull. */
+#define BACK_EDGE_PX   24
+#define BACK_COMMIT_PX 100
+#define BACK_FLICK_MS  250
+#define BACK_SLIDE_MS  220
+static struct { int active, x; } g_back;
+
+static int back_pull_ok(int down_x)
+{
+    return g_subpage[0] && !g_sheet && !g_modal && g_sms_open < 0 && down_x <= BACK_EDGE_PX;
+}
+
+/* RGB565 run scaled by k/256: the uncovered page is dimmed toward black. */
+static void dim565(uint16_t *dst, const uint16_t *src, int n, int k)
+{
+    for (int i = 0; i < n; i++) {
+        unsigned v = src[i];
+        dst[i] = (uint16_t)(((((v >> 11) & 31) * k >> 8) << 11) | ((((v >> 5) & 63) * k >> 8) << 5) | ((v & 31) * k >> 8));
+    }
+}
+
+/* The page shifted right by off over the dimmed page beneath. Snapshots are
+ * physical frames, so on the rotated U60 panel the shift runs the other way. */
+static void back_draw(drm_disp_t *d, int off)
+{
+    const int W = d->width, H = d->height, P = d->pitch_px;
+    if (off < 0) off = 0;
+    if (off > W) off = W;
+    int k = 256 - 80 * (W - off) / W;             /* darker while mostly covered */
+    for (int r = 0; r < H; r++) {
+        uint16_t *dst = d->fb + (size_t)r * P;
+        const uint16_t *over = g_slide_a + (size_t)r * P, *under = g_slide_b + (size_t)r * P;
+        if ((g_panel_rot ? H - 1 - r : r) < DEVUI_EXT_STATUSBAR_H) {   /* the status bar stays put */
+            memcpy(dst, over, (size_t)W * sizeof(uint16_t));
+        } else if (!g_panel_rot) {
+            dim565(dst, under, off, k);
+            memcpy(dst + off, over, (size_t)(W - off) * sizeof(uint16_t));
+        } else {
+            memcpy(dst, over + off, (size_t)(W - off) * sizeof(uint16_t));
+            dim565(dst + W - off, under + W - off, off, k);
+        }
+    }
+    drm_disp_dirty(d, 0, 0, W - 1, H - 1);
+    g_back.x = off;
+}
+
+static int back_pull_begin(drm_disp_t *d)
+{
+    char sub[sizeof g_subpage], sub_path[sizeof g_subpage_path];
+    int scroll = g_scroll;
+    if ((size_t)d->pitch_px * d->height > 320 * 480) return 0;
+    snprintf(sub, sizeof sub, "%s", g_subpage);
+    snprintf(sub_path, sizeof sub_path, "%s", g_subpage_path);
+    sheet_snapshot(d, g_slide_a);
+    g_render_quiet = 1;
+    subpage_close();
+    render(d, active_page_path());
+    sheet_snapshot(d, g_slide_b);
+    g_render_quiet = 0;
+    snprintf(g_subpage, sizeof g_subpage, "%s", sub);   /* back where we were until the release */
+    snprintf(g_subpage_path, sizeof g_subpage_path, "%s", sub_path);
+    g_scroll = scroll;
+    invalidate_render_html_cache();
+    g_back.active = 1;
+    g_back.x = 0;
+    return 1;
+}
+
+static void back_pull_end(drm_disp_t *d, int dx, int quick)
+{
+    const int W = d->width;
+    int commit = dx >= BACK_COMMIT_PX || (quick && dx >= 30);
+    int from = g_back.x, to = commit ? W : 0;
+    int ms = BACK_SLIDE_MS * abs(to - from) / W;
+    uint32_t t0 = millis();
+
+    if (!g_back.active) return;
+    if (ms < 60) ms = 60;
+    for (;;) {
+        float t = (float)(millis() - t0) / (float)ms;
+        if (t > 1.f) t = 1.f;
+        float e = 1.f - (1.f - t) * (1.f - t) * (1.f - t);
+        back_draw(d, from + (int)((float)(to - from) * e + (to > from ? .5f : -.5f)));
+        if (t >= 1.f) break;
+    }
+    g_back.active = 0;
+    if (!commit) return;
+    subpage_close();
+    g_modal = 0;
+    g_sms_open = -1;
     invalidate_render_html_cache();
     render(d, active_page_path());
 }
@@ -6820,7 +6918,8 @@ int main(void)
     uint32_t last_motion_frame = 0;
     float scroll_v = 0.0f, scroll_pos = 0.0f;
     int sliding = 0, bar_x = 0, bar_w = 0;   /* brightness slider drag */
-    int edge_pull = 0;                       /* vertical drag that started on an edge strip */
+    int edge_pull = 0;                       /* vertical drag that pulls a sheet */
+    int back_pull = 0;                       /* drag from the left edge back out of a subpage */
     int lock_holding = 0;                    /* finger down on the locked preview */
     uint32_t lock_down_ms = 0;
     int segging = 0, seg_x = 0, seg_y = 0, seg_w = 0, seg_h = 0;   /* segmented control drag */
@@ -7193,9 +7292,15 @@ int main(void)
                     int qdx = ex - sx, qdy = ey - sy;
                     int qadx = qdx < 0 ? -qdx : qdx;
                     int qady = qdy < 0 ? -qdy : qdy;
-                    if (qady >= qadx && sheet_edge_pull(&disp, sy, qdy)) {
+                    if (qady >= qadx && sheet_edge_pull(&disp, qdy, maxs)) {
                         queued_motion = 1;
                         animating = 1;
+                        touch_input_clear_taps(&touch);
+                    } else if (qdx >= QUEUED_SWIPE_PX && qadx > qady && back_pull_ok(sx) && back_pull_begin(&disp)) {
+                        back_pull_end(&disp, qdx, 1);
+                        queued_motion = 1;
+                        animating = 1;
+                        last_act = now;
                         touch_input_clear_taps(&touch);
                     } else if (!g_subpage[0] && g_npages > 1 && qadx >= QUEUED_SWIPE_PX && qadx > qady) {
                         int dir = qdx < 0 ? 1 : -1;
@@ -7306,11 +7411,12 @@ int main(void)
                 else {
                 int dx = x - down_x, dy = y - down_y;
                 int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
-                if (drag_dir == 0 && scroll_dir == 0 && !edge_pull) {
+                if (drag_dir == 0 && scroll_dir == 0 && !edge_pull && !back_pull) {
                     if (ady > DRAG_START_PX && ady >= adx &&
-                        (down_y <= EDGE_ZONE_PX || down_y >= H - EDGE_ZONE_PX)) {
+                        sheet_pull_begin(&disp, dy > 0 ? 1 : -1, maxs)) {
                         edge_pull = 1;              /* the sheet follows the finger from here */
-                        sheet_pull_begin(&disp, down_y, dy > 0 ? 1 : -1);
+                    } else if (dx > DRAG_START_PX && adx > ady && back_pull_ok(down_x) && back_pull_begin(&disp)) {
+                        back_pull = 1;              /* the page follows the finger off to the right */
                     } else if (!g_subpage[0] && g_npages > 1 && adx > DRAG_START_PX && adx > ady) {
                         drag_dir = dx < 0 ? 1 : -1;
                         drag_target = (g_cur + (drag_dir > 0 ? 1 : g_npages - 1)) % g_npages;
@@ -7338,6 +7444,11 @@ int main(void)
                         sheet_pull_move(&disp, dy);
                         animating = 1;
                     }
+                } else if (back_pull) {
+                    if (motion_frame_due(now, &last_motion_frame)) {
+                        back_draw(&disp, dx);
+                        animating = 1;
+                    }
                 } else if (scroll_dir != 0) {
                     int ns = scroll_start - dy;
                     if (ns < 0) ns = 0;
@@ -7363,16 +7474,22 @@ int main(void)
             }
             else if (!pressed && prev_press) {
                 int rel_dx = x - down_x, rel_dy = y - down_y;
-                int release_was_tap = dragging && !sliding && !segging && !edge_pull &&
+                int release_was_tap = dragging && !sliding && !segging && !edge_pull && !back_pull &&
                                       drag_dir == 0 && scroll_dir == 0 &&
                                       rel_dx * rel_dx + rel_dy * rel_dy <= 14 * 14;
                 int dx = rel_dx;
-                if (edge_pull) {
+                if (back_pull) {
+                    back_pull_end(&disp, rel_dx, now - drag_down_ms < BACK_FLICK_MS);
+                    touch_input_clear_taps(&touch);
+                    animating = 1;
+                    last_act = now;
+                }
+                else if (edge_pull) {
                     if (g_pull.active) {
                         sheet_pull_end(&disp, rel_dy);
                         touch_input_clear_taps(&touch);
                         animating = 1;
-                    } else if (dragging && !menu && sheet_edge_pull(&disp, down_y, rel_dy)) {
+                    } else if (dragging && !menu && sheet_edge_pull(&disp, rel_dy, maxs)) {
                         touch_input_clear_taps(&touch);
                         animating = 1;
                     }
@@ -7872,7 +7989,7 @@ action_done:
                     touch_input_drop_replayed_release(&touch, release_was_tap);
                 last_motion_frame = 0;
                 if (g_pull.active) { g_pull.active = 0; need_render = 1; }
-                dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0; g_segdrag = 0; edge_pull = 0;
+                dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0; g_segdrag = 0; edge_pull = 0; back_pull = 0;
                 scroll_track_valid = 0;
             }
         }

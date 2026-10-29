@@ -355,7 +355,10 @@ body.mo { background: transparent; }
 .th-aurora .ccb.on .ccc { background: #4ade80; }
 .th-sunset .ccb.on .ccc { background: #ff9f43; }
 .th-violet .ccb.on .ccc { background: #a78bfa; }
-.sheet-hint { margin-top: 14px; text-align: center; font-size: 11px; color: #56677a; }
+.sheet-hint { display: none; margin-top: 14px; text-align: center; font-size: 11px; color: #56677a; }
+/* a pulled sheet ({{SHEETCLASS}} = sheet) closes by the reverse pull, a page opened with act:sub by its back button */
+.sheet .sheet-hint { display: block; }
+.sheet .subback { display: none; }
 
 /* second-level page header: back pill + centred title */
 .subtop { display: block; height: 42px; line-height: 42px; margin: 4px 10px 0;
