@@ -6,8 +6,12 @@
 
   <div class="card">
     <div class="title">屏幕</div>
+    <div class="row tfonly">
+      <span class="lab">自动亮度<span class="st">跟随环境光调节</span></span>
+      <span class="ctrl"><a href="act:autobright" class="sw {{AUTOBRIGHTCLASS}}"><span class="kn"></span></a></span>
+    </div>
     <div class="srow"><span>亮度</span><span class="sval">{{BRIGHT}}%</span></div>
-    <a href="act:bright" id="bright-bar" class="slider"><span class="sfill" style="width:{{BRIGHT}}%"></span></a>
+    <a href="act:bright" id="bright-bar" class="slider {{BRIGHTBAR}}"><span class="sfill" style="width:{{BRIGHT}}%"></span></a>
     <div class="srow"><span>自动息屏</span></div>
     {{AUTOOFF}}
   </div>

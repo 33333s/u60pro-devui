@@ -94,18 +94,27 @@ static inline uint16_t get_px565(int x, int y)
 
 /* Is (x,y) inside a rounded rectangle? Used by both rounded fill and rounded
  * border stroking (litehtml hands us radii but leaves the drawing to us). */
-static bool pt_in_round(int x, int y, int fx, int fy, int fw, int fh,
-                        int rtl, int rtr, int rbr, int rbl)
+/* Coverage (0..1) of pixel (x, y) by a rounded rect [fx, fx+fw) x [fy, fy+fh)
+ * with per-corner radii, from the signed distance of the pixel centre to the
+ * edge, so curved edges blend over about one pixel instead of stair-stepping.
+ * Straight edges on whole pixels still come out as exactly 0 or 1. */
+static float round_cov(int x, int y, int fx, int fy, int fw, int fh,
+                       int rtl, int rtr, int rbr, int rbl)
 {
-    if (x < fx || y < fy || x >= fx + fw || y >= fy + fh) return false;
-    int r = 0, cx = 0, cy = 0;
-    if      (x < fx + rtl       && y < fy + rtl)       { r = rtl; cx = fx + rtl;          cy = fy + rtl; }
-    else if (x >= fx + fw - rtr && y < fy + rtr)       { r = rtr; cx = fx + fw - 1 - rtr; cy = fy + rtr; }
-    else if (x >= fx + fw - rbr && y >= fy + fh - rbr) { r = rbr; cx = fx + fw - 1 - rbr; cy = fy + fh - 1 - rbr; }
-    else if (x < fx + rbl       && y >= fy + fh - rbl) { r = rbl; cx = fx + rbl;          cy = fy + fh - 1 - rbl; }
-    if (r > 0) { int dx = x - cx, dy = y - cy; if (dx * dx + dy * dy > r * r) return false; }
-    return true;
+    if (fw <= 0 || fh <= 0 || x < fx || y < fy || x >= fx + fw || y >= fy + fh) return 0.f;
+    float hw = fw * .5f, hh = fh * .5f;
+    float px = (float)x + .5f - ((float)fx + hw), py = (float)y + .5f - ((float)fy + hh);
+    float r = (float)(py < 0.f ? (px < 0.f ? rtl : rtr) : (px < 0.f ? rbl : rbr));
+    if (r > hw) r = hw;
+    if (r > hh) r = hh;
+    float qx = std::fabs(px) - (hw - r), qy = std::fabs(py) - (hh - r);
+    float ox = qx > 0.f ? qx : 0.f, oy = qy > 0.f ? qy : 0.f;
+    float d = std::sqrt(ox * ox + oy * oy) + std::min(std::max(qx, qy), 0.f) - r;
+    float c = .5f - d;
+    return c <= 0.f ? 0.f : c >= 1.f ? 1.f : c;
 }
+
+static inline int cov_alpha(float cov, int a) { return (int)(cov * (float)a + .5f); }
 
 /* ---- FreeType ---- */
 static FT_Library g_ft;
@@ -252,6 +261,11 @@ static int text_advance(const char *text, int size)
     return w;
 }
 
+/* litehtml lays out in fractional pixels. Every draw path snaps an edge with
+ * the same rounding, so a box, its text and a native icon placed over it move
+ * together instead of truncating to different rows. */
+static inline int R(pixel_t v) { return (int)floorf(v + 0.5f); }
+
 /* ---- container ---- */
 class fb_container : public document_container {
     std::vector<position> m_clip;
@@ -268,63 +282,47 @@ class fb_container : public document_container {
     void fill(pixel_t fx, pixel_t fy, pixel_t fw, pixel_t fh, web_color c) {
         if (c.alpha == 0) return;
         position cl = eff_clip();
-        int x1 = std::max((int)fx, (int)cl.left()),  y1 = std::max((int)fy, (int)cl.top());
-        int x2 = std::min((int)(fx + fw), (int)cl.right()), y2 = std::min((int)(fy + fh), (int)cl.bottom());
+        int x1 = std::max(R(fx), R(cl.left())),  y1 = std::max(R(fy), R(cl.top()));
+        int x2 = std::min(R(fx + fw), R(cl.right())), y2 = std::min(R(fy + fh), R(cl.bottom()));
         for (int y = y1; y < y2; y++)
             for (int x = x1; x < x2; x++)
                 put_px(x, y, c.red, c.green, c.blue, c.alpha);
     }
     /* Filled rectangle with rounded corners. litehtml only hands us the radii;
-     * it's up to the container to honor them, so a pixel inside one of the four
-     * corner squares but outside its quarter-circle arc is skipped. */
+     * it's up to the container to honor them. Corners are anti-aliased. */
     void fill_rounded(int fx, int fy, int fw, int fh, int rtl, int rtr, int rbr, int rbl, web_color c) {
         if (c.alpha == 0 || fw <= 0 || fh <= 0) return;
-        int hw = fw / 2, hh = fh / 2;
-        if (rtl > hw) rtl = hw; if (rtl > hh) rtl = hh;
-        if (rtr > hw) rtr = hw; if (rtr > hh) rtr = hh;
-        if (rbr > hw) rbr = hw; if (rbr > hh) rbr = hh;
-        if (rbl > hw) rbl = hw; if (rbl > hh) rbl = hh;
         position cl = eff_clip();
-        int x1 = std::max(fx, (int)cl.left()),  y1 = std::max(fy, (int)cl.top());
-        int x2 = std::min(fx + fw, (int)cl.right()), y2 = std::min(fy + fh, (int)cl.bottom());
-        for (int y = y1; y < y2; y++) {
+        int x1 = std::max(fx, R(cl.left())),  y1 = std::max(fy, R(cl.top()));
+        int x2 = std::min(fx + fw, R(cl.right())), y2 = std::min(fy + fh, R(cl.bottom()));
+        for (int y = y1; y < y2; y++)
             for (int x = x1; x < x2; x++) {
-                int r = 0, cx = 0, cy = 0;
-                if      (x < fx + rtl       && y < fy + rtl)       { r = rtl; cx = fx + rtl;          cy = fy + rtl; }
-                else if (x >= fx + fw - rtr && y < fy + rtr)       { r = rtr; cx = fx + fw - 1 - rtr; cy = fy + rtr; }
-                else if (x >= fx + fw - rbr && y >= fy + fh - rbr) { r = rbr; cx = fx + fw - 1 - rbr; cy = fy + fh - 1 - rbr; }
-                else if (x < fx + rbl       && y >= fy + fh - rbl) { r = rbl; cx = fx + rbl;          cy = fy + fh - 1 - rbl; }
-                if (r > 0) { int dx = x - cx, dy = y - cy; if (dx * dx + dy * dy > r * r) continue; }
-                put_px(x, y, c.red, c.green, c.blue, c.alpha);
+                float cov = round_cov(x, y, fx, fy, fw, fh, rtl, rtr, rbr, rbl);
+                if (cov > 0.f) put_px(x, y, c.red, c.green, c.blue, cov_alpha(cov, c.alpha));
             }
-        }
     }
-    /* Stroke a rounded-rect outline of uniform thickness t: a pixel inside the
-     * outer rounded rect but outside the inner one (inset by t). */
+    /* Stroke a rounded-rect outline of uniform thickness t: the outer rounded
+     * rect minus the inner one (inset by t), both anti-aliased. */
     void stroke_rounded(int fx, int fy, int fw, int fh, int rtl, int rtr, int rbr, int rbl, int t, web_color c) {
         if (c.alpha == 0 || t <= 0 || fw <= 0 || fh <= 0) return;
-        int hw = fw / 2, hh = fh / 2;
-        if (rtl > hw) rtl = hw; if (rtl > hh) rtl = hh;
-        if (rtr > hw) rtr = hw; if (rtr > hh) rtr = hh;
-        if (rbr > hw) rbr = hw; if (rbr > hh) rbr = hh;
-        if (rbl > hw) rbl = hw; if (rbl > hh) rbl = hh;
         int itl = rtl - t > 0 ? rtl - t : 0, itr = rtr - t > 0 ? rtr - t : 0;
         int ibr = rbr - t > 0 ? rbr - t : 0, ibl = rbl - t > 0 ? rbl - t : 0;
         position cl = eff_clip();
-        int x1 = std::max(fx, (int)cl.left()),  y1 = std::max(fy, (int)cl.top());
-        int x2 = std::min(fx + fw, (int)cl.right()), y2 = std::min(fy + fh, (int)cl.bottom());
+        int x1 = std::max(fx, R(cl.left())),  y1 = std::max(fy, R(cl.top()));
+        int x2 = std::min(fx + fw, R(cl.right())), y2 = std::min(fy + fh, R(cl.bottom()));
         for (int y = y1; y < y2; y++)
-            for (int x = x1; x < x2; x++)
-                if (pt_in_round(x, y, fx, fy, fw, fh, rtl, rtr, rbr, rbl) &&
-                    !pt_in_round(x, y, fx + t, fy + t, fw - 2 * t, fh - 2 * t, itl, itr, ibr, ibl))
-                    put_px(x, y, c.red, c.green, c.blue, c.alpha);
+            for (int x = x1; x < x2; x++) {
+                float cov = round_cov(x, y, fx, fy, fw, fh, rtl, rtr, rbr, rbl) *
+                            (1.f - round_cov(x, y, fx + t, fy + t, fw - 2 * t, fh - 2 * t, itl, itr, ibr, ibl));
+                if (cov > 0.f) put_px(x, y, c.red, c.green, c.blue, cov_alpha(cov, c.alpha));
+            }
     }
 
     void fill_background_box(const background_layer &layer, web_color c) {
         const position &b = layer.border_box;
         const border_radiuses &br = layer.border_radius;
         if (br.top_left_x > 0 || br.top_right_x > 0 || br.bottom_right_x > 0 || br.bottom_left_x > 0)
-            fill_rounded(b.x, b.y, b.width, b.height,
+            fill_rounded(R(b.x), R(b.y), R(b.x + b.width) - R(b.x), R(b.y + b.height) - R(b.y),
                          (int)br.top_left_x, (int)br.top_right_x,
                          (int)br.bottom_right_x, (int)br.bottom_left_x, c);
         else
@@ -332,18 +330,30 @@ class fb_container : public document_container {
     }
 
 public:
+    /* Metrics for optical centering. The font's own ascender and descender are
+     * each rounded up, so they add up to more than its line height and push
+     * text down, and its capitals sit off the middle of the box. Instead keep
+     * the font's line height, place the baseline so the middle of the
+     * capitals/digits lands on the middle of the text box, and report
+     * x_height as twice that middle so vertical-align: middle lines icons up
+     * with digits and CJK rather than with lowercase letters. */
     uint_ptr create_font(const font_description &d, const document *, font_metrics *fm) override {
         auto *f = new ft_font();
         f->size = (int)d.size;
         FT_Set_Pixel_Sizes(g_face, 0, f->size);
-        f->ascent  = g_face->size->metrics.ascender >> 6;
-        f->descent = -(g_face->size->metrics.descender >> 6);
-        f->height  = g_face->size->metrics.height >> 6;
+        f->height = (int)(g_face->size->metrics.height >> 6);
+        if (f->height <= 0) f->height = f->size;
+        const glyph &cap = glyph_get('H', f->size);
+        double cap_mid = cap.h ? cap.top - (cap.h - 1) / 2.0 : f->size * 0.36;
+        /* rows 0..h-1 centre on (h-1)/2; when that falls between rows, sit a
+         * hair high rather than low */
+        f->ascent  = (int)floor((f->height - 1) / 2.0 + cap_mid);
+        f->descent = f->height - f->ascent;
         if (fm) {
             fm->font_size = d.size;
             fm->ascent = f->ascent; fm->descent = f->descent;
-            fm->height = f->height ? f->height : f->size;
-            fm->x_height = f->size / 2; fm->ch_width = f->size / 2;
+            fm->height = f->height;
+            fm->x_height = (int)lround(2 * cap_mid); fm->ch_width = f->size / 2;
             fm->draw_spaces = true;
         }
         return (uint_ptr)f;
@@ -356,18 +366,18 @@ public:
 
     void draw_text(uint_ptr, const char *text, uint_ptr h, web_color color, const position &pos) override {
         auto *f = (ft_font *)h;
-        int pen = (int)pos.x;
-        int base = (int)pos.y + f->ascent;
+        int pen = R(pos.x);
+        int base = R(pos.y) + f->ascent;
         position cl = eff_clip();
         for (const char *s = text; *s; ) {
             const glyph &gl = glyph_get(utf8_next(s), f->size);
             int ox = pen + gl.left, oy = base - gl.top;
             for (int r = 0; r < gl.h; r++) {
                 int yy = oy + r;
-                if (yy < (int)cl.top() || yy >= (int)cl.bottom()) continue;
+                if (yy < R(cl.top()) || yy >= R(cl.bottom())) continue;
                 for (int cx = 0; cx < gl.w; cx++) {
                     int xx = ox + cx;
-                    if (xx < (int)cl.left() || xx >= (int)cl.right()) continue;
+                    if (xx < R(cl.left()) || xx >= R(cl.right())) continue;
                     int a = gl.px[(size_t)r * gl.w + cx];
                     if (a) put_px(xx, yy, color.red, color.green, color.blue, a * color.alpha / 255);
                 }
@@ -413,16 +423,17 @@ public:
         const border_radiuses &br = l.border_radius;
         int rtl = (int)br.top_left_x, rtr = (int)br.top_right_x, rbr = (int)br.bottom_right_x, rbl = (int)br.bottom_left_x;
         position cl = eff_clip();
-        int x1 = std::max({(int)b.left(), (int)cl.left(), (int)l.clip_box.left()});
-        int y1 = std::max({(int)b.top(), (int)cl.top(), (int)l.clip_box.top()});
-        int x2 = std::min({(int)b.right(), (int)cl.right(), (int)l.clip_box.right()});
-        int y2 = std::min({(int)b.bottom(), (int)cl.bottom(), (int)l.clip_box.bottom()});
+        int bx = R(b.left()), by = R(b.top()), bw = R(b.right()) - bx, bh = R(b.bottom()) - by;
+        int x1 = std::max({bx, R(cl.left()), R(l.clip_box.left())});
+        int y1 = std::max({by, R(cl.top()), R(l.clip_box.top())});
+        int x2 = std::min({bx + bw, R(cl.right()), R(l.clip_box.right())});
+        int y2 = std::min({by + bh, R(cl.bottom()), R(l.clip_box.bottom())});
         if (x2 <= x1 || y2 <= y1) return;
         bool opaque = !(rtl || rtr || rbr || rbl);
         for (const auto &p : pts) if (p.color.alpha != 255) opaque = false;
         if (opaque) {
             char geo[96];
-            snprintf(geo, sizeof geo, "|%d,%d,%d,%d|%d,%d,%d,%d|", (int)b.x, (int)b.y, (int)b.width, (int)b.height, x1, y1, x2, y2);
+            snprintf(geo, sizeof geo, "|%d,%d,%d,%d|%d,%d,%d,%d|", bx, by, bw, bh, x1, y1, x2, y2);
             std::string key = kind + geo;
             for (const auto &p : pts) {
                 char st[48];
@@ -457,11 +468,10 @@ public:
         }
         for (int y = y1; y < y2; y++)
             for (int x = x1; x < x2; x++) {
-                if ((rtl || rtr || rbr || rbl) &&
-                    !pt_in_round(x, y, (int)b.x, (int)b.y, (int)b.width, (int)b.height, rtl, rtr, rbr, rbl))
-                    continue;
+                float cov = (rtl || rtr || rbr || rbl) ? round_cov(x, y, bx, by, bw, bh, rtl, rtr, rbr, rbl) : 1.f;
+                if (cov <= 0.f) continue;
                 web_color c = gradient_at(pts, t_of((float)x + .5f, (float)y + .5f));
-                put_px_dither(x, y, c.red, c.green, c.blue, c.alpha);
+                put_px_dither(x, y, c.red, c.green, c.blue, cov_alpha(cov, c.alpha));
             }
     }
     void draw_linear_gradient(uint_ptr, const background_layer &l, const background_layer::linear_gradient &g) override {
@@ -498,7 +508,8 @@ public:
         bool all_solid = b.top.style != border_style_none && b.left.style != border_style_none
                       && b.right.style != border_style_none && b.bottom.style != border_style_none;
         if ((rtl || rtr || rbr || rbl) && same_w && same_c && all_solid && b.top.width > 0) {
-            stroke_rounded(p.x, p.y, p.width, p.height, rtl, rtr, rbr, rbl, b.top.width, tc);
+            stroke_rounded(R(p.x), R(p.y), R(p.x + p.width) - R(p.x), R(p.y + p.height) - R(p.y),
+                           rtl, rtr, rbr, rbl, (int)b.top.width, tc);
             return;
         }
         if (b.top.width > 0    && b.top.style    != border_style_none) fill(p.x, p.y, p.width, b.top.width, b.top.color);
@@ -671,29 +682,35 @@ extern "C" void html_view_fill_rect(int x, int y, int w, int h, int r, int g, in
             put_px(xx, yy, r, g, b, a);
 }
 
-/* Fill an arbitrary (possibly concave) polygon via scanline parity. Used by the
- * host to draw shapes litehtml/CSS can't — e.g. the battery charging bolt. */
+/* Fill an arbitrary (possibly concave) polygon, even-odd rule. Used by the
+ * host to draw shapes litehtml/CSS can't, e.g. the battery charging bolt.
+ * Vertex coordinates name pixel centres, as with the old scanline fill; each
+ * pixel is sampled 4x4 so slanted edges are anti-aliased. */
 extern "C" void html_view_fill_poly(const int *xs, const int *ys, int n, int r, int g, int b, int a)
 {
     if (n < 3) return;
-    int ymin = ys[0], ymax = ys[0];
-    for (int i = 1; i < n; i++) { if (ys[i] < ymin) ymin = ys[i]; if (ys[i] > ymax) ymax = ys[i]; }
-    for (int y = ymin; y <= ymax; y++) {
-        int xi[16], cnt = 0;
-        for (int i = 0; i < n && cnt < 16; i++) {
-            int j = (i + 1) % n;
-            int y0 = ys[i], y1 = ys[j], x0 = xs[i], x1 = xs[j];
-            if (y0 == y1) continue;
-            if ((y >= y0 && y < y1) || (y >= y1 && y < y0))
-                xi[cnt++] = x0 + (int)((long)(y - y0) * (x1 - x0) / (y1 - y0));
-        }
-        for (int i = 0; i < cnt; i++)            /* sort intersections ascending */
-            for (int k = i + 1; k < cnt; k++)
-                if (xi[k] < xi[i]) { int t = xi[i]; xi[i] = xi[k]; xi[k] = t; }
-        for (int i = 0; i + 1 < cnt; i += 2)
-            for (int x = xi[i]; x <= xi[i + 1]; x++)
-                put_px(x, y, r, g, b, a);
+    int xmin = xs[0], xmax = xs[0], ymin = ys[0], ymax = ys[0];
+    for (int i = 1; i < n; i++) {
+        xmin = std::min(xmin, xs[i]); xmax = std::max(xmax, xs[i]);
+        ymin = std::min(ymin, ys[i]); ymax = std::max(ymax, ys[i]);
     }
+    for (int y = ymin; y <= ymax; y++)
+        for (int x = xmin; x <= xmax; x++) {
+            int hits = 0;
+            for (int sy = 0; sy < 4; sy++)
+                for (int sx = 0; sx < 4; sx++) {
+                    float px = (float)x - .375f + sx * .25f, py = (float)y - .375f + sy * .25f;
+                    bool in = false;
+                    for (int i = 0, j = n - 1; i < n; j = i++) {
+                        float yi = (float)ys[i], yj = (float)ys[j];
+                        if ((yi > py) != (yj > py) &&
+                            px < (float)xs[j] + (py - yj) * (float)(xs[i] - xs[j]) / (yi - yj))
+                            in = !in;
+                    }
+                    hits += in;
+                }
+            if (hits) put_px(x, y, r, g, b, (hits * a + 8) / 16);
+        }
 }
 
 static inline float clampf01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
@@ -780,8 +797,10 @@ extern "C" void html_view_fill_round_rect(int x, int y, int w, int h, int rad, i
     if (w <= 0 || h <= 0) return;
     for (int yy = y; yy < y + h; yy++)
         for (int xx = x; xx < x + w; xx++)
-            if (pt_in_round(xx, yy, x, y, w, h, rad, rad, rad, rad))
-                put_px(xx, yy, r, g, b, a);
+        {
+            float cov = round_cov(xx, yy, x, y, w, h, rad, rad, rad, rad);
+            if (cov > 0.f) put_px(xx, yy, r, g, b, cov_alpha(cov, a));
+        }
 }
 
 extern "C" int html_view_text_width_px(const char *text, int size)
@@ -919,7 +938,7 @@ extern "C" int html_view_rect(const char *sel, int *x, int *y, int *w, int *h)
     if (!el) return 0;
     position p = el->get_placement();
     int sy = g_doc_overlay ? 0 : g_scroll_y;
-    *x = (int)p.x; *y = (int)p.y - sy; *w = (int)p.width; *h = (int)p.height;
+    *x = R(p.x); *y = R(p.y) - sy; *w = R(p.x + p.width) - *x; *h = R(p.y + p.height) - R(p.y);
     return (*w > 1 && *h > 1);
 }
 

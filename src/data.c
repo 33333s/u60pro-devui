@@ -365,6 +365,8 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
     memset(d, 0, sizeof *d);
     d->cpu_usage = -1;
     d->dps = -1;
+    d->als_enabled = -1;
+    d->als_lux = -1;
     d->neighbor_enabled = -1;
     d->valid = 0;
     if (!buf || !buf[0]) return 0;
@@ -503,6 +505,11 @@ static int parse_snapshot(devui_data_t *d, const char *buf)
         char ds[256];
         if (json_get(sec, "direct_supply", ds, sizeof ds))
             d->dps = json_get_bool(ds, "enabled", -1);
+    }
+
+    if (json_get(buf, "ambient_light", sec, sizeof sec)) {
+        d->als_enabled = json_get_bool(sec, "enabled", -1);
+        d->als_lux = json_get_int(sec, "lux", -1);   /* null while off */
     }
 
     if (json_get(buf, "neighbor", sec, sizeof sec)) {
@@ -1016,6 +1023,17 @@ void data_backend_close(void)
     if (g_backend.sse_fd >= 0) close(g_backend.sse_fd);
     g_backend.sse_fd = -1;
     g_backend.sse_len = 0;
+}
+
+long data_ambient_light(int *enabled)
+{
+    backend_init_once();
+    if (!g_backend.live_valid) {
+        if (enabled) *enabled = -1;
+        return -1;
+    }
+    if (enabled) *enabled = g_backend.live_data.als_enabled;
+    return g_backend.live_data.als_lux;
 }
 
 const char *data_model_tag(void)

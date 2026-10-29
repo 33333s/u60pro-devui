@@ -96,6 +96,11 @@ typedef struct {
     /* power.direct_supply: -1 when the block is absent or the mode is unknown */
     int  dps;
 
+    /* ambient_light (TopFlow): sensor on/off and its raw level; -1 when the
+     * block is absent, lux also -1 while the sensor is off or not yet read */
+    int  als_enabled;
+    long als_lux;
+
     /* neighbor: DIAG collector state plus the merged cell list
      * (neighbor.cells while the collector runs, else the vendor neighbor.lte scan).
      * neighbor_enabled is -1 when the block is absent. */
@@ -158,6 +163,10 @@ void data_backend_close(void);
 
 /* datad device.api_template of the latest live snapshot, "" when unknown. */
 const char *data_model_tag(void);
+
+/* ambient_light.lux of the latest live snapshot, -1 when unknown; *enabled
+ * gets ambient_light.enabled (-1 when the device has no sensor block). */
+long data_ambient_light(int *enabled);
 
 /* Copy the current UI-visible snapshot. Returns 1 on success. */
 int data_refresh(devui_data_t *d);
