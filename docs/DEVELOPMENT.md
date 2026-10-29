@@ -488,8 +488,8 @@ esac
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "1.2.11", "asset": "u60pro-devui-aarch64" },
-  "ui":    { "version": "0.4.10", "asset": "ui.tar.gz" } }
+  "devui": { "version": "1.3.0", "asset": "u60pro-devui-aarch64" },
+  "ui":    { "version": "0.5.0", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
 { "schema": 1, "datad": { "version": "0.6.2", "asset": "zwrt-datad-aarch64" } }
 ```
@@ -510,7 +510,7 @@ esac
 ```sh
 bash scripts/build.sh
 cp u60pro-devui.stripped u60pro-devui-aarch64
-(cd ui && COPYFILE_DISABLE=1 tar -czf ../ui.tar.gz -- *.html *.css)
+(cd ui && COPYFILE_DISABLE=1 tar -czf ../ui.tar.gz -- *.html *.css subpages)
 ```
 > **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/plugins/u60pro-devui/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量；如果设备还遗留旧 `/data/ui`，则先迁移再删除。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
 > **坑：`ui.tar.gz` 的打包结构必须和旧版保持一致。** 设备侧更新逻辑默认期望的是“**顶层平铺页面文件**”的 tar 包：顶层直接是 `00-home.html`、`01-signal.html`、`02-functions.html`、`style.css`、`subpages/...`，**没有** `ui/` 目录、**没有** `./` 前缀、**没有** macOS 产生的 `._*` AppleDouble 文件。用 macOS 自带打包工具直接打整个目录时，容易把这些额外条目也塞进去，导致 UI 更新失败。打包时应显式关闭资源叉（如 `COPYFILE_DISABLE=1`），并直接列出页面文件名生成 tar；`examples/custom-functions/` 不属于默认 UI 包。

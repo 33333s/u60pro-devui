@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "devui": {
-    "version": "1.2.13",
+    "version": "1.3.0",
     "asset": "u60pro-devui-aarch64",
-    "notes": "修复后端 LAN 启动与 SSE 解析失败回退，并支持 DEVUI_FONT 覆盖字体。"
+    "notes": "U30 Pro 风格界面、锁屏与电源菜单，渲染与翻页提速、CPU 降低，适配 zwrt-datad 0.10.79。"
   },
   "ui": {
-    "version": "0.4.10",
+    "version": "0.5.0",
     "asset": "ui.tar.gz",
-    "notes": "修正短信正文流式布局，短短信不再产生空白滚动区。"
+    "notes": "U30 Pro 风格界面：新增首页、信号表盘、四套主题与上下拉面板。"
   }
 }
