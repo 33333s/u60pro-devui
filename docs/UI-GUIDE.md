@@ -50,7 +50,7 @@
 - `functions/*.html` 是用户自定义二级页面，通过更多功能页自动扫描，示例见 `examples/custom-functions/`；示例不放进默认 `ui/`，避免安装后默认出现测试页面。
 - 特殊页按全屏覆盖层处理，不继承普通页面的竖向滚动位置。
 - 所有页面用 `<link rel="stylesheet" href="style.css">` 共享同一份样式。
-- **按机型区分**：同一套界面同时支持 U60 Pro（MU5250）和 TopFlow（MU5252），机型取自 datad 的 `device.api_template`。文件名带机型的页面只在该机型显示，并替换同名的通用页：`03-link.mu5252.html` 只在 TopFlow 上出现，`00-home.mu5252.html` 在 TopFlow 上替换 `00-home.html`；`subpages/` 同理。`<body>` 的类里带 `dev-mu5250` 或 `dev-mu5252`，小差异用 CSS 隐藏即可，例如通用页里的 `class="row u60only"` 在 TopFlow 上不显示。调试时可用环境变量 `DEVUI_DEVICE=mu5252` 强制机型。
+- **按机型区分**：同一套界面同时支持 U60 Pro（MU5250）和 TopFlow（MU5252），机型取自 datad 的 `device.api_template`。文件名带机型的页面只在该机型显示，并替换同名的通用页：`03-link.mu5252.html` 只在 TopFlow 上出现，`00-home.mu5252.html` 在 TopFlow 上替换 `00-home.html`；`subpages/` 同理。`<body>` 的类里带 `dev-mu5250` 或 `dev-mu5252`，小差异用 CSS 隐藏即可，例如通用页里的 `class="row u60only"` 在 TopFlow 上不显示，`class="row tfonly"` 只在 TopFlow 上显示。调试时可用环境变量 `DEVUI_DEVICE=mu5252` 强制机型。
 - 旧版若还残留 `/data/ui`，新版安装脚本会自动把它迁移到这里。
 
 ---
@@ -98,6 +98,7 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 - **页面可以整体竖向滚动**：内容超过 480px 时可上下拖动；状态栏会固定在顶部。不要依赖元素内部滚动条，内容特别多时仍建议拆页。
 - **想动起来只能靠数据刷新**：程序约 1 秒刷新一页（充电时更快）。没有 CSS 动画，"动画"只能通过令牌值每次变化来体现（比如充电时电池的流光就是程序每帧改一个 `left:%`）。
 - **字体是设备自带的 CJK 字体**：中文、数字、常见标点都没问题；但很多符号字形缺失，会显示成**豆腐块**（□）。已知可用：`↑`(U+2191) `↓`(U+2193) `▲▼` `·` `℃` `•`；已知不可用：`◔` 等。拿不准的符号先在设备上试，或干脆用中文/CSS 画。
+- **文字居中靠行高**：`vertical-align: middle` 按数字和汉字的视觉中线对齐，图标块和文字可以直接对齐。一个框同时定了 `height` 和 `line-height` 时，让 `line-height` 减去该字号的文字高度是偶数（设备字体 11→13、12→14、13→15、14→16、15→18、16→19、20→24、26→31），否则多出的 1 px 会让文字偏下半像素、取整后低 1 px。
 
 ---
 
@@ -149,6 +150,8 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `{{PWR}}` `{{PWRLBL}}` | 功率(W) / 标签 | `2.2` / `充电`或`放电` |
 | `{{MEM}}` `{{MEMDETAIL}}` | 内存占用% / 已用·总(MB) | `52` / `837/1590 MB` |
 | `{{BRIGHT}}` | 屏幕亮度% | `80` |
+| `{{AUTOBRIGHTCLASS}}` | 自动亮度开关的类（TopFlow 才可能是 `on`） | `on` / `off` |
+| `{{BRIGHTBAR}}` | 自动亮度开启时为 `auto`，加在亮度滑条上把它隐藏，只留百分比 | `auto` / 空 |
 | `{{AUTOOFF}}` | 自动息屏预设按钮组(整段，当前项高亮) | |
 | `{{CURSA}}` `{{CURNSA}}` `{{CURLTE}}` | 各制式当前锁定频段摘要 | `已锁 n41 n78` |
 | `{{USBPWRCLASS}}/{{USBPWRSTATE}}` `{{USBNETCLASS}}/{{USBNETSTATE}}` `{{BATPCTCLASS}}/{{BATPCTSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{WIFI24CLASS}}/{{WIFI24STATE}}` `{{WIFI5CLASS}}/{{WIFI5STATE}}` `{{PSMCLASS}}/{{PSMSTATE}}` `{{DPSCLASS}}/{{DPSSTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMESTATE}}`（主题名，如 `海洋`） `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{LOCKCLASS}}/{{LOCKSTATE}}` | 各开关的类(`on`/`off`) 与状态文字 | `on` / `已开启` |
@@ -189,7 +192,8 @@ TopFlow（MU5252）专用令牌，在其他机型上为空或 `—`：
 | `act:wifi24` `act:wifi5` | 切换 2.4G / 5G 主频段（`ifconfig wlan0/wlan2 up/down`） |
 | `act:psm` | 切换 WiFi 节能模式（`iw set power_save`，开=省电 / 关=高性能） |
 | `act:dps` | 切换电源直供电（`zwrt_bsp.charger`，插电直供、不充放电池） |
-| `act:bright` | 在亮度滑条上点/拖设置亮度（按命中位置算） |
+| `act:bright` | 在亮度滑条上点/拖设置亮度（按命中位置算）；手动调节会关闭自动亮度 |
+| `act:autobright` | TopFlow：切换自动亮度。亮屏且开启时由 datad 打开环境光传感器（`ambient_light.set`），按 `/state.ambient_light.lux` 平滑调节背光；熄屏或关闭时关掉传感器 |
 | `act:autooff:<毫秒>` | 选自动息屏预设（`act:autooff:30000` 等，`0`=关） |
 | `act:net:<值>` | 切选网模式（`WL_AND_5G`/`Only_5G`/`LTE_AND_5G`/`Only_LTE`） |
 | `act:openmodal:sa` `:nsa` `:lte` | 打开对应制式的锁频二级弹窗 |
@@ -263,7 +267,7 @@ TopFlow（MU5252）专用令牌，在其他机型上为空或 `—`：
 ### 上下拉面板
 
 和 U30 Pro 一样：在顶层页面上，从状态栏（顶部 30 px）往下拉打开**控制中心** `subpages/control.html`，从屏幕底边（底部 30 px）往上拉打开**短信列表** `subpages/sms.html`。
-面板就是普通二级页，点按、滚动、`act:backfunc` 都照常；控制中心从底边上拉收起，短信列表从状态栏下拉收起。打开和收起带一段竖向滑动动画。
+面板就是普通二级页，点按、滚动照常，但不放返回键：控制中心从底边上拉收起，短信列表从状态栏下拉收起。拉动时面板跟着手指走，松手时拉过 60 px 就滑到底，否则弹回。
 
 想在宿主机上看效果：`bash tests/ui/preview.sh 输出目录 [主题] [状态.json]`，会把每一页渲染成 PNG 并拼一张总览图（需要 Linux、gcc/g++、Python Pillow 和中文字体）。
 

@@ -59,7 +59,10 @@ body.th-violet { background: radial-gradient(circle at 50% 200px, #242d4c 0%, #0
 /* generation badge / chip */
 .gen, .chip { display: inline-block; font-size: 12px; font-weight: 800; padding: 1px 8px;
               border-radius: 10px; color: #0b1220; background: #56677a; }
-.chip { height: 20px; line-height: 20px; padding: 0 9px; vertical-align: middle; }
+/* Where a box sets both height and line-height, line-height is chosen so
+   line-height minus the text box (font line height: 13px -> 15, 14px -> 16,
+   16px -> 19, 26px -> 31) is even: an odd leading rounds the text a pixel low. */
+.chip { height: 20px; line-height: 19px; padding: 0 9px; vertical-align: middle; }
 
 /* battery icon (custom templates) */
 .bw { display: inline-block; height: 17px; line-height: 17px; vertical-align: middle; white-space: nowrap; font-size: 0; margin-left: 7px; }
@@ -120,10 +123,6 @@ a.rev.r { float: right; }
 .home-foot .hf { display: inline-block; margin: 0 9px; font-size: 15px; vertical-align: middle; }
 .ico-wifi { display: inline-block; width: 22px; height: 14px; margin-right: 5px; vertical-align: middle; }
 .ico-bolt { display: inline-block; width: 9px; height: 13px; margin-left: 5px; vertical-align: middle; }
-.mbat { display: inline-block; width: 20px; height: 10px; margin-right: 5px; vertical-align: middle;
-        border: 1px solid #93a4b8; border-radius: 3px; padding: 1px; overflow: hidden; }
-.mbat-fill { display: block; height: 100%; border-radius: 1px; background: #4ade80; }
-.mbat.low .mbat-fill { background: #f87171; }
 .home-facts { margin: 16px 10px 0; font-size: 0; text-align: center; }
 .home-fact { display: inline-block; box-sizing: border-box; width: 145px; margin: 0 2px; padding: 8px 4px; vertical-align: top;
              white-space: nowrap; overflow: hidden;
@@ -300,6 +299,9 @@ body.mo { background: transparent; }
 
 /* ---- per-model differences: <body> carries dev-mu5250 or dev-mu5252 ---- */
 .dev-mu5252 .u60only { display: none; }
+.dev-mu5250 .tfonly { display: none; }
+/* auto brightness on: the level follows the sensor, so no slider */
+.slider.auto { display: none; }
 
 /* TopFlow modems (signal page): one block per modem */
 .mrow { padding: 7px 0 6px; border-top: 1px solid rgba(255,255,255,0.07); overflow: hidden; }
@@ -315,7 +317,7 @@ body.mo { background: transparent; }
 .mr .acc2 { margin-left: 10px; }
 
 /* TopFlow aggregation paths */
-.aggp { height: 26px; line-height: 26px; overflow: hidden; border-top: 1px solid rgba(255,255,255,0.07); font-size: 13px; }
+.aggp { height: 26px; line-height: 25px; overflow: hidden; border-top: 1px solid rgba(255,255,255,0.07); font-size: 13px; }
 .aggp .ad { display: inline-block; width: 8px; height: 8px; margin: 0 8px 0 2px; border-radius: 4px; vertical-align: middle; }
 .aggp .ad.on { background: #4ade80; }
 .aggp .ad.off { background: #f87171; }
@@ -340,7 +342,7 @@ body.mo { background: transparent; }
 .func-ic { float: left; width: 40px; height: 40px; line-height: 40px; margin-right: 12px;
            border-radius: 20px; text-align: center; font-size: 18px; font-weight: 800;
            background: rgba(255,255,255,0.10); }
-.func-go { float: right; height: 40px; line-height: 40px; font-size: 16px; color: #56677a; }
+.func-go { float: right; height: 40px; line-height: 39px; font-size: 16px; color: #56677a; }
 .func-name { display: block; padding-top: 1px; font-size: 16px; line-height: 22px; font-weight: 700; }
 .func-desc { display: block; font-size: 11px; line-height: 16px; color: #93a4b8; }
 
@@ -393,7 +395,7 @@ body.mo { background: transparent; }
 .keypad { width: 300px; margin: 16px auto 0; }
 .kprow { text-align: center; font-size: 0; margin-bottom: 10px; }
 .kpcell { display: inline-block; width: 98px; vertical-align: middle; }
-a.kp { display: inline-block; width: 66px; height: 66px; line-height: 66px; border-radius: 33px;
+a.kp { display: inline-block; width: 66px; height: 66px; line-height: 65px; border-radius: 33px;
        font-size: 26px; font-weight: 700; text-decoration: none; vertical-align: middle;
        background: rgba(255,255,255,0.08); color: #f2f6fa; }
 a.kp.kpx { font-size: 15px; font-weight: 400; }   /* 取消 key */
@@ -420,7 +422,7 @@ a.kp.kpx { font-size: 15px; font-weight: 400; }   /* 取消 key */
 .st-gauge-dial { border-radius: 92px; overflow: hidden; }
 .st-gauge-sub { margin-top: 8px; font-size: 14px; color: #93a4b8; }
 .st-lines { padding: 9px 10px 10px; }
-.st-line-head { height: 23px; line-height: 23px; font-size: 14px; color: #93a4b8; overflow: hidden; }
+.st-line-head { height: 23px; line-height: 22px; font-size: 14px; color: #93a4b8; overflow: hidden; }
 .st-line-head b { float: right; font-size: 14px; color: #f2f6fa; }
 .st-line-chart { height: 44px; margin: 0 0 8px; border-radius: 10px; overflow: hidden; background: rgba(0,0,0,0.22); }
 .st-caption { margin: 8px 0 2px; font-size: 14px; font-weight: 700; color: #93a4b8; }
@@ -442,7 +444,7 @@ a.kp.kpx { font-size: 15px; font-weight: 400; }   /* 取消 key */
 .ststat.done { color: #4ade80; }
 .ststat.fail { color: #f87171; }
 .stres { margin-top: 8px; border-radius: 12px; overflow: hidden; }
-.strow { height: 24px; line-height: 24px; font-size: 13px; overflow: hidden; border-bottom: 1px solid rgba(255,255,255,0.07); }
+.strow { height: 24px; line-height: 23px; font-size: 13px; overflow: hidden; border-bottom: 1px solid rgba(255,255,255,0.07); }
 .strow span { color: #93a4b8; }
 .strow b { float: right; font-size: 13px; font-weight: 800; color: #f2f6fa; }
 .stempty { margin-top: 8px; padding: 10px; border-radius: 12px; text-align: center; font-size: 13px; color: #93a4b8;

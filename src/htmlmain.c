@@ -259,6 +259,7 @@ static int  g_sig_read;   /* ML1/raw signaling read switch */
 static int  g_sig_parse;  /* decoded LTE/NR signaling parse switch + page visibility */
 static int  g_neighbor_open; /* expand neighbor-cell list on the first signal page */
 static int  g_saved_bright = -1; /* persisted backlight level, -1 = none yet */
+static int  g_auto_bright;        /* TopFlow: follow the ambient light sensor */
 enum { ST_STATE_MISSING = 0, ST_STATE_IDLE, ST_STATE_RUNNING, ST_STATE_DONE, ST_STATE_FAIL };
 #define SPEEDTEST_BIN "/data/plugins/better-speedtest/better-speedtest"
 #define SPEEDTEST_LOG "/tmp/better-speedtest.log"
@@ -1208,6 +1209,7 @@ static void load_conf(void)
         else if (sscanf(line, "sig_read=%d", &v) == 1)   g_sig_read = !!v;
         else if (sscanf(line, "sig_parse=%d", &v) == 1)  g_sig_parse = !!v;
         else if (sscanf(line, "bright=%d", &v) == 1)     g_saved_bright = v;
+        else if (sscanf(line, "auto_bright=%d", &v) == 1) g_auto_bright = !!v;
         else if (sscanf(line, "st_src=%15s", sval) == 1) snprintf(g_st_src, sizeof g_st_src, "%s", sval);
         else if (sscanf(line, "st_dir=%15s", sval) == 1) snprintf(g_st_dir, sizeof g_st_dir, "%s", sval);
         else if (sscanf(line, "st_dur=%d", &v) == 1)     g_st_dur = v;
@@ -1219,9 +1221,9 @@ static void save_conf(void)
     FILE *fp = fopen(CONF_FILE, "w");
     if (!fp) return;
     fprintf(fp,
-            "theme=%d\nspeed_bits=%d\nshow_batpct=%d\nautooff=%d\nrefresh_ms=%d\nsig_read=%d\nsig_parse=%d\nbright=%d\nst_src=%s\nst_dir=%s\nst_dur=%d\n",
+            "theme=%d\nspeed_bits=%d\nshow_batpct=%d\nautooff=%d\nrefresh_ms=%d\nsig_read=%d\nsig_parse=%d\nbright=%d\nauto_bright=%d\nst_src=%s\nst_dir=%s\nst_dur=%d\n",
             g_theme, g_speed_bits, g_show_batpct, g_autooff_ms, g_refresh_ms,
-            g_sig_read, g_sig_parse, backlight_get(), g_st_src, g_st_dir, g_st_dur);
+            g_sig_read, g_sig_parse, backlight_get(), g_auto_bright, g_st_src, g_st_dir, g_st_dur);
     fclose(fp);
 }
 
@@ -2447,25 +2449,25 @@ static void sms_close(touch_input_t *touch, int *need_render)
     *need_render = 1;
 }
 
+#define SBAR_TIME_X 10
+
 /* Draw a small envelope in the fixed status bar, just right of the clock, when
- * there are unread messages. Native shape; the font has no envelope glyph. */
+ * there are unread messages: a single-colour line drawing in the clock's
+ * colour, centred on the bar like the digits. The font has no envelope glyph. */
 static void draw_sms_icon(void)
 {
     if (!g_sms_unread_now) return;
-    const int ew = 16, eh = 11;
-    int ex = 10 + html_view_text_width_px(g_stat_time, 16) + 7;
-    int ey = (26 - eh) / 2;
-    /* body: rounded rectangle in the second accent */
-    html_view_fill_round_rect(ex, ey, ew, eh, 2, RGB3(theme_b()), 255);
-    /* flap: white inverted-V from the two top corners down to center */
-    int xs[3] = { ex + 1, ex + ew - 1, ex + ew / 2 };
-    int ys[3] = { ey + 1, ey + 1,      ey + eh / 2 + 1 };
-    html_view_fill_poly(xs, ys, 3, 0xff, 0xff, 0xff, 255);
+    const float ew = 16.f, eh = 12.f, th = 1.5f, ey = 13.f - eh / 2.f;
+    float ex = (float)(SBAR_TIME_X + html_view_text_width_px(g_stat_time, 16) + 7);
+    html_view_round_rect_aa(ex, ey, ew, eh, 2.f, th, RGB3(C_TXT), 255);
+    /* flap: from just inside the top corners down to the middle */
+    float fy = ey + th * .5f + .5f, my = ey + eh * .55f;
+    html_view_line(ex + 2.f, fy, ex + ew / 2.f, my, th, RGB3(C_TXT), 255);
+    html_view_line(ex + ew - 2.f, fy, ex + ew / 2.f, my, th, RGB3(C_TXT), 255);
 }
 
 /* ---- band lock (éé¢): comma-list band sets ---- */
 /* Status bar text vertically centered on the bar by its digits. */
-#define SBAR_TIME_X 10
 static int sbar_text_y(int size)
 {
     int x0, y0, x1, y1;
@@ -2660,11 +2662,11 @@ static void draw_func_icons(void)
         html_view_arc(cx, ty, 11.f, t, 50.f, 130.f, RGB3(c), 255);
         html_view_arc(cx, ty, 11.f, t, 230.f, 310.f, RGB3(c), 255);
     }
-    if (FIC("#fic-lock")) {                     /* padlock */
-        html_view_arc(cx, cy - 3.f, 5.5f, t, -90.f, 90.f, RGB3(c), 255);
-        html_view_line(cx - 5.5f, cy - 3.f, cx - 5.5f, cy + 1.f, t, RGB3(c), 255);
-        html_view_line(cx + 5.5f, cy - 3.f, cx + 5.5f, cy + 1.f, t, RGB3(c), 255);
-        html_view_fill_round_rect((int)(cx - 9.f), (int)(cy + 1.f), 18, 12, 3, RGB3(c), 255);
+    if (FIC("#fic-lock")) {                     /* padlock, shackle top to body bottom centred */
+        html_view_arc(cx, cy - 5.f, 5.5f, t, -90.f, 90.f, RGB3(c), 255);
+        html_view_line(cx - 5.5f, cy - 5.f, cx - 5.5f, cy - 1.f, t, RGB3(c), 255);
+        html_view_line(cx + 5.5f, cy - 5.f, cx + 5.5f, cy - 1.f, t, RGB3(c), 255);
+        html_view_fill_round_rect((int)(cx - 9.f), (int)(cy - 1.f), 18, 12, 3, RGB3(c), 255);
     }
     if (FIC("#fic-speed")) {                    /* speedometer */
         html_view_arc(cx, cy + 3.f, 11.f, t, -120.f, 120.f, RGB3(c), 255);
@@ -2674,7 +2676,7 @@ static void draw_func_icons(void)
     /* control center toggles: dark glyph on the lit accent disc, light when off */
     if (FIC("#cc-wifi")) {
         unsigned k = g_dial.wifi_on ? 0x0B1220u : C_TXT;
-        float by = cy + 8.f;
+        float by = cy + 9.f;                     /* outer arc top to dot bottom centred */
         html_view_fill_circle(cx, by, 2.2f, RGB3(k), 255);
         html_view_arc(cx, by, 7.f, 2.6f, -45.f, 45.f, RGB3(k), 255);
         html_view_arc(cx, by, 13.f, 2.6f, -45.f, 45.f, RGB3(k), 255);
@@ -2704,6 +2706,7 @@ static void draw_func_icons(void)
     }
     if (FIC("#cc-fan")) {                        /* three blades around a hub */
         unsigned k = g_dial.fan_on ? 0x0B1220u : C_TXT;
+        cx -= 1.75f;                             /* blades reach cx+12 but cx-8.5 */
         for (int b = 0; b < 3; b++) {
             float a = (float)(b * 120) * 3.14159265f / 180.f;
             html_view_fill_circle(cx + 7.f * cosf(a), cy + 7.f * sinf(a), 5.f, RGB3(k), 255);
@@ -2718,9 +2721,9 @@ static void draw_func_icons(void)
         html_view_fill_circle(cx, cy + 4.f, 8.f, RGB3(k), 255);
     }
     if (FIC("#cc-theme")) {                      /* the palette's two accents and green */
-        html_view_fill_circle(cx - 8.f, cy - 4.f, 5.f, RGB3(theme_a()), 255);
-        html_view_fill_circle(cx + 8.f, cy - 4.f, 5.f, RGB3(theme_b()), 255);
-        html_view_fill_circle(cx, cy + 8.f, 5.f, RGB3(C_OK), 255);
+        html_view_fill_circle(cx - 8.f, cy - 6.f, 5.f, RGB3(theme_a()), 255);
+        html_view_fill_circle(cx + 8.f, cy - 6.f, 5.f, RGB3(theme_b()), 255);
+        html_view_fill_circle(cx, cy + 6.f, 5.f, RGB3(C_OK), 255);
     }
     for (int i = 0; i < 32; i++) {              /* custom pages: app grid */
         char sel[24];
@@ -5578,7 +5581,10 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "BATTEMP", s_btemp };   t[i++] = (struct kv){ "SWVER", s_swver };
     t[i++] = (struct kv){ "IMEI", s_imei };
     t[i++] = (struct kv){ "IMEIBTN", g_show_imei ? "隐藏" : "显示" };
-    t[i++] = (struct kv){ "BRIGHT", s_bright };   t[i++] = (struct kv){ "AUTOOFF", s_autooff };
+    t[i++] = (struct kv){ "BRIGHT", s_bright };
+    t[i++] = (struct kv){ "AUTOBRIGHTCLASS", dev_is_tf() && g_auto_bright ? "on" : "off" };
+    t[i++] = (struct kv){ "BRIGHTBAR", dev_is_tf() && g_auto_bright ? "auto" : "" };
+    t[i++] = (struct kv){ "AUTOOFF", s_autooff };
     t[i++] = (struct kv){ "REFRESHSEG", s_refreshseg };
     t[i++] = (struct kv){ "STSRCSEG", speedtest_src_html() };
     t[i++] = (struct kv){ "STDIRSEG", speedtest_dir_html() };
@@ -6086,6 +6092,126 @@ static int sheet_edge_pull(drm_disp_t *d, int sy, int dy)
     return 1;
 }
 
+/* A live edge pull: the sheet follows the finger and the release finishes or
+ * cancels it. g_slide_a holds the frame on screen when the pull began,
+ * g_slide_b the frame on the far side (the sheet when opening, the page under
+ * it when closing); the state change itself waits for the release. */
+static struct {
+    int active, which, closing, vis;
+    int from_top;   /* edge the sheet hangs from: control center top, SMS bottom */
+    int dir;        /* finger direction: +1 down, -1 up */
+} g_pull;
+
+/* Rows of the moving sheet on screen for a finger travel of dy. */
+static int sheet_pull_vis(int H, int dy)
+{
+    int travel = g_pull.dir > 0 ? dy : -dy;
+    if (travel < 0) travel = 0;
+    if (travel > H) travel = H;
+    return g_pull.closing ? H - travel : travel;
+}
+
+static void sheet_pull_draw(drm_disp_t *d, int vis)
+{
+    const int H = d->height;
+    const uint16_t *over = g_pull.closing ? g_slide_a : g_slide_b;
+    const uint16_t *under = g_pull.closing ? g_slide_b : g_slide_a;
+    for (int r = 0; r < H; r++) {
+        int in_over = g_pull.from_top ? r < vis : r >= H - vis;
+        if (in_over) slide_row(d, over, g_pull.from_top ? r + H - vis : r - (H - vis), r);
+        else         slide_row(d, under, r, r);
+    }
+    drm_disp_dirty(d, 0, 0, d->width - 1, H - 1);
+    g_pull.vis = vis;
+}
+
+/* An edge drag started at sy heading down (dir > 0) or up: prepare the far
+ * frame quietly and leave the state as it was. Returns 1 when a sheet can
+ * open or close this way. */
+static int sheet_pull_begin(drm_disp_t *d, int sy, int dir)
+{
+    const int H = d->height;
+    int from_top = sy <= EDGE_ZONE_PX, from_bottom = sy >= H - EDGE_ZONE_PX;
+    int which = 0, closing = 0;
+    char sub[sizeof g_subpage], sub_path[sizeof g_subpage_path];
+    int sheet = g_sheet, scroll = g_scroll;
+
+    if (dir > 0 && from_top) {
+        if (g_sheet == SHEET_SMS) closing = 1;
+        else if (!g_subpage[0]) which = SHEET_CONTROL;
+    } else if (dir < 0 && from_bottom) {
+        if (g_sheet == SHEET_CONTROL) closing = 1;
+        else if (!g_subpage[0]) which = SHEET_SMS;
+    }
+    if (!which && !closing) return 0;
+
+    snprintf(sub, sizeof sub, "%s", g_subpage);
+    snprintf(sub_path, sizeof sub_path, "%s", g_subpage_path);
+    sheet_snapshot(d, g_slide_a);
+    g_render_quiet = 1;
+    g_pull.dir = dir > 0 ? 1 : -1;
+    if (closing) {
+        g_pull.from_top = g_sheet == SHEET_CONTROL;   /* it leaves the way it came */
+        subpage_close();
+    } else {
+        g_pull.from_top = which == SHEET_CONTROL;
+        if (!subpage_open(which == SHEET_CONTROL ? "control.html" : "sms.html")) { g_render_quiet = 0; return 0; }
+        g_sheet = which;
+    }
+    render(d, active_page_path());
+    sheet_snapshot(d, g_slide_b);
+    g_render_quiet = 0;
+    /* back to where we were until the release decides */
+    snprintf(g_subpage, sizeof g_subpage, "%s", sub);
+    snprintf(g_subpage_path, sizeof g_subpage_path, "%s", sub_path);
+    g_sheet = sheet;
+    g_scroll = scroll;
+    invalidate_render_html_cache();
+
+    g_pull.active = 1;
+    g_pull.which = which;
+    g_pull.closing = closing;
+    g_pull.vis = closing ? H : 0;
+    return 1;
+}
+
+static void sheet_pull_move(drm_disp_t *d, int dy)
+{
+    if (g_pull.active) sheet_pull_draw(d, sheet_pull_vis(d->height, dy));
+}
+
+/* Release: past EDGE_PULL_PX the sheet goes the rest of the way, otherwise it
+ * springs back; either way from where the finger left it. */
+static void sheet_pull_end(drm_disp_t *d, int dy)
+{
+    const int H = d->height;
+    int travel = g_pull.dir > 0 ? dy : -dy;
+    int commit = travel >= EDGE_PULL_PX;
+    int from = g_pull.vis;
+    int to = commit != g_pull.closing ? H : 0;
+    int ms = SHEET_SLIDE_MS * abs(to - from) / H;
+    uint32_t t0 = millis();
+
+    if (!g_pull.active) return;
+    if (ms < 60) ms = 60;
+    for (;;) {
+        float t = (float)(millis() - t0) / (float)ms;
+        if (t > 1.f) t = 1.f;
+        float e = 1.f - (1.f - t) * (1.f - t) * (1.f - t);
+        sheet_pull_draw(d, from + (int)((float)(to - from) * e + (to > from ? .5f : -.5f)));
+        if (t >= 1.f) break;
+    }
+    g_pull.active = 0;
+    if (!commit) return;
+    if (g_pull.closing) {
+        subpage_close();
+    } else if (subpage_open(g_pull.which == SHEET_CONTROL ? "control.html" : "sms.html")) {
+        g_sheet = g_pull.which;
+    }
+    invalidate_render_html_cache();
+    render(d, active_page_path());
+}
+
 static void capture_fb(drm_disp_t *d);   /* fwd: fb snapshot for modal overlay */
 static void render_sms_overlay(drm_disp_t *d, int restore_background);
 
@@ -6502,13 +6628,95 @@ static void seg_box(drm_disp_t *d, int sx, int sy, int sw, int sh, int n, int fx
     drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
 }
 
+static void als_close(void);
+
 /* Set backlight from a tap/drag x within the brightness bar [bx, bx+bw). */
 static void set_bright_x(int x, int bx, int bw)
 {
     if (bw <= 0) return;
+    if (g_auto_bright) { g_auto_bright = 0; als_close(); }   /* a hand on the slider wins */
     int f = (x - bx) * 100 / bw; if (f < 3) f = 3; if (f > 100) f = 100;
     int m = backlight_max(); if (m <= 0) m = 255;
     backlight_set(f * m / 100);
+}
+
+/* ---- auto brightness (TopFlow): the ambient light sensor, through datad ----
+ * datad switches the sensor (ambient_light.set) and reports its level in
+ * /state.ambient_light, refreshed with every snapshot. The sensor runs only
+ * while the screen is on and the setting is on. The reading is smoothed,
+ * mapped to a level on a log scale, and the backlight steps toward it only
+ * once the gap is noticeable, so it settles instead of hunting. */
+#define ALS_STEP_MS    80        /* one backlight step per this many ms */
+#define ALS_START_PCT  6         /* start moving when this far off (percent) */
+#define ALS_RESEND_MS  3000      /* re-send when datad still reports the other state */
+static int g_als_want = -1;      /* last state sent to datad, -1 none yet */
+static uint32_t g_als_sent_at;
+static float g_als_lux = -1.f;
+static int g_als_moving;
+static uint32_t g_als_step_at;
+
+static int als_supported(void) { return dev_is_tf(); }
+
+static void als_set(int on)
+{
+    datad_control_async("ambient_light.set", on ? "{\"enabled\":true}" : "{\"enabled\":false}", NULL);
+    g_als_want = on;
+    g_als_sent_at = millis();
+    g_als_lux = -1.f;
+    g_als_moving = 0;
+}
+
+static void als_close(void)
+{
+    if (g_als_want == 1) als_set(0);
+}
+
+/* Sensor on exactly when it is wanted; also corrects datad after a restart. */
+static void als_sync(void)
+{
+    if (!als_supported()) return;
+    int want = g_auto_bright && backlight_is_on(), on;
+    (void)data_ambient_light(&on);
+    if (want != g_als_want ||
+        (on >= 0 && on != want && (uint32_t)(millis() - g_als_sent_at) >= ALS_RESEND_MS))
+        als_set(want);
+}
+
+/* Backlight percent for a reading, interpolated on log10(lux). */
+static int als_percent(float lux)
+{
+    static const float pt_lux[] = { 1.f, 10.f, 50.f, 200.f, 800.f, 3000.f };
+    static const float pt_pct[] = { 6.f, 15.f, 30.f, 55.f, 80.f, 100.f };
+    const int n = (int)(sizeof pt_lux / sizeof pt_lux[0]);
+    if (lux <= pt_lux[0]) return (int)pt_pct[0];
+    if (lux >= pt_lux[n - 1]) return (int)pt_pct[n - 1];
+    for (int i = 1; i < n; i++) {
+        if (lux > pt_lux[i]) continue;
+        float a = log10f(pt_lux[i - 1]), b = log10f(pt_lux[i]);
+        float t = (log10f(lux) - a) / (b - a);
+        return (int)(pt_pct[i - 1] + (pt_pct[i] - pt_pct[i - 1]) * t + .5f);
+    }
+    return (int)pt_pct[n - 1];
+}
+
+/* Smooth the reading and step the backlight. Called every loop pass. */
+static void als_poll(uint32_t now)
+{
+    int on;
+    long raw;
+    if (g_als_want != 1 || (int32_t)(now - g_als_step_at) < ALS_STEP_MS) return;
+    g_als_step_at = now;
+    raw = data_ambient_light(&on);
+    if (on != 1 || raw < 0) return;
+    g_als_lux = g_als_lux < 0.f ? (float)raw : g_als_lux * .9f + (float)raw * .1f;   /* ~0.8 s */
+    int m = backlight_max(); if (m <= 0) m = 255;
+    int target = als_percent(g_als_lux) * m / 100, cur = backlight_get();
+    int gap = target - cur, agap = gap < 0 ? -gap : gap;
+    if (!g_als_moving && agap * 100 < ALS_START_PCT * m) return;
+    g_als_moving = agap > m / 100;
+    if (!g_als_moving) return;
+    int step = agap / 6; if (step < 1) step = 1;
+    backlight_set(cur + (gap > 0 ? step : -step));
 }
 
 /* Screen off: backlight to 0 and a black frame. The panel itself stays awake:
@@ -6516,6 +6724,7 @@ static void set_bright_x(int x, int bx, int bw)
  * panel asleep (DPMS off) the touch driver resets the LCD and finally reboots. */
 static void screen_off(drm_disp_t *d)
 {
+    als_close();
     backlight_fade_off();
     memset(d->fb, 0, (size_t)d->pitch_px * d->height * sizeof(uint16_t));
     drm_disp_dirty(d, 0, 0, d->width - 1, d->height - 1);
@@ -6537,6 +6746,7 @@ static void screen_on(drm_disp_t *d, const char *path)
     else               render(d, path);       /* backlight still 0 from screen_off */
     screen_warm_up(d);
     backlight_fade_on();   /* 0 -> user level */
+    als_sync();
 }
 
 static void screen_on_ext(drm_disp_t *d, devui_ext_t *ext)
@@ -6544,6 +6754,7 @@ static void screen_on_ext(drm_disp_t *d, devui_ext_t *ext)
     render_ext_view(d, ext);                  /* backlight still 0 from screen_off */
     screen_warm_up(d);
     backlight_fade_on();
+    als_sync();
 }
 
 int main(void)
@@ -6624,6 +6835,7 @@ int main(void)
     if (!g_charge_boot)
         signal_async_start();
     if (g_saved_bright >= 0) backlight_set(g_saved_bright);   /* restore brightness */
+    if (!g_charge_boot) als_sync();
     if (!g_charge_boot) {
         load_pin();
         aux_start();                          /* page-2 switch states etc., off this thread */
@@ -7077,7 +7289,8 @@ int main(void)
                 if (drag_dir == 0 && scroll_dir == 0 && !edge_pull) {
                     if (ady > DRAG_START_PX && ady >= adx &&
                         (down_y <= EDGE_ZONE_PX || down_y >= H - EDGE_ZONE_PX)) {
-                        edge_pull = 1;              /* decided on release: sheet open / close */
+                        edge_pull = 1;              /* the sheet follows the finger from here */
+                        sheet_pull_begin(&disp, down_y, dy > 0 ? 1 : -1);
                     } else if (!g_subpage[0] && g_npages > 1 && adx > DRAG_START_PX && adx > ady) {
                         drag_dir = dx < 0 ? 1 : -1;
                         drag_target = (g_cur + (drag_dir > 0 ? 1 : g_npages - 1)) % g_npages;
@@ -7098,6 +7311,11 @@ int main(void)
                 if (drag_dir != 0) {
                     if (motion_frame_due(now, &last_motion_frame)) {
                         compose_frame(&disp, drag_dir > 0 ? -dx : (W - dx));
+                        animating = 1;
+                    }
+                } else if (edge_pull && g_pull.active) {
+                    if (motion_frame_due(now, &last_motion_frame)) {
+                        sheet_pull_move(&disp, dy);
                         animating = 1;
                     }
                 } else if (scroll_dir != 0) {
@@ -7130,7 +7348,11 @@ int main(void)
                                       rel_dx * rel_dx + rel_dy * rel_dy <= 14 * 14;
                 int dx = rel_dx;
                 if (edge_pull) {
-                    if (dragging && !menu && sheet_edge_pull(&disp, down_y, rel_dy)) {
+                    if (g_pull.active) {
+                        sheet_pull_end(&disp, rel_dy);
+                        touch_input_clear_taps(&touch);
+                        animating = 1;
+                    } else if (dragging && !menu && sheet_edge_pull(&disp, down_y, rel_dy)) {
                         touch_input_clear_taps(&touch);
                         animating = 1;
                     }
@@ -7472,9 +7694,18 @@ int main(void)
                                 int frac = (x - bx) * 100 / bw;
                                 if (frac < 3) frac = 3; if (frac > 100) frac = 100;
                                 int bmax = backlight_max(); if (bmax <= 0) bmax = 255;
+                                if (g_auto_bright) { g_auto_bright = 0; als_close(); }
                                 backlight_set(frac * bmax / 100);
                                 save_conf();   /* persist brightness */
                             }
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "autobright") && als_supported()) {
+                            g_auto_bright = !g_auto_bright;
+                            save_conf();
+                            als_sync();
+                            snprintf(g_toast, sizeof g_toast, g_auto_bright ? "已开启自动亮度" : "已关闭自动亮度");
+                            g_toast_until = now + 1400;
                             need_render = 1;
                         }
                         else if (!strncmp(a, "autooff:", 8)) {   /* preset select */
@@ -7620,6 +7851,7 @@ action_done:
                 if (!replay_release)
                     touch_input_drop_replayed_release(&touch, release_was_tap);
                 last_motion_frame = 0;
+                if (g_pull.active) { g_pull.active = 0; need_render = 1; }
                 dragging = 0; drag_dir = 0; scroll_dir = 0; sliding = 0; segging = 0; g_segdrag = 0; edge_pull = 0;
                 scroll_track_valid = 0;
             }
@@ -7707,7 +7939,9 @@ action_done:
                 need_render = 1;
             }
             if (rescan_pages_if_changed()) need_render = 1;
+            als_sync();                       /* picks up a late model detection too */
         }
+        if (backlight_is_on()) als_poll(now);
 
         int st_poll_ms = (g_st_state == ST_STATE_RUNNING || g_st_home_open) ? 300 : 900;
         if (!dragging && !scroll_inertia && now - g_st_poll_at >= (uint32_t)st_poll_ms) {
@@ -7727,6 +7961,7 @@ action_done:
     }
 
     if (ext_ok) devui_ext_close(&ext);
+    if (g_als_want == 1) datad_control("ambient_light.set", "{\"enabled\":false}", NULL, 0, 2000);
     signal_async_stop();
     data_backend_close();
     drm_disp_close(&disp);
