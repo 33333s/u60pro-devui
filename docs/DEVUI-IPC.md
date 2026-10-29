@@ -1,26 +1,26 @@
 # DevUI 内建外部画面接口（DEVUI-IPC）
 
-`u60pro-devui` 在原有 `/data/plugins/u60pro-devui/ui/*.html` 页面流之外，内建了一条本地 IPC 渲染通道。其他本机进程可以直接把像素帧、图片、绘图命令或纯文字提交给 DevUI，由 DevUI 临时接管屏幕显示；当外部画面结束后，设备会自动回到原本的 DevUI 页面流。
+`zwrt-devui` 在原有 `/data/plugins/zwrt-devui/ui/*.html` 页面流之外，内建了一条本地 IPC 渲染通道。其他本机进程可以直接把像素帧、图片、绘图命令或纯文字提交给 DevUI，由 DevUI 临时接管屏幕显示；当外部画面结束后，设备会自动回到原本的 DevUI 页面流。
 
-这个接口的定位是“让别的应用借用 DevUI 的屏幕与触摸通道”，而不是替换 `/data/plugins/u60pro-devui/ui` 的 HTML 机制。两者可以并存，互不改写。
+这个接口的定位是“让别的应用借用 DevUI 的屏幕与触摸通道”，而不是替换 `/data/plugins/zwrt-devui/ui` 的 HTML 机制。两者可以并存，互不改写。
 
 ## 1. 接口概览
 
 - 协议名称：`DEVUI-IPC`
 - 传输方式：本地 Unix Domain Socket
-- 接口路径：`/tmp/u60-devui.sock`
-- 事件日志：`/tmp/u60-devui-events.log`
+- 接口路径：`/tmp/zwrt-devui.sock`
+- 事件日志：`/tmp/zwrt-devui-events.log`
 - 当前实现：一条连接只处理一条命令
 - 当前交互能力：点击（tap）事件回传 + 系统级左边缘右滑返回
 
 ## 2. 生命周期与优先级
 
-- DevUI 默认仍显示 `/data/plugins/u60pro-devui/ui/*.html` 页面。
+- DevUI 默认仍显示 `/data/plugins/zwrt-devui/ui/*.html` 页面。
 - 当外部进程成功发送 `FRAME`、`IMAGE`、`DRAW` 或 `TEXT` 后，外部画面立即成为当前前台内容区。
 - 外部画面激活期间，最上方状态栏仍由 DevUI 原生绘制和刷新，不交给外部应用接管。
 - `ttl_ms = 0` 表示该画面持续显示，直到收到 `CLOSE` 或被用户主动退出。
 - `ttl_ms > 0` 表示画面在超时后自动关闭，回到原 DevUI。
-- 外部画面激活时，DevUI 会清空并重新创建 `/tmp/u60-devui-events.log`，点击序号 `seq` 从 `1` 重新开始。
+- 外部画面激活时，DevUI 会清空并重新创建 `/tmp/zwrt-devui-events.log`，点击序号 `seq` 从 `1` 重新开始。
 - 锁屏优先级高于外部画面。设备进入锁屏时，外部画面会被关闭。
 - 电源键短按只控制亮灭屏，不会自动销毁仍然有效的外部画面。
 - 电源键长按在外部画面前台时会作为“退出外部画面”的兜底手势。
@@ -30,7 +30,7 @@
 
 请求规则：
 
-- 客户端连接 `/tmp/u60-devui.sock`
+- 客户端连接 `/tmp/zwrt-devui.sock`
 - 先发送一行命令头，以 `\n` 结束
 - 需要 payload 的命令把 payload 紧跟在命令头之后
 - 服务器处理完成后返回一行文本，再关闭本次连接
@@ -264,7 +264,7 @@ OK text
 
 - 这是本机可信接口，不做 TCP 监听，也不做鉴权。
 - 接口默认适合设备本机进程、受控脚本或通过 SSH 落地到设备上的程序调用。
-- 外部画面不会改写 `/data/plugins/u60pro-devui/ui` 文件，也不会改变原有页面顺序、主题、菜单状态或设置项。
+- 外部画面不会改写 `/data/plugins/zwrt-devui/ui` 文件，也不会改变原有页面顺序、主题、菜单状态或设置项。
 - `IMAGE` 读取的是设备本地路径，不负责下载远程图片。
 - 当前事件回传通道是“文件追加日志”，外部应用需要自己消费该日志并驱动下一次重绘。
 - 如果外部应用需要覆盖整块内容区，应按内容区尺寸进行布局，而不是把状态栏区域也算进去。
@@ -274,7 +274,7 @@ OK text
 一个完整的交互闭环通常是：
 
 1. 外部应用发送 `DRAW`、`IMAGE`、`FRAME` 或 `TEXT`，把画面送上屏幕。
-2. 外部应用监听 `/tmp/u60-devui-events.log`。
+2. 外部应用监听 `/tmp/zwrt-devui-events.log`。
 3. 用户点击后，外部应用按 `x/y` 自己做命中判断。
 4. 外部应用根据业务状态再次发送新的 `DRAW` / `FRAME` / `IMAGE`。
 5. 结束时发送 `CLOSE`，把控制权交还给原 DevUI。
@@ -287,7 +287,7 @@ OK text
 import socket
 
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect("/tmp/u60-devui.sock")
+s.connect("/tmp/zwrt-devui.sock")
 s.sendall(b"PING\n")
 print(s.recv(128).decode())
 s.close()
@@ -308,7 +308,7 @@ body = script.encode("utf-8")
 head = f"DRAW 0 {len(body)}\n".encode("utf-8")
 
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect("/tmp/u60-devui.sock")
+s.connect("/tmp/zwrt-devui.sock")
 s.sendall(head + body)
 print(s.recv(128).decode())
 s.close()
@@ -317,9 +317,9 @@ s.close()
 监听点击：
 
 ```text
-tail -F /tmp/u60-devui-events.log
+tail -F /tmp/zwrt-devui-events.log
 ```
 
 ## 9. 兼容性说明
 
-本文件描述的是当前仓库内 `u60pro-devui` 已实现的内建接口。后续如果新增事件类型、绘图指令或返回值，应优先在这里更新，再视为对外正式能力的一部分。
+本文件描述的是当前仓库内 `zwrt-devui` 已实现的内建接口。后续如果新增事件类型、绘图指令或返回值，应优先在这里更新，再视为对外正式能力的一部分。

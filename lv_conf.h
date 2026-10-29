@@ -1,5 +1,5 @@
 /*
- * lv_conf.h - LVGL v9 configuration for u60pro-devui.
+ * lv_conf.h - LVGL v9 configuration for zwrt-devui.
  *
  * Only options that differ from LVGL's built-in defaults are set here; every
  * other option falls back to lv_conf_internal.h. Targets a 320x480 RGB565

@@ -1,6 +1,15 @@
 # 更新日志
 
-> 当前正式命名与安装路径：`zwrt-datad` 在 `/data/zwrt-datad/`（datad 自己的安装脚本与 `service.sh` 管理），DevUI 在 `/data/plugins/u60pro-devui/`、`/data/plugins/u60pro-devui/ui`。历史条目里如果出现 `u60-datad`、`/data/plugins/zwrt-datad`、`/data/u60pro` 或 `/data/ui`，表示当时版本记录。
+> 当前正式命名与安装路径：`zwrt-datad` 在 `/data/zwrt-datad/`（datad 自己的安装脚本与 `service.sh` 管理），DevUI 在 `/data/plugins/zwrt-devui/`、`/data/plugins/zwrt-devui/ui`（程序 `zwrt-devui`）。历史条目里如果出现 `u60pro-devui`、`u60-datad`、`/data/plugins/zwrt-datad`、`/data/u60pro` 或 `/data/ui`，表示当时版本记录。
+
+## 未发布
+
+### 改名为 zwrt-devui
+
+- 仓库从 `u60pro-devui` 改名为 `zwrt-devui`，程序名、安装目录和 release 资产名一起改：`zwrt-devui`、`/data/plugins/zwrt-devui/`、`zwrt-devui-aarch64`。
+- 日志与接口路径：`/tmp/zwrt-devui.log`、`/tmp/zwrt-devui-boot.log`、`/tmp/zwrt-devui.sock`、`/tmp/zwrt-devui-events.log`；开机自启标记 `# zwrt_devui`；init 脚本 `scripts/zwrt-devui.init`。
+- 二进制以自己所在目录为安装目录（目录里有 `ui/` 才算），否则用 `/data/plugins/zwrt-devui`，旧插件把新版装进旧目录也能运行。
+- `start.sh` 把改名前目录里的设置、机型缓存、信号缓存和锁屏密码迁到新目录，并停掉还占着屏幕的旧进程 `u60pro-devui`；`scripts/install-autostart.sh` 同样迁移后删除旧目录、旧 init 脚本和旧自启行。
 
 ## v1.3.1 - 2026-10-29
 

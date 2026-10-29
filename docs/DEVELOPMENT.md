@@ -1,8 +1,15 @@
-# U60Pro 屏幕 UI 开发说明
+# zwrt-devui 开发说明
 
 这份文档记录项目当前最重要的开发事实，方便后续维护、移植，也便于随仓库版本化后公开分享。目标是让关键经验不只停留在本地记忆里，而是和代码一起长期保存。
 
-> 当前正式命名与安装路径：`zwrt-datad` 装在 `/data/zwrt-datad/`（由 datad 自己的安装脚本和 `service.sh` 管理），DevUI 装在 `/data/plugins/u60pro-devui/`。旧的 `/data/plugins/zwrt-datad/` 不再使用，datad 安装脚本会自动迁移。下文历史章节里如果出现 `u60-datad` 或 `/data/u60pro`，表示当时版本记录，不再是当前安装规范。
+> 当前正式命名与安装路径：`zwrt-datad` 装在 `/data/zwrt-datad/`（由 datad 自己的安装脚本和 `service.sh` 管理），DevUI 装在 `/data/plugins/zwrt-devui/`（程序名 `zwrt-devui`）。本项目原名 `u60pro-devui`，原来装在 `/data/plugins/u60pro-devui/`，见下文“从 u60pro-devui 改名”。旧的 `/data/plugins/zwrt-datad/` 不再使用，datad 安装脚本会自动迁移。下文历史章节里如果出现 `u60pro-devui`、`u60-datad` 或 `/data/u60pro`，表示当时版本记录，不再是当前安装规范。
+
+### 从 u60pro-devui 改名
+
+- 仓库从 `33333s/u60pro-devui` 改名为 `33333s/zwrt-devui`（GitHub 会把旧地址转到新仓库）。程序名、安装目录、release 资产名一起改了：`u60pro-devui` → `zwrt-devui`，`/data/plugins/u60pro-devui/` → `/data/plugins/zwrt-devui/`，`u60pro-devui-aarch64` → `zwrt-devui-aarch64`。
+- 日志和接口路径也跟着改：`/tmp/zwrt-devui.log`、`/tmp/zwrt-devui-boot.log`、外部画面接口 `/tmp/zwrt-devui.sock` 与 `/tmp/zwrt-devui-events.log`。开机自启行的标记从 `# u60pro_devui` 改为 `# zwrt_devui`。
+- 兼容旧安装：二进制启动时以自己所在目录为安装目录（目录里有 `ui/` 才算），否则用默认的 `/data/plugins/zwrt-devui`，所以旧插件把新二进制装进旧目录也能照常读到页面和设置。
+- 迁移：`start.sh` 启动时把旧目录里的 `devui.conf`、`.device`、`signal.cache`、`ui/.lockpin` 复制到新目录（新目录已有就不覆盖），并停掉还占着屏幕的旧进程 `u60pro-devui`；旧目录本身由插件或 `scripts/install-autostart.sh` 删除。
 
 ## 维护范围
 
@@ -12,34 +19,34 @@
 
 ## 项目目标
 
-`u60pro-devui` 是 ZTE U60Pro 前面板屏幕 UI 的一个 clean-room 开源替代实现。目标形态是一份单独的静态 `aarch64` 二进制，只依赖标准 Linux/OpenWRT 接口，不链接 ZTE 私有库，也不提交任何专有资源。
+`zwrt-devui` 是 ZTE U60Pro 前面板屏幕 UI 的一个 clean-room 开源替代实现。目标形态是一份单独的静态 `aarch64` 二进制，只依赖标准 Linux/OpenWRT 接口，不链接 ZTE 私有库，也不提交任何专有资源。
 
 配套后端是 `zwrt-datad`：单进程数据采集器，轮询 ubus 并把结果归一化成一份 JSON 快照，通过本机 `HTTP /state + SSE /events` 暴露；设备操作走 `POST /control`。UI 通过本机 `127.0.0.1:9460`（免 Token）访问它，见下文“datad 接口”。
 
 核心设计原则有两条：
 
 1. **UI 与后端解耦**：所有 ubus 访问集中在后端，UI 只读一个本机 HTTP/SSE 接口，便于审计、分享、独立重建。
-2. **程序与界面解耦**：二进制本身是固定的“框架”，**实际界面是 `/data/plugins/u60pro-devui/ui` 目录里的 HTML/CSS**。用户改界面只需要改 HTML，不必重新编译。开源发布时二进制保持不变，界面完全可由用户自定义。
+2. **程序与界面解耦**：二进制本身是固定的“框架”，**实际界面是 `/data/plugins/zwrt-devui/ui` 目录里的 HTML/CSS**。用户改界面只需要改 HTML，不必重新编译。开源发布时二进制保持不变，界面完全可由用户自定义。
 
 ## 架构总览
 
 ```text
-ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u60pro-devui ──▶ DRM framebuffer
+ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ zwrt-devui ──▶ DRM framebuffer
                                                                    │
-                                              渲染 /data/plugins/u60pro-devui/ui/*.html
+                                              渲染 /data/plugins/zwrt-devui/ui/*.html
 ```
 
 - 渲染引擎：**litehtml**（C++ HTML/CSS 排版）+ **FreeType**（含 CJK 字形）→ 直接画进 RGB565 dumb buffer。
 - 没有浏览器、没有 JavaScript；状态只通过本机 `127.0.0.1:9460` 的 HTTP/SSE 读取，界面本身不直接访问外网。
 - 全部静态链接（liblitehtml.a + libfreetype.a + musl），单文件可直接拷到设备运行。
 
-### `/data/plugins/u60pro-devui/ui` 界面模型
+### `/data/plugins/zwrt-devui/ui` 界面模型
 
 - 每个 `NN-name.html` 是一页，按文件名排序，可左右滑动切换。`menu.html` 是电源长按弹出的覆盖层，不计入翻页。
-- 所有页面用 `<link rel="stylesheet" href="style.css">` 共享一份样式（容器的 `import_css` 从 `/data/plugins/u60pro-devui/ui/` 读取）。
+- 所有页面用 `<link rel="stylesheet" href="style.css">` 共享一份样式（容器的 `import_css` 从 `/data/plugins/zwrt-devui/ui/` 读取）。
 - HTML 里的 `{{TOKEN}}` 在渲染前由 C 宿主替换成实时数据（见“模板令牌”）。
 - `href="act:xxx"` 的链接是**动作**：点击后 UI 不跳转，而是执行对应动作（翻页指示、揭示密码、切主题、切 USB-C 模式等）。
-- 每次渲染都**重新读取**页面文件 = 改完 HTML 直接 `adb push` 到 `/data/plugins/u60pro-devui/ui` 即可热生效，不必重启进程。
+- 每次渲染都**重新读取**页面文件 = 改完 HTML 直接 `adb push` 到 `/data/plugins/zwrt-devui/ui` 即可热生效，不必重启进程。
 
 当前顶层页（左右滑动，底部圆点指示；`menu.html` 为电源长按覆盖层）。**页面按文件名编号排序**；v1.2.9 起 WiFi、短信、信令读取、锁频和测速收进“更多功能”二级页，减少顶层横滑页数。给页面改名/删页仍然会触发「插件更新残留」坑，见版本机制一节。
 
@@ -54,12 +61,12 @@ ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u
 
 ### `DEVUI-IPC` 外部内容区（内建接口）
 
-这套项目现在除了 `/data/plugins/u60pro-devui/ui/*.html` 页面流，还内建了一条“别的本机进程借用屏幕”的渲染通道，代码在 `src/devui_ext.c` / `include/devui_ext.h`，对外正式文档见 [DEVUI-IPC.md](DEVUI-IPC.md)。
+这套项目现在除了 `/data/plugins/zwrt-devui/ui/*.html` 页面流，还内建了一条“别的本机进程借用屏幕”的渲染通道，代码在 `src/devui_ext.c` / `include/devui_ext.h`，对外正式文档见 [DEVUI-IPC.md](DEVUI-IPC.md)。
 
-- 通信方式：本地 Unix Domain Socket `/tmp/u60-devui.sock`
-- 事件回传：JSON Lines 文件 `/tmp/u60-devui-events.log`
+- 通信方式：本地 Unix Domain Socket `/tmp/zwrt-devui.sock`
+- 事件回传：JSON Lines 文件 `/tmp/zwrt-devui-events.log`
 - 当前命令：`PING`、`CLOSE`、`FRAME`、`IMAGE`、`DRAW`、`TEXT`
-- 典型用途：让别的本机程序把像素帧、图片、轻量绘图脚本或纯文字页直接送进 DevUI，而不用接管 DRM，也不用改原来的 `/data/plugins/u60pro-devui/ui`
+- 典型用途：让别的本机程序把像素帧、图片、轻量绘图脚本或纯文字页直接送进 DevUI，而不用接管 DRM，也不用改原来的 `/data/plugins/zwrt-devui/ui`
 
 当前集成方式不是“整屏覆盖”，而是**保留 DevUI 自己的状态栏，把外部内容放到下面的内容区**：
 
@@ -162,7 +169,7 @@ ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u
 4 位数字 PIN 的屏幕锁，状态全在 `htmlmain.c`：
 
 - **状态**：`g_pin`（已设密码，`""`=未启用）、`g_lock_state`（0 正常 / 1 锁屏首页预览 / 2 设置 PIN 键盘 / 3 解锁 PIN 键盘）、`g_pin_entry`（当前已输入）、`g_lock_err`（显示「密码错误」）。`CUR_PATH` 在 `g_lock_state == 1` 时复用 `g_pages[0]` 作为只读预览，在 `g_lock_state == 2/3` 时指向 `lockscreen.html`，并覆盖电源菜单与普通页。
-- **持久化**：PIN 存 `/data/plugins/u60pro-devui/ui/.lockpin`（点文件，`UI_DIR` 必存在、不被 `adb push *.html` 覆盖）。`load_pin/save_pin/clear_pin`。**开机若已设密码直接进入解锁键盘**。忘记密码 `adb shell rm /data/plugins/u60pro-devui/ui/.lockpin`。
+- **持久化**：PIN 存 `/data/plugins/zwrt-devui/ui/.lockpin`（点文件，`UI_DIR` 必存在、不被 `adb push *.html` 覆盖）。`load_pin/save_pin/clear_pin`。**开机若已设密码直接进入解锁键盘**。忘记密码 `adb shell rm /data/plugins/zwrt-devui/ui/.lockpin`。
 - **触发锁屏**（照 U30 Pro，设不设密码都锁）：开机、`screen_off` 的两个入口（电源键短按、自动息屏超时）、以及自动息屏为“关”时 `LOCK_IDLE_MS`（60 s）无触摸，都会 `enter_lock(0)` 进入首页预览。预览态显示实时第一页、隐藏页点，底部原生绘制“长按解锁”/“滑动输入密码”胶囊。
 - **解锁**：没设密码时只有按住不动 `LOCK_HOLD_MS`（600 ms）才解锁，按住期间胶囊按 `g_lock_hold` 进度填色；点按、滑动都无效，抬手时清空 tap 队列，解锁那一下不会落到下面的页面。长按电源键直接解锁并打开电源菜单。设了密码时滑动超过 22 px 或按住 `LOCK_PAD_HOLD_MS`（450 ms）打开解锁 PIN 键盘。
 - **键盘交互**（主循环 `g_lock_state` 分支，仅处理 tap）：`act:pin:<0-9>` 累加，满 4 位**自动提交**（无确认键）；设置键盘存盘并开启，解锁键盘比对——正确 `g_lock_state=0` 回到界面，错误置 `g_lock_err` 并清空。`act:pin:del` 退格，`act:lockcancel` 放弃设置。
@@ -179,7 +186,7 @@ ubus 服务 ──▶ zwrt-datad ──▶ HTTP /state + SSE /events ──▶ u
 
 - 当前返回手势阈值：起点落在内容区左边缘约 `24px` 内，水平位移至少约 `56px`，纵向偏移不超过约 `44px`
 - 手势命中后立即关闭外部画面，回到原 DevUI
-- 这类系统手势不会写入 `/tmp/u60-devui-events.log`
+- 这类系统手势不会写入 `/tmp/zwrt-devui-events.log`
 - 外部画面刚激活时会先清空残留 tap/stroke，避免上一层页面的触摸尾巴串进外部应用
 
 换句话说，`touch_input.c` 现在不只是“保 tap 不丢”，也承担了“把一次手势完整交给上层判断”的职责。
@@ -214,7 +221,7 @@ litehtml 没有 canvas/SVG/滚动/圆角绘制，这些都由宿主补：
 - **圆角靠容器实现**：`border-radius` 只是把半径传给容器，真画矩形还是圆角全看 `draw_solid_fill`/`draw_borders` 怎么写。本项目现已实现圆角填充与等宽圆角描边（见上）；但**复杂边框（四边不等宽/不同色）仍回退直角**。
 - **WiFi 开关只能用 `ifconfig`**：本固件厂商把标准 `wifi reload` 禁了（日志 `zte test skip the wifi_load_legacy`），uci `disabled` 不控制实际射频；`ubus zwrt_wlan reload` 会把射频**拆掉不重建**（需重启恢复）。可靠的运行时控制是 `ifconfig wlanN up/down`（wlan0=主2.4G、wlan2=主5G、wlan1/3=访客），开/关状态读 `/sys/class/net/wlanN/operstate`。**注意**：纯 ifconfig 是运行时的，重启后厂商按自身配置恢复；访客接口未启用时不存在，纯 ifconfig 开不出来（故未做访客开关）。
 - **节能（PSM）= `iw set power_save` + hotplug 持久化**：`power_save` 只在 ifup 时被应用，所以要持久就得有个 `/etc/hotplug.d/iface/*` 脚本在每次 ifup 重设。本设备上是 `99-disable-powersave`（强制 off）。**开关现在自己把该脚本 echo 到 `/etc/hotplug.d/iface/99-disable-powersave`**（按所选模式写 on/off），功能自包含、不依赖预装脚本；同时清掉旧版遗留的 `psm` 文件（旧版用过那名字，且它排序在 `99-` 之后会反盖）。**实测开机时序**（标记法 + 重启验证）：早期的 `lan` ifup 在 ~15s 触发，那时 wlan0/wlan2 还不存在、`iw set` 静默失败；真正生效靠 **专门的 `ifup INTERFACE=wlan0/wlan2` 事件（~65s，Kiwi 驱动把电台拉起来那一刻）**。所以纯 hotplug 足够、**不需要往 rc.local 加命令**（rc.local 跑得更早，那时 wlanX 不存在，`iw` 一样报 No such device）。
-- **UI 设置持久化**：主题/速率单位/双击点亮/自动息屏存 `/data/plugins/u60pro-devui/devui.conf`（`load_conf`/`save_conf`，改动即写）；锁屏 PIN 存 `/data/plugins/u60pro-devui/ui/.lockpin`。这些都是内存态，不落盘则重启/重装即丢。
+- **UI 设置持久化**：主题/速率单位/双击点亮/自动息屏存 `/data/plugins/zwrt-devui/devui.conf`（`load_conf`/`save_conf`，改动即写）；锁屏 PIN 存 `/data/plugins/zwrt-devui/ui/.lockpin`。这些都是内存态，不落盘则重启/重装即丢。
 - **DHCP 地址池别信后端前缀**：UI 直接由 uci `network.lan.ipaddr` + `dhcp.lan.start/limit` 现算池范围，跟随实际网段（后端那份可能是写死前缀的）。
 
 ## 构建
@@ -225,7 +232,7 @@ litehtml 没有 canvas/SVG/滚动/圆角绘制，这些都由宿主补：
 bash scripts/_setup_toolchain.sh      # 一次性
 bash scripts/_build_freetype.sh       # → ~/freetype-musl/lib/libfreetype.a
 bash scripts/_build_litehtml.sh       # → ~/litehtml-musl/lib/liblitehtml.a（先打 scripts/litehtml.patch）
-bash scripts/build.sh                 # → u60pro-devui(.stripped)  即正式 UI 二进制
+bash scripts/build.sh                 # → zwrt-devui(.stripped)  即正式 UI 二进制
 ```
 
 后端：
@@ -261,7 +268,7 @@ DevUI 只连本机 `127.0.0.1:9460`。datad 用 `--lan-bind` 另开 9461 给内�
 ## 测试与 CI
 
 - `sh tests/run_host_tests.sh`：在宿主机原生编译 `data.c`，对着 `tests/mock_datad.py`（按 datad 真实应答格式模拟 `/state`、`/events`、`/control`、`/ubus/call`，`/modem/...` 返回 404）检查 datad 客户端：分块应答解码、拒绝不回退、`null` 字段、邻区回退到 `neighbor.lte`、SSE 重连计数。需要 `cc` 和 `python3`。
-- `.github/workflows/ci.yml`：准备工具链和固定版本的 FreeType/litehtml（`scripts/_setup_ci_deps.sh`），执行 `scripts/build.sh`，确认产物是静态 aarch64 ELF，检查脚本语法，跑上面的宿主机测试，并上传 `u60pro-devui.stripped`。本仓库自己的 PR 和 main/tag 推送跑在自托管 runner（标签 `devui-ci`），fork PR 跑在 GitHub 托管机器。
+- `.github/workflows/ci.yml`：准备工具链和固定版本的 FreeType/litehtml（`scripts/_setup_ci_deps.sh`），执行 `scripts/build.sh`，确认产物是静态 aarch64 ELF，检查脚本语法，跑上面的宿主机测试，并上传 `zwrt-devui.stripped`。本仓库自己的 PR 和 main/tag 推送跑在自托管 runner（标签 `devui-ci`），fork PR 跑在 GitHub 托管机器。
 
 ## 界面预览
 
@@ -275,20 +282,20 @@ CI 也会跑一遍并把 `sheet.png` 作为 `ui-preview` 产物上传。
 ```sh
 # datad 先用它自己的安装脚本装到 /data/zwrt-datad（只需一次）
 # 杀掉旧 UI 再推，否则可能 "Text file busy" 并悄悄保留旧二进制
-adb shell "killall -9 u60pro-devui"
-adb shell "mkdir -p /data/plugins/u60pro-devui/ui"
-adb push u60pro-devui.stripped    /data/plugins/u60pro-devui/u60pro-devui
-adb push ui/*.html ui/*.css       /data/plugins/u60pro-devui/ui/
+adb shell "killall -9 zwrt-devui"
+adb shell "mkdir -p /data/plugins/zwrt-devui/ui"
+adb push zwrt-devui.stripped    /data/plugins/zwrt-devui/zwrt-devui
+adb push ui/*.html ui/*.css       /data/plugins/zwrt-devui/ui/
 adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
            sh /data/zwrt-datad/service.sh start; \
-           nohup /data/plugins/u60pro-devui/u60pro-devui >/tmp/devui.log 2>&1 &"
+           nohup /data/plugins/zwrt-devui/zwrt-devui >/tmp/devui.log 2>&1 &"
 ```
 
 坑位：
 
 - 要完全接管面板，先 `/etc/init.d/zte_topsw_devui stop`；单纯 `killall` 不够，procd 会把它拉起来。
 - Busybox 无 `setsid`，后台运行用 `nohup ... &`。
-- **本机 shell 注意**：仓库在 Windows 盘，交叉编译在 **WSL**（`wsl -- bash -lc '... /mnt/d/...'`）；而 `adb` 在 **MSYS/Git-Bash** 里会把 `/data`、`/tmp` 这类参数当本地路径“翻译”坏掉（`adb push ui/. /data/plugins/u60pro-devui/ui/` 会卡死）。**adb 命令一律走 PowerShell 工具**，或在路径上加 MSYS 的转义。
+- **本机 shell 注意**：仓库在 Windows 盘，交叉编译在 **WSL**（`wsl -- bash -lc '... /mnt/d/...'`）；而 `adb` 在 **MSYS/Git-Bash** 里会把 `/data`、`/tmp` 这类参数当本地路径“翻译”坏掉（`adb push ui/. /data/plugins/zwrt-devui/ui/` 会卡死）。**adb 命令一律走 PowerShell 工具**，或在路径上加 MSYS 的转义。
 - Windows 检出的 `.sh` 可能是 CRLF，WSL 里 `bash` 会报 `set: invalid option` / `$'\r'`；先 `sed -i 's/\r$//'`。
 
 ## 开机自启
@@ -296,9 +303,9 @@ adb shell "/etc/init.d/zte_topsw_devui stop; sleep 1; \
 `/tmp` 是 tmpfs 重启即清空，所以装到持久化的 `/data/plugins/`：
 
 ```text
-/data/plugins/u60pro-devui/u60pro-devui   # UI
-/data/plugins/u60pro-devui/start.sh       # 正常开机才停原厂 UI → 拉起后端 + UI
-/data/plugins/u60pro-devui/devui.conf     # UI 设置持久化
+/data/plugins/zwrt-devui/zwrt-devui   # UI
+/data/plugins/zwrt-devui/start.sh       # 正常开机才停原厂 UI → 拉起后端 + UI
+/data/plugins/zwrt-devui/devui.conf     # UI 设置持久化
 /data/zwrt-datad/                         # 数据后端（datad 安装脚本管理：二进制、service.sh、Token、日志）
 ```
 
@@ -307,28 +314,28 @@ datad 安装脚本会在 `rc.local` 里写入自己的 `sh /data/zwrt-datad/serv
 **当前稳定方案（2026-06-25 实机回归后确认）** 仍然是 **vendor 早期 bring-up + `rc.local` 晚接管**：
 
 ```sh
-[ -x /data/plugins/u60pro-devui/start.sh ] && sh /data/plugins/u60pro-devui/start.sh >/tmp/u60pro-boot.log 2>&1 & # u60pro_devui
+[ -x /data/plugins/zwrt-devui/start.sh ] && sh /data/plugins/zwrt-devui/start.sh >/tmp/zwrt-devui-boot.log 2>&1 & # zwrt_devui
 ```
 
 `scripts/install-autostart.sh` 当前做的是：
 
 - 保留并启用原厂 `/etc/init.d/zte_topsw_devui`
-- 清掉旧的 `/etc/init.d/u60pro-devui` / `/etc/init.d/u60-datad` rc.d 软链接（如果之前试过 `procd` 方案）；`zwrt-datad` 的启动项和旧目录迁移交给 datad 安装脚本，这里不停、不杀、不移动 datad
+- 清掉旧的 `/etc/init.d/zwrt-devui` / `/etc/init.d/u60-datad` rc.d 软链接（如果之前试过 `procd` 方案）；`zwrt-datad` 的启动项和旧目录迁移交给 datad 安装脚本，这里不停、不杀、不移动 datad
 - 在 `/etc/rc.local` 的 `exit 0` 前写入上面的 `start.sh` 钩子
-- 顺手清理旧的 `/data/u60pro/u60pro-devui` / `/data/u60pro/u60-datad` / `/data/u60pro/start.sh` 残留
+- 顺手清理旧的 `/data/u60pro/u60pro-devui` / `/data/u60pro/u60-datad` / `/data/u60pro/start.sh` 残留，以及改名前的 `/data/plugins/u60pro-devui/`（先迁移设置和锁屏密码）
 - 安装完成后立即执行一次 `start.sh`，把当前前台切到自定义 DevUI
 
 `start.sh` 在这条稳定路径下的职责是：
 
-- 记录 `mode_main_state` / `reboot_reason_code` / `/proc/cmdline` / 电源与输入设备枚举到 `/data/plugins/u60pro-devui/boot-trace.log`
+- 记录 `mode_main_state` / `reboot_reason_code` / `/proc/cmdline` / 电源与输入设备枚举到 `/data/plugins/zwrt-devui/boot-trace.log`
 - 正常开机时停掉原厂 `zte_topsw_devui`
 - 正常开机时执行 `sh /data/zwrt-datad/service.sh start`（未安装 datad 时只记录一行提示，UI 照常启动）
-- 拉起 `u60pro-devui`
+- 拉起 `zwrt-devui`
 
 所以当前真实启动顺序是：
 
 ```text
-procd -> zte_topsw_devui (早期屏幕/触摸 bring-up) -> rc.local -> /data/plugins/u60pro-devui/start.sh -> stop vendor -> start datad + devui
+procd -> zte_topsw_devui (早期屏幕/触摸 bring-up) -> rc.local -> /data/plugins/zwrt-devui/start.sh -> stop vendor -> start datad + devui
 ```
 
 会有一个**短暂的原厂界面闪屏**，但这是目前验证过最稳的方案。
@@ -337,10 +344,10 @@ procd -> zte_topsw_devui (早期屏幕/触摸 bring-up) -> rc.local -> /data/plu
 
 当前策略改为：
 
-- `start.sh legacy` 是**默认且稳定**的开机路径：经 datad 的 `service.sh` 启动后端，再用 `nohup` 后台拉起 `u60pro-devui`。
+- `start.sh legacy` 是**默认且稳定**的开机路径：经 datad 的 `service.sh` 启动后端，再用 `nohup` 后台拉起 `zwrt-devui`。
 - `start.sh procd` 仍保留在脚本里，但仅供手动实验；**不要**把它当默认自启方案。
-- `u60pro-devui` 内部仍保留“外部供电 + 触控初始化失败 -> 强制切到全屏充电页”的兜底，避免误入普通页面。
-- `start.sh` 会把 `mode_main_state`、`reboot_reason_code`、`/proc/cmdline`、电源状态和输入设备枚举写进 `/data/plugins/u60pro-devui/boot-trace.log`，用于继续比对不同开机路径。
+- `zwrt-devui` 内部仍保留“外部供电 + 触控初始化失败 -> 强制切到全屏充电页”的兜底，避免误入普通页面。
+- `start.sh` 会把 `mode_main_state`、`reboot_reason_code`、`/proc/cmdline`、电源状态和输入设备枚举写进 `/data/plugins/zwrt-devui/boot-trace.log`，用于继续比对不同开机路径。
 
 已实测：关机状态插电直接进入 DevUI 的全屏充电页；正常开机仍进入普通 DevUI。
 
@@ -359,19 +366,19 @@ esac
 
 - 禁用 `/etc/init.d/zte_topsw_devui`
 - 安装 `/etc/init.d/u60-datad`
-- 安装 `/etc/init.d/u60pro-devui`
-- 让 `u60pro-devui` 直接由 `procd` 在开机阶段接管 DRM
+- 安装 `/etc/init.d/zwrt-devui`
+- 让 `zwrt-devui` 直接由 `procd` 在开机阶段接管 DRM
 
 目标是消掉开机先闪原厂界面的过程，但最终**没有通过实机验证**。在干净重启后的真实现象里，出现过：
 
-- `u60pro-devui` / `u60-datad` 服务在 boot 后直接 `inactive`
-- 即使稍后手动拉起 `u60pro-devui`，也会遇到 `drm: SETCRTC failed: Permission denied`
+- `zwrt-devui` / `u60-datad` 服务在 boot 后直接 `inactive`
+- 即使稍后手动拉起 `zwrt-devui`，也会遇到 `drm: SETCRTC failed: Permission denied`
 - 更关键的是 `/dev/input` 有时只剩 `event0` / `event1` / `event2`，**触摸用的 `event3` 不出现**
-- 触摸缺失时，`u60pro-devui` 会按现有兜底逻辑误判成“外部供电 + 无触摸”的充电模式，只进全屏充电页
+- 触摸缺失时，`zwrt-devui` 会按现有兜底逻辑误判成“外部供电 + 无触摸”的充电模式，只进全屏充电页
 
 目前判断：这版固件上，原厂 `zte_topsw_devui` 在早期启动阶段很可能还隐含了屏幕/触摸相关的 bring-up 副作用。单纯把启动顺序前移，不能稳定替代它。
 
-> **别让自启重复。** 当前稳定方案只该保留一条 `rc.local` 钩子。若旧的 `procd` 自启软链接、旧插件写入的重复 `# u60pro_devui` 行，或手工 `nohup` 调试进程同时存在，最常见后果就是两个 `zwrt-datad` 争抢同一个 `9460` 端口，以及第二个 `u60pro-devui` 因 DRM 已被占用而退出。
+> **别让自启重复。** 当前稳定方案只该保留一条 `rc.local` 钩子。若旧的 `procd` 自启软链接、旧插件写入的重复 `# zwrt_devui` 行，或手工 `nohup` 调试进程同时存在，最常见后果就是两个 `zwrt-datad` 争抢同一个 `9460` 端口，以及第二个 `zwrt-devui` 因 DRM 已被占用而退出。
 
 ## 性能说明
 
@@ -482,15 +489,15 @@ esac
 配套的「U60 DevUI 管理插件」（运行在原厂 Web 后台，不在本仓库）负责在设备上下载/安装/更新这套开源 UI。更新检测不靠 git tag，而靠每个 release 附带的 `version.json`，把整套拆成**三个可独立升级的组件**：
 
 - **datad** — 后端二进制（仓库 [zwrt-datad](https://github.com/33333s/zwrt-datad)，资产 `zwrt-datad-aarch64`）。
-- **devui** — 渲染器二进制（本仓库，资产 `u60pro-devui-aarch64`）。
-- **ui** — 界面模板（本仓库，资产 `ui.tar.gz`，装到 `/data/plugins/u60pro-devui/ui`）。
+- **devui** — 渲染器二进制（本仓库，资产 `zwrt-devui-aarch64`）。
+- **ui** — 界面模板（本仓库，资产 `ui.tar.gz`，装到 `/data/plugins/zwrt-devui/ui`）。
 
 `version.json` **按仓库分散**：本仓库的含 `devui` + `ui` 两项，datad 仓库的只含 `datad`。
 
 ```jsonc
 // 本仓库 release 的 version.json
 { "schema": 1,
-  "devui": { "version": "1.3.1", "asset": "u60pro-devui-aarch64" },
+  "devui": { "version": "1.3.1", "asset": "zwrt-devui-aarch64" },
   "ui":    { "version": "0.5.1", "asset": "ui.tar.gz" } }
 // zwrt-datad release 的 version.json
 { "schema": 1, "datad": { "version": "0.6.2", "asset": "zwrt-datad-aarch64" } }
@@ -498,23 +505,24 @@ esac
 
 - 仓库根目录留了一份 `version.json` 作为**源头**（发版时改它），但插件实际读的是 **release 资产**（`…/releases/latest/download/version.json`），所以**每次发版都要把 `version.json` 连同二进制/`ui.tar.gz` 一起传到 release**。
 - 插件把远端各组件版本与本地记录（localStorage）比对，标“可更新”；可单独更新某个组件，也可一键更新全部。二进制更新先下到 `*.new` 再 `mv` 覆盖（避开运行中可执行文件的 `ETXTBSY`），devui 更新后校验失败自动回退原厂。
-- **彻底卸载**清 `/data/plugins/u60pro-devui`、`/data/plugins/zwrt-datad`、历史残留 `/data/u60pro` 与旧 `/data/ui`，删掉 `/etc/rc.local` 里的 `u60pro_devui` 自启行；如果设备上还残留过实验版 `/etc/init.d/u60pro-devui` / `/etc/init.d/zwrt-datad` / `/etc/init.d/u60-datad` 或对应 rc.d 软链接，也一并删除；最后重新启用 `/etc/init.d/zte_topsw_devui`。
+- 插件的开机自启写在 UFI-TOOLS-ZWRT 的 `/data/plugins/ufi_tools_boot.sh`（开机约 20 秒后执行一次），只增删自己带 `# zwrt_devui` 标记的那一行；旧版插件写在 `/etc/rc.local` 的行和改名前的 `# u60pro_devui` 行都算旧版残留，清理时迁过来。
+- **彻底卸载**先列出要删的目标并确认，然后清 `/data/plugins/zwrt-devui`、改名前的 `/data/plugins/u60pro-devui`、历史残留 `/data/u60pro` 与旧 `/data/ui`，删掉自己的自启行和实验版 `/etc/init.d/u60pro-devui`，最后重新启用 `/etc/init.d/zte_topsw_devui`。插件不安装、不更新、也不卸载 zwrt-datad。
 
 ### 更新源：GitHub release
 
 当前发布流程统一以 GitHub release 为准，文件名保持固定：
 
 - `https://github.com/<repo>/releases/latest/download/<file>`
-- devui 仓库资产：`u60pro-devui-aarch64`、`ui.tar.gz`、`version.json`
+- devui 仓库资产：`zwrt-devui-aarch64`、`ui.tar.gz`、`version.json`
 - datad 仓库资产：`zwrt-datad-aarch64`、`version.json`
 
-**发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`；改了 `ui/*.html` / `style.css` 这类界面文件就也要升 `ui`；两边都改就两项都升）→ `bash scripts/build.sh` 生成 `u60pro-devui.stripped` → 发布前把它重命名成 `u60pro-devui-aarch64` → 打包顶层平铺的 `ui.tar.gz` → 把 `version.json` + 资产传到 GitHub release。若你在仓库外另做镜像，直接镜像 GitHub release 的同名文件即可；本仓库不再维护手动网盘同步脚本。
+**发版清单**：升对应组件的 `version.json` 版本号（ui-only 改动只升 `ui`、二进制改动只升 `devui`；改了 `ui/*.html` / `style.css` 这类界面文件就也要升 `ui`；两边都改就两项都升）→ `bash scripts/build.sh` 生成 `zwrt-devui.stripped` → 发布前把它重命名成 `zwrt-devui-aarch64` → 打包顶层平铺的 `ui.tar.gz` → 把 `version.json` + 资产传到 GitHub release。若你在仓库外另做镜像，直接镜像 GitHub release 的同名文件即可；本仓库不再维护手动网盘同步脚本。
 ```sh
 bash scripts/build.sh
-cp u60pro-devui.stripped u60pro-devui-aarch64
+cp zwrt-devui.stripped zwrt-devui-aarch64
 (cd ui && COPYFILE_DISABLE=1 tar -czf ../ui.tar.gz -- *.html *.css subpages)
 ```
-> **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/plugins/u60pro-devui/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量；如果设备还遗留旧 `/data/ui`，则先迁移再删除。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
+> **坑：插件 UI 更新会残留旧页面文件 → 页数翻倍。** 插件的 `installUiTemplates` 早期只 `cp -f` 覆盖、**不删旧文件**。v0.3.5 给页面改名后（`02-wifi`→`02-sms/03-wifi`…），旧名文件不会被同名覆盖，于是新旧并存——「5 页变 10 页」。修复：先把 `ui.tar.gz` 解压到临时目录并确认新页面数量，再清空 `/data/plugins/zwrt-devui/ui` 顶层旧 `*.html` / `*.css`（`.lockpin` 是点文件不受影响），最后复制新模板并核对安装后的页面数量；如果设备还遗留旧 `/data/ui`，则先迁移再删除。**给页面改名/删页是个跨版本兼容陷阱，更新逻辑必须先校验、再清场、再铺新文件。** 已中招的用户点「重装UI」即可自愈；如果远端版本变了，正常「更新 UI」也会走同一套清理逻辑。（插件运行在原厂 Web 后台，不在本仓库；改完重新部署插件即可，不走 release。）
 > **坑：`ui.tar.gz` 的打包结构必须和旧版保持一致。** 设备侧更新逻辑默认期望的是“**顶层平铺页面文件**”的 tar 包：顶层直接是 `00-home.html`、`01-signal.html`、`02-functions.html`、`style.css`、`subpages/...`，**没有** `ui/` 目录、**没有** `./` 前缀、**没有** macOS 产生的 `._*` AppleDouble 文件。用 macOS 自带打包工具直接打整个目录时，容易把这些额外条目也塞进去，导致 UI 更新失败。打包时应显式关闭资源叉（如 `COPYFILE_DISABLE=1`），并直接列出页面文件名生成 tar；`examples/custom-functions/` 不属于默认 UI 包。
 
 ## 仓库约定
@@ -554,7 +562,7 @@ cp u60pro-devui.stripped u60pro-devui-aarch64
 
 - 系统页新增一张“数据刷新”卡片，放在开关区域下方。
 - 交互复用自动熄屏的 segmented control 风格，选项为：`停止 / 1s / 2s / 5s`。
-- 配置项持久化到 `/data/plugins/u60pro-devui/devui.conf` 的 `refresh_ms=`。
+- 配置项持久化到 `/data/plugins/zwrt-devui/devui.conf` 的 `refresh_ms=`。
 - 语义约定：
   - `refresh_ms > 0`：持续接收 SSE 最新快照，但只按该间隔把最新 live 状态提交到页面并触发重绘
   - `refresh_ms = 0`：暂停把 live 状态刷进页面，但分钟级时钟仍继续刷新

@@ -6,8 +6,8 @@
  *
  * SPDX-License-Identifier: MIT
  */
-#ifndef U60PRO_KEY_INPUT_H
-#define U60PRO_KEY_INPUT_H
+#ifndef ZWRT_DEVUI_KEY_INPUT_H
+#define ZWRT_DEVUI_KEY_INPUT_H
 
 #include <stdint.h>
 
@@ -29,4 +29,4 @@ int  key_input_init(key_input_t *k);
 int  key_input_poll(key_input_t *k, uint32_t now_ms);
 void key_input_close(key_input_t *k);
 
-#endif /* U60PRO_KEY_INPUT_H */
+#endif /* ZWRT_DEVUI_KEY_INPUT_H */

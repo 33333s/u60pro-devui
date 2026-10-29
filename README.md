@@ -1,4 +1,6 @@
-# u60pro-devui
+# zwrt-devui
+
+> 本项目原名 `u60pro-devui`。程序名、安装目录（`/data/plugins/zwrt-devui/`）和 release 资产名（`zwrt-devui-aarch64`）已一起改名，旧安装的迁移见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#从-u60pro-devui-改名)。
 
 这是 ZTE U60Pro 以及类似 SDX 系列 5G MiFi 设备前面板屏幕 UI 的一个 clean-room 开源替代实现。运行在标准 Linux 的 **DRM/KMS** 和 **evdev** 接口之上，目标是：
 
@@ -21,20 +23,20 @@
 
 ## 核心理念：程序固定，界面是数据
 
-程序本身不内置任何画面。它在运行时去 `/data/plugins/u60pro-devui/ui` 读取你写的 **HTML/CSS** 并渲染到屏幕。想改界面，**完全不用重新编译**——改 HTML、推到设备、约 1 秒内自动生效。
+程序本身不内置任何画面。它在运行时去 `/data/plugins/zwrt-devui/ui` 读取你写的 **HTML/CSS** 并渲染到屏幕。想改界面，**完全不用重新编译**——改 HTML、推到设备、约 1 秒内自动生效。
 
 👉 **想自己写界面，看这份教程：[docs/UI-GUIDE.md](docs/UI-GUIDE.md)**
 
 ```text
 后端 zwrt-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
-                                                                  ├─▶ u60pro-devui ──▶ 屏幕（DRM/KMS）
-你写的 /data/plugins/u60pro-devui/ui/*.html + style.css ───────────┘
+                                                                  ├─▶ zwrt-devui ──▶ 屏幕（DRM/KMS）
+你写的 /data/plugins/zwrt-devui/ui/*.html + style.css ───────────┘
 ```
 
 - **渲染**：[litehtml](https://github.com/litehtml/litehtml)（HTML/CSS 排版）+ FreeType（含 CJK 字体）→ 直接画进 RGB565 framebuffer。无浏览器、无 JavaScript；状态只经本机 `127.0.0.1` 的 HTTP/SSE 读取。
 - **显示**：[src/drm_disp.c](src/drm_disp.c) 打开 `/dev/dri/card0`，运行时枚举面板/crtc/mode，映射 RGB565 dumb framebuffer，通过 `DIRTYFB` 提交。
 - **触摸**：[src/touch_input.c](src/touch_input.c) 自动探测触摸屏并缩放坐标；电源键短按息屏、长按菜单。
-- **界面**：`/data/plugins/u60pro-devui/ui` 下每个顶层 `NN-名字.html` 一页，`style.css` 共享样式；`ui/subpages/` 提供二级页面，`ui/functions/` 可放用户自定义功能页。HTML 里的 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
+- **界面**：`/data/plugins/zwrt-devui/ui` 下每个顶层 `NN-名字.html` 一页，`style.css` 共享样式；`ui/subpages/` 提供二级页面，`ui/functions/` 可放用户自定义功能页。HTML 里的 `{{令牌}}` 由程序替换成实时数据，`href="act:xxx"` 触发交互。
 - **外部接口**：内建本地 `DEVUI-IPC`，保留原生状态栏；其他进程可直接把内容投到状态栏下方的内容区，并通过点击事件日志驱动自己的交互逻辑。
 - **后端**：配套 `zwrt-datad`（[github.com/33333s/zwrt-datad](https://github.com/33333s/zwrt-datad)），轮询 `ubus` 后通过 `GET /state` 和 `SSE /events` 提供完整 JSON 快照；设备操作（网络模式、锁频、Wi-Fi、NFC、直供电、短信已读、关机重启等）走 datad 的 `POST /control`。datad 不可达时才回退到原有的本机命令。
 
@@ -52,32 +54,32 @@ bash scripts/_setup_toolchain.sh
 bash scripts/_build_freetype.sh
 bash scripts/_build_litehtml.sh
 
-# 编译正式 UI 二进制 -> ./u60pro-devui(.stripped)
+# 编译正式 UI 二进制 -> ./zwrt-devui(.stripped)
 bash scripts/build.sh
 ```
 
 产物是单个**静态 AArch64 ELF**，无动态依赖，直接拷到设备运行。
 
-> 也可以直接到 [Releases](https://github.com/33333s/u60pro-devui/releases) 下载编译好的二进制。
+> 也可以直接到 [Releases](https://github.com/33333s/zwrt-devui/releases) 下载编译好的二进制。
 
 ## 在设备上运行
 
 ```sh
 # 推送界面文件
-adb shell 'mkdir -p /data/plugins/u60pro-devui/ui'
-adb push ui/*.html ui/*.css /data/plugins/u60pro-devui/ui/
+adb shell 'mkdir -p /data/plugins/zwrt-devui/ui'
+adb push ui/*.html ui/*.css /data/plugins/zwrt-devui/ui/
 
 # 推送并运行（先停原厂 UI 释放面板）
-adb shell 'mkdir -p /data/plugins/u60pro-devui'
-adb push u60pro-devui.stripped /data/plugins/u60pro-devui/u60pro-devui
+adb shell 'mkdir -p /data/plugins/zwrt-devui'
+adb push zwrt-devui.stripped /data/plugins/zwrt-devui/zwrt-devui
 adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
-           chmod 755 /data/plugins/u60pro-devui/u60pro-devui;
-           nohup /data/plugins/u60pro-devui/u60pro-devui >/tmp/devui.log 2>&1 &'
+           chmod 755 /data/plugins/zwrt-devui/zwrt-devui;
+           nohup /data/plugins/zwrt-devui/zwrt-devui >/tmp/devui.log 2>&1 &'
 ```
 
 > Windows 下用 Git-Bash 跑 `adb push /data/...` 可能因路径翻译卡住，建议用 PowerShell 跑 adb。旧版如果还把页面放在 `/data/ui`，新版 `start.sh` 和安装脚本会在首次启动时自动迁到新目录。
 
-开机自启：后端 `zwrt-datad` 用它自己的安装脚本（`install-datad.sh`）装到 `/data/zwrt-datad/`，由它写入 `rc.local` 并通过 `/data/zwrt-datad/service.sh` 管理；`devui` 放到 `/data/plugins/u60pro-devui/`，再用 `scripts/install-autostart.sh` 安装当前验证过的稳定链路：保留原厂 `zte_topsw_devui` 做早期屏幕/触摸 bring-up，再由 `rc.local -> /data/plugins/u60pro-devui/start.sh legacy` 晚接管。它也会顺手迁移旧版 `/data/ui` 到 `/data/plugins/u60pro-devui/ui`，并清理旧的 `/data/u60pro` 残留文件、重复钩子和实验性 `procd` 软链接。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+开机自启：后端 `zwrt-datad` 用它自己的安装脚本（`install-datad.sh`）装到 `/data/zwrt-datad/`，由它写入 `rc.local` 并通过 `/data/zwrt-datad/service.sh` 管理；`devui` 放到 `/data/plugins/zwrt-devui/`，再用 `scripts/install-autostart.sh` 安装当前验证过的稳定链路：保留原厂 `zte_topsw_devui` 做早期屏幕/触摸 bring-up，再由 `rc.local -> /data/plugins/zwrt-devui/start.sh legacy` 晚接管。它也会顺手迁移旧版 `/data/ui` 到 `/data/plugins/zwrt-devui/ui`，并清理旧的 `/data/u60pro` 残留文件、重复钩子和实验性 `procd` 软链接。详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 ## 版本清单与更新
 
@@ -88,19 +90,19 @@ adb shell '/etc/init.d/zte_topsw_devui stop; sleep 1;
 ```jsonc
 // 本仓库 version.json
 { "schema": 1,
-  "devui": { "version": "1.3.1", "asset": "u60pro-devui-aarch64" },
+  "devui": { "version": "1.3.1", "asset": "zwrt-devui-aarch64" },
   "ui":    { "version": "0.5.1", "asset": "ui.tar.gz" } }
 ```
 
-插件读各项目 **latest release** 的 `version.json`，与本地记录比对，支持**单独更新** datad / devui / ui 或一键更新全部。默认更新源就是 GitHub release；如果你自己在外部做镜像，只要保持 `u60pro-devui-aarch64` / `ui.tar.gz` / `version.json` 这些文件名不变即可，本仓库不再维护单独的网盘同步流程。
+插件读各项目 **latest release** 的 `version.json`，与本地记录比对，支持**单独更新** datad / devui / ui 或一键更新全部。默认更新源就是 GitHub release；如果你自己在外部做镜像，只要保持 `zwrt-devui-aarch64` / `ui.tar.gz` / `version.json` 这些文件名不变即可，本仓库不再维护单独的网盘同步流程。
 
-**发版**：改 `version.json` 里对应组件的版本号（ui 改动只升 `ui`，二进制改动只升 `devui`，两边都改就两项都升）→ 用 `bash scripts/build.sh` 产出 `u60pro-devui.stripped`，发布时重命名成 `u60pro-devui-aarch64` → 重新打包**顶层平铺**的 `ui.tar.gz`（不要带 `ui/` 目录、`./` 前缀或 macOS `._*`）→ 把 `version.json`、`u60pro-devui-aarch64`、`ui.tar.gz` 一起传到 GitHub release。
+**发版**：改 `version.json` 里对应组件的版本号（ui 改动只升 `ui`，二进制改动只升 `devui`，两边都改就两项都升）→ 用 `bash scripts/build.sh` 产出 `zwrt-devui.stripped`，发布时重命名成 `zwrt-devui-aarch64` → 重新打包**顶层平铺**的 `ui.tar.gz`（不要带 `ui/` 目录、`./` 前缀或 macOS `._*`）→ 把 `version.json`、`zwrt-devui-aarch64`、`ui.tar.gz` 一起传到 GitHub release。
 
 可直接照抄这一组命令准备 release 资产：
 
 ```sh
 bash scripts/build.sh
-cp u60pro-devui.stripped u60pro-devui-aarch64
+cp zwrt-devui.stripped zwrt-devui-aarch64
 (cd ui && COPYFILE_DISABLE=1 tar -czf ../ui.tar.gz -- *.html *.css subpages)
 ```
 

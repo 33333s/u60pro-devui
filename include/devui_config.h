@@ -1,5 +1,5 @@
 /*
- * devui_config.h - Build-time configuration for u60pro-devui.
+ * devui_config.h - Build-time configuration for zwrt-devui.
  *
  * All hardware specifics are auto-detected at runtime. The values here are
  * only fallbacks / tunables. Override them with -D flags from the Makefile if
@@ -7,8 +7,8 @@
  *
  * SPDX-License-Identifier: MIT
  */
-#ifndef U60PRO_DEVUI_CONFIG_H
-#define U60PRO_DEVUI_CONFIG_H
+#ifndef ZWRT_DEVUI_CONFIG_H
+#define ZWRT_DEVUI_CONFIG_H
 
 /* DRM device node. */
 #ifndef DEVUI_DRM_CARD
@@ -61,4 +61,4 @@
 #define DEVUI_FALLBACK_HEIGHT 480
 #endif
 
-#endif /* U60PRO_DEVUI_CONFIG_H */
+#endif /* ZWRT_DEVUI_CONFIG_H */

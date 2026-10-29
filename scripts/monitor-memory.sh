@@ -2,18 +2,18 @@
 # Lightweight memory/IO drift monitor for on-device verification.
 #
 # Usage:
-#   adb push u60pro-workspace/u60pro-devui/scripts/monitor-memory.sh /tmp/
+#   adb push zwrt-devui/scripts/monitor-memory.sh /tmp/
 #   adb shell sh /tmp/monitor-memory.sh
 # Optional:
 #   INTERVAL=2 LOOPS=600 SH_LOG=1 adb shell sh /tmp/monitor-memory.sh
 
-UI_BIN=${UI_BIN:-u60pro-devui}
+UI_BIN=${UI_BIN:-zwrt-devui}
 DATAD_BIN=${DATAD_BIN:-zwrt-datad}
 INTERVAL=${INTERVAL:-2}
 LOOPS=${LOOPS:-0}
 STATE_URL=${STATE_URL:-http://127.0.0.1:9460/state}
 STATE_TIMEOUT=${STATE_TIMEOUT:-2}
-OUT_FILE=/tmp/u60pro-devui-memory.csv
+OUT_FILE=/tmp/zwrt-devui-memory.csv
 
 read_mem() {
     proc=$1
@@ -55,7 +55,7 @@ read_state_meta() {
 
 UI_PID=$(pidof "$UI_BIN" 2>/dev/null | awk '{print $1}')
 if [ -z "$UI_PID" ]; then
-    echo "u60pro-devui not running"
+    echo "zwrt-devui not running"
     exit 1
 fi
 DATAD_PID=$(pidof "$DATAD_BIN" 2>/dev/null | awk '{print $1}')
@@ -76,7 +76,7 @@ while :; do
 
     UI_PID=$(pidof "$UI_BIN" 2>/dev/null | awk '{print $1}')
     if [ -z "$UI_PID" ]; then
-        echo "$ts u60pro-devui not running anymore"
+        echo "$ts zwrt-devui not running anymore"
         break
     fi
     DATAD_PID=$(pidof "$DATAD_BIN" 2>/dev/null | awk '{print $1}')

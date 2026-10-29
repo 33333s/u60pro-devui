@@ -7,8 +7,8 @@
  *
  * SPDX-License-Identifier: MIT
  */
-#ifndef U60PRO_DATA_H
-#define U60PRO_DATA_H
+#ifndef ZWRT_DEVUI_DATA_H
+#define ZWRT_DEVUI_DATA_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -187,4 +187,4 @@ void datad_control_async(const char *action, const char *params_json,
 void datad_ubus_call_async(const char *service, const char *method,
                            const char *args_json, const char *fallback_cmd);
 
-#endif /* U60PRO_DATA_H */
+#endif /* ZWRT_DEVUI_DATA_H */

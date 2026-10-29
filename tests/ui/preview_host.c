@@ -68,6 +68,7 @@ int main(int argc, char **argv)
 
     g_theme = argc > 2 ? atoi(argv[2]) : 0;
     g_sig_parse = 1;            /* show the neighbor card */
+    paths_init();
     device_init();
     scan_pages();
     if (g_npages == 0) { fprintf(stderr, "no pages in %s\n", UI_DIR); return 1; }

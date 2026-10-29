@@ -1,15 +1,17 @@
 #!/bin/sh
-# Boot launcher for the U60Pro screen UI. Installed at
-# /data/plugins/u60pro-devui/start.sh
+# Boot launcher for the DevUI screen UI (U60 Pro / TopFlow). Installed at
+# /data/plugins/zwrt-devui/start.sh
 # and invoked either by the procd init service or by the legacy rc.local hook.
 # In procd mode it execs the foreground UI process. In legacy mode it keeps the
 # old nohup-based launch path for manual installs and older plugins.
 #
 # SPDX-License-Identifier: MIT
-DEVUI_DIR=/data/plugins/u60pro-devui
+DEVUI_DIR=/data/plugins/zwrt-devui
 UI_DIR=$DEVUI_DIR/ui
 LEGACY_UI_DIR=/data/ui
-DEVUI_BIN=$DEVUI_DIR/u60pro-devui
+# Before the rename to zwrt-devui the plugin installed here as u60pro-devui.
+OLD_DEVUI_DIR=/data/plugins/u60pro-devui
+DEVUI_BIN=$DEVUI_DIR/zwrt-devui
 # zwrt-datad is installed and managed by its own installer under
 # /data/zwrt-datad; its service.sh owns the flags, token, log and locking.
 DATAD_SERVICE=${DATAD_SERVICE:-/data/zwrt-datad/service.sh}
@@ -31,6 +33,16 @@ migrate_legacy_ui() {
     if [ "$new_count" -le 0 ] && [ "$old_count" -gt 0 ]; then
         cp -af "$LEGACY_UI_DIR"/. "$UI_DIR"/ 2>/dev/null || true
     fi
+}
+
+# Carry the settings, PIN and model cache over from the pre-rename install. The
+# old directory itself is left for the plugin to remove.
+migrate_old_install() {
+    [ -d "$OLD_DEVUI_DIR" ] || return 0
+    for f in devui.conf .device signal.cache ui/.lockpin; do
+        [ -f "$OLD_DEVUI_DIR/$f" ] && [ ! -f "$DEVUI_DIR/$f" ] \
+            && cp -af "$OLD_DEVUI_DIR/$f" "$DEVUI_DIR/$f" 2>/dev/null
+    done
 }
 
 read_mode_main_state() {
@@ -80,6 +92,8 @@ stop_vendor_ui() {
     pidof zte_topsw_devui >/dev/null 2>&1 && had_vendor=1
     /etc/init.d/zte_topsw_devui stop 2>/dev/null
     killall -9 zte_topsw_devui 2>/dev/null
+    # a pre-rename u60pro-devui still holding the screen would block ours
+    killall u60pro-devui 2>/dev/null
     [ "$had_vendor" -eq 1 ] && sleep 1
     # TopFlow (MU5252): the vendor stop script also unloads the touch driver
     # (rmmod sitronix_ts_spi); load it back or the screen has no touch. Right
@@ -122,6 +136,7 @@ case "$mode_main_state" in
         ;;
 esac
 boot_trace
+migrate_old_install
 migrate_legacy_ui
 
 case "$MODE" in
@@ -136,7 +151,7 @@ case "$MODE" in
         # For charge-only boots the full-screen charging UI can fall back to
         # sysfs, so there is no need to wake extra polling daemons.
         start_datad
-        [ -x "$DEVUI_BIN" ] && nohup "$DEVUI_BIN" >/tmp/u60pro-devui.log 2>&1 </dev/null &
+        [ -x "$DEVUI_BIN" ] && nohup "$DEVUI_BIN" >/tmp/zwrt-devui.log 2>&1 </dev/null &
         ;;
     *)
         echo "usage: $0 [procd|legacy]" >&2

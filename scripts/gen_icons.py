@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate 20x20 RGBA PNG icons for u60pro-devui."""
+"""Generate 20x20 RGBA PNG icons for zwrt-devui."""
 
 import struct, zlib, os, math
 

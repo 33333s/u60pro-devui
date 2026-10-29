@@ -153,7 +153,7 @@ static int font_ascent(int size)
 }
 
 /* UI base dir (for <link> CSS / images) and last-clicked anchor href. */
-static std::string g_ui_dir = "/data/plugins/u60pro-devui/ui";
+static std::string g_ui_dir = "/data/plugins/zwrt-devui/ui";
 static std::string g_clicked;
 
 static long long css_file_mtime_ns(const std::string &path)

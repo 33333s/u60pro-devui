@@ -1,6 +1,6 @@
 # 自定义界面教程（写自己的 UI）
 
-`u60pro-devui` 的设计是：**程序固定，界面是数据**。二进制本身不内置任何画面，它在运行时去 `/data/plugins/u60pro-devui/ui` 目录读取你写的 **HTML/CSS** 并渲染到屏幕。所以你想改界面，**完全不用重新编译**——改 HTML、推到设备、即时生效。
+`zwrt-devui` 的设计是：**程序固定，界面是数据**。二进制本身不内置任何画面，它在运行时去 `/data/plugins/zwrt-devui/ui` 目录读取你写的 **HTML/CSS** 并渲染到屏幕。所以你想改界面，**完全不用重新编译**——改 HTML、推到设备、即时生效。
 
 这份文档教你从零写一套自己的界面。
 
@@ -10,11 +10,11 @@
 
 ```text
 后端 zwrt-datad ──▶ HTTP /state + SSE /events (127.0.0.1:9460) ──┐
-                                                                  ├─▶ u60pro-devui ──▶ 屏幕
-你写的 /data/plugins/u60pro-devui/ui/*.html + style.css ───────────┘
+                                                                  ├─▶ zwrt-devui ──▶ 屏幕
+你写的 /data/plugins/zwrt-devui/ui/*.html + style.css ───────────┘
 ```
 
-- 程序把 `/data/plugins/u60pro-devui/ui` 下每个 `*.html` 当作**一页**，左右滑动切换。
+- 程序把 `/data/plugins/zwrt-devui/ui` 下每个 `*.html` 当作**一页**，左右滑动切换。
 - 渲染前，程序会把 HTML 里的 `{{令牌}}` 替换成实时数据（电量、信号、WiFi 密码……）。
 - 点击带 `href="act:xxx"` 的链接会触发**动作**（翻页、切主题、显示密码等），而不是跳转网页。
 - HTML / CSS 仍然按文件热加载，所以 `adb push` 完不用重启，约 1 秒内自动生效；状态数据则来自本机 HTTP/SSE 缓存。
@@ -29,7 +29,7 @@
 - 目录结构：
 
 ```text
-/data/plugins/u60pro-devui/ui/
+/data/plugins/zwrt-devui/ui/
 ├── 00-home.html      # 第 1 页（按文件名排序）：时钟、电量环、网络与速率；锁屏预览也显示这一页
 ├── 01-signal.html    # 第 2 页：RSRP/SINR 表盘 + 信号 / 载波
 ├── 02-functions.html # 第 2 页：更多功能入口
@@ -273,16 +273,16 @@ TopFlow（MU5252）专用令牌，在其他机型上为空或 `—`：
 
 ```sh
 # 推送你的界面（程序会自动热重载，无需重启）
-adb shell 'mkdir -p /data/plugins/u60pro-devui/ui'
-adb push 你的页面.html /data/plugins/u60pro-devui/ui/
-adb push style.css     /data/plugins/u60pro-devui/ui/
+adb shell 'mkdir -p /data/plugins/zwrt-devui/ui'
+adb push 你的页面.html /data/plugins/zwrt-devui/ui/
+adb push style.css     /data/plugins/zwrt-devui/ui/
 ```
 
-注意（Windows 用户）：用 Git-Bash/MSYS 跑 `adb push` 时，`/data/plugins/u60pro-devui/ui/` 这种路径可能被错误地翻译成本地路径导致卡住。**建议用 PowerShell 跑 adb**，或一个文件一个文件地推。
+注意（Windows 用户）：用 Git-Bash/MSYS 跑 `adb push` 时，`/data/plugins/zwrt-devui/ui/` 这种路径可能被错误地翻译成本地路径导致卡住。**建议用 PowerShell 跑 adb**，或一个文件一个文件地推。
 
 调试技巧：
 
-- 改完看不到效果？确认推到的是 `/data/plugins/u60pro-devui/ui/`，并且程序在运行（`pidof u60pro-devui`）。
+- 改完看不到效果？确认推到的是 `/data/plugins/zwrt-devui/ui/`，并且程序在运行（`pidof zwrt-devui`）。
 - 排版乱 / 下面看不到？先确认页面高度和底部留白是否合理；长页面可以竖向滚动，但内容特别多时仍建议精简或拆页。
 - 出现豆腐块 □？是字体缺这个符号字形，换中文或 CSS 画。
 - 想从零做：复制现成的 `01-signal.html` 改，是最快的起点。
@@ -291,7 +291,7 @@ adb push style.css     /data/plugins/u60pro-devui/ui/
 
 ## 9. 一个完整示例：加一页"关于"
 
-新建 `/data/plugins/u60pro-devui/ui/04-about.html`：
+新建 `/data/plugins/zwrt-devui/ui/04-about.html`：
 
 ```html
 <!DOCTYPE html>
@@ -317,7 +317,7 @@ adb push style.css     /data/plugins/u60pro-devui/ui/
 ```
 
 ```sh
-adb push 04-about.html /data/plugins/u60pro-devui/ui/
+adb push 04-about.html /data/plugins/zwrt-devui/ui/
 ```
 
 滑到第 4 页就能看到，圆点也自动变 4 个。完成。

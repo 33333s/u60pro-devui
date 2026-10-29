@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build u60pro-devui with the local Bootlin aarch64 musl toolchain.
+# Build zwrt-devui with the local Bootlin aarch64 musl toolchain.
 # Usage: wsl -- bash -lc 'bash /mnt/d/.../scripts/build.sh'
 set -e
 
@@ -72,9 +72,9 @@ CXXFLAGS="-std=c++17 -O2 -w -Iinclude -I$FT_DIR/include -I$LH_DIR/include -I$LH_
 OBJS="$OBJS $OBJ_DIR/html_view.o"
 
 # shellcheck disable=SC2086
-"$CXX" -static $OBJS "$LH_DIR/lib/liblitehtml.a" "$FT_LIB" -Wl,--gc-sections -pthread -lm -o u60pro-devui
+"$CXX" -static $OBJS "$LH_DIR/lib/liblitehtml.a" "$FT_LIB" -Wl,--gc-sections -pthread -lm -o zwrt-devui
 echo ">> link OK"
-"$TC/aarch64-linux-size" u60pro-devui
-"$TC/aarch64-linux-strip" -o u60pro-devui.stripped u60pro-devui 2>/dev/null || true
-ls -lh u60pro-devui u60pro-devui.stripped 2>/dev/null
+"$TC/aarch64-linux-size" zwrt-devui
+"$TC/aarch64-linux-strip" -o zwrt-devui.stripped zwrt-devui 2>/dev/null || true
+ls -lh zwrt-devui zwrt-devui.stripped 2>/dev/null
 echo "BUILD-OK"

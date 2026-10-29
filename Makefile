@@ -1,18 +1,18 @@
-# u60pro-devui - cross-compile to a single static aarch64 binary.
+# zwrt-devui - cross-compile to a single static aarch64 binary.
 #
 # Build (in a POSIX shell: WSL, Git-Bash, or Linux) with an aarch64 musl
 # toolchain on PATH, e.g. from https://musl.cc (aarch64-linux-musl-cross):
 #
 #   make CROSS_COMPILE=aarch64-linux-musl-
 #
-# The result is a self-contained `u60pro-devui` binary with no runtime deps.
+# The result is a self-contained `zwrt-devui` binary with no runtime deps.
 #
 # SPDX-License-Identifier: MIT
 
 CROSS_COMPILE ?= aarch64-linux-musl-
 CC := $(CROSS_COMPILE)gcc
 
-TARGET   := u60pro-devui
+TARGET   := zwrt-devui
 ROOT     := .
 LVGL_DIR := third_party/lvgl
 

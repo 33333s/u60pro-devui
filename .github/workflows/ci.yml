@@ -29,9 +29,9 @@ jobs:
         run: bash scripts/build.sh
       - name: Check the binary is a static aarch64 ELF
         run: |
-          file u60pro-devui.stripped
-          file u60pro-devui.stripped | grep -q 'ARM aarch64'
-          file u60pro-devui.stripped | grep -q 'statically linked'
+          file zwrt-devui.stripped
+          file zwrt-devui.stripped | grep -q 'ARM aarch64'
+          file zwrt-devui.stripped | grep -q 'statically linked'
       - name: Shell syntax
         run: |
           for f in scripts/*.sh tests/*.sh; do
@@ -56,7 +56,7 @@ jobs:
           retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
-          name: u60pro-devui-aarch64
-          path: u60pro-devui.stripped
+          name: zwrt-devui-aarch64
+          path: zwrt-devui.stripped
           if-no-files-found: error
           retention-days: 14
