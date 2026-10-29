@@ -68,12 +68,15 @@ int main(int argc, char **argv)
 
     g_theme = argc > 2 ? atoi(argv[2]) : 0;
     g_sig_parse = 1;            /* show the neighbor card */
+    device_init();
     scan_pages();
     if (g_npages == 0) { fprintf(stderr, "no pages in %s\n", UI_DIR); return 1; }
+    g_panel_rot = 0;            /* shots are taken from the logical, unrotated frame */
     html_view_init(disp.fb, disp.width, disp.height, disp.pitch_px, 0, resolve_ui_font());
     html_view_set_uidir(UI_DIR);
     (void)data_backend_init();
     (void)data_backend_commit_latest();
+    if (device_update(data_model_tag())) scan_pages();   /* model from the sample state */
     {   /* one WiFi/aux sample, taken here instead of on the worker thread */
         static aux_sample_t a;
         aux_collect(&a, millis());

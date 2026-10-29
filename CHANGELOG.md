@@ -2,6 +2,22 @@
 
 > 当前正式命名与安装路径：`zwrt-datad` 在 `/data/zwrt-datad/`（datad 自己的安装脚本与 `service.sh` 管理），DevUI 在 `/data/plugins/u60pro-devui/`、`/data/plugins/u60pro-devui/ui`。历史条目里如果出现 `u60-datad`、`/data/plugins/zwrt-datad`、`/data/u60pro` 或 `/data/ui`，表示当时版本记录。
 
+## 未发布
+
+### 适配 TopFlow（MU5252）
+
+- 按 datad 的 `device.api_template` 识别机型，记在 `/data/plugins/u60pro-devui/.device`，重启后第一帧就是对应机型的界面；`DEVUI_DEVICE=mu5250|mu5252` 可强制指定。
+- 页面按文件名区分机型：`NN-名字.mu5252.html` 只在 TopFlow 上显示，并替换同名通用页；`subpages/` 同理。`<body>` 带 `dev-mu5250` / `dev-mu5252` 类，通用页里 `u60only` 的元素在 TopFlow 上隐藏。
+- 屏幕方向按机型：U60 Pro 的面板倒装，帧缓冲和触摸都转 180°；TopFlow 的面板正装，两者都不转。翻页、滚动、上下拉面板和外部画面的直写帧缓冲都改为按机型处理。
+- 信号页新增多基带卡片（5G / 4G1 / 4G2：运营商、在线状态、RSRP/SINR、频段、温度、速率）。
+- 新增 TopFlow 专用“聚合 · 散热”页：聚合开关（关闭需连点两次确认）、各链路延迟和丢包、风扇模式（原厂 / 曲线 / 常开）、液冷模式（自动 / 低档 / 高档）、CPU 和各基带温度。
+- 控制中心在 TopFlow 上多一排：聚合、风扇常开、液冷。
+- TopFlow 首页速率为三路基带之和，底部两格换成聚合链路和风扇。
+- TopFlow 选网“自动”使用固件的 `4G_AND_5G`；Wi-Fi 回退命令按 TopFlow 的 `wlan0`（5G）处理。
+- TopFlow 不显示、也不执行 USB 反向供电和 USB 网络共享，也不再查询 Type-C 状态。
+- `start.sh`：TopFlow 原厂 devui 的停止脚本会卸载触摸驱动（`rmmod sitronix_ts_spi`），现在停掉原厂界面后等 3 秒重新加载，失败最多重试 3 次。
+- 宿主机预览可用 `tests/ui/sample_state_mu5252.json` 渲染 TopFlow 界面，CI 两种机型都渲染。
+
 ## v1.3.0 - 2026-10-29
 
 ### 界面：U30 Pro 风格

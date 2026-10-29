@@ -557,6 +557,12 @@ extern "C" void html_view_init(uint16_t *fb, int w, int h, int pitch_px, int rot
     g_container = new fb_container();
 }
 
+/* Draw into the framebuffer rotated by 180 degrees (upside-down panel) or not. */
+extern "C" void html_view_set_rotate(int rotate)
+{
+    g_rotate = rotate;
+}
+
 /* Parse + lay out + paint an HTML string into the framebuffer. Returns height. */
 extern "C" int html_view_render_html(const char *html)
 {

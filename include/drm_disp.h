@@ -24,6 +24,8 @@ typedef struct {
     uint32_t  connector_id;
     uint64_t  map_size;
     uint16_t *shadow;         /* copy of what the panel shows (drm_disp_present) */
+    int       rot180;         /* panel mounted upside down: logical (x, y) is fb
+                                 (w-1-x, h-1-y). Set by the UI after init. */
 } drm_disp_t;
 
 /* Returns 0 on success, negative errno-style code on failure. */

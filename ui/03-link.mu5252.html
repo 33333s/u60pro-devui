@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
+<body class="{{THEME}}">
+  {{STATUSBAR}}
+
+  <!-- TopFlow only: link aggregation and cooling -->
+  <div class="card">
+    <div class="row">
+      <span class="lab">链路聚合<span class="st">{{AGGSTATE}}</span></span>
+      <span class="ctrl"><a href="act:agg" class="sw {{AGGCLASS}}"><span class="kn"></span></a></span>
+    </div>
+    {{AGGPATHS}}
+  </div>
+
+  <div class="card">
+    <div class="srow"><span>风扇</span><span class="sval">{{FANSTATE}}</span></div>
+    {{FANSEG}}
+    <div class="srow cool2"><span>液冷</span><span class="sval">{{LIQSTATE}}</span></div>
+    {{LIQSEG}}
+  </div>
+
+  <div class="card">
+    <div class="title">温度</div>
+    {{TEMPS}}
+  </div>
+
+  {{TOAST}}
+  <div class="pgpad"></div>
+  {{DOTS}}
+</body>
+</html>

@@ -13,6 +13,7 @@ DEVUI_BIN=$DEVUI_DIR/u60pro-devui
 # zwrt-datad is installed and managed by its own installer under
 # /data/zwrt-datad; its service.sh owns the flags, token, log and locking.
 DATAD_SERVICE=${DATAD_SERVICE:-/data/zwrt-datad/service.sh}
+TOUCH_KO=/lib/modules/sitronix-ts-spi.ko
 MODE="${1:-legacy}"
 
 mkdir -p "$DEVUI_DIR" "$UI_DIR"
@@ -80,6 +81,19 @@ stop_vendor_ui() {
     /etc/init.d/zte_topsw_devui stop 2>/dev/null
     killall -9 zte_topsw_devui 2>/dev/null
     [ "$had_vendor" -eq 1 ] && sleep 1
+    # TopFlow (MU5252): the vendor stop script also unloads the touch driver
+    # (rmmod sitronix_ts_spi); load it back or the screen has no touch. Right
+    # after the unload the controller still reads chip ID 0 and the probe
+    # fails, so wait a few seconds, and unload a failed probe before retrying.
+    [ -f "$TOUCH_KO" ] || return 0
+    tries=0
+    while ! grep -q 'sitronix_ts' /proc/bus/input/devices 2>/dev/null && [ "$tries" -lt 3 ]; do
+        tries=$((tries + 1))
+        rmmod sitronix_ts_spi 2>/dev/null
+        sleep 3
+        insmod "$TOUCH_KO" 2>/dev/null
+        sleep 1
+    done
 }
 
 start_datad() {

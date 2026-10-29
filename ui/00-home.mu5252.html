@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
+<body class="{{THEME}}">
+  {{STATUSBAR}}
+
+  <!-- TopFlow home: rates are all modems together; aggregation replaces the session usage -->
+  <div id="home-ring" class="home-ring">
+    <div class="home-time">{{TIME}}</div>
+    <div class="home-date">{{DATE}}</div>
+    <div class="home-net">
+      <span class="chip {{GENCLASS}}">{{GEN}}</span><span id="home-bars" class="ico-bars"></span><span class="home-oper">{{OPER}}</span>
+    </div>
+    <div class="home-rate">
+      <span class="hr"><span class="ar acc">↓</span>{{RXSPEED}}</span><span class="hr"><span class="ar acc2">↑</span>{{TXSPEED}}</span>
+    </div>
+  </div>
+
+  <div class="home-foot">
+    <span class="hf"><span id="home-wifi" class="ico-wifi"></span>{{CLIENTS}} 台</span>
+    <span class="hf"><span class="mbat {{BATCLASS}}"><span class="mbat-fill" style="width:{{BAT}}%"></span></span>{{BAT}}%<span id="home-bolt" class="ico-bolt"></span></span>
+  </div>
+
+  <div class="home-facts">
+    <span class="home-fact"><span class="fk">聚合链路</span><span class="fv">{{AGGSUM}}</span></span>
+    <span class="home-fact"><span class="fk">风扇</span><span class="fv">{{FANSTATE}}</span></span>
+  </div>
+
+  {{TOAST}}
+  {{DOTS}}
+</body>
+</html>

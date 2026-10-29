@@ -50,6 +50,7 @@
 - `functions/*.html` 是用户自定义二级页面，通过更多功能页自动扫描，示例见 `examples/custom-functions/`；示例不放进默认 `ui/`，避免安装后默认出现测试页面。
 - 特殊页按全屏覆盖层处理，不继承普通页面的竖向滚动位置。
 - 所有页面用 `<link rel="stylesheet" href="style.css">` 共享同一份样式。
+- **按机型区分**：同一套界面同时支持 U60 Pro（MU5250）和 TopFlow（MU5252），机型取自 datad 的 `device.api_template`。文件名带机型的页面只在该机型显示，并替换同名的通用页：`03-link.mu5252.html` 只在 TopFlow 上出现，`00-home.mu5252.html` 在 TopFlow 上替换 `00-home.html`；`subpages/` 同理。`<body>` 的类里带 `dev-mu5250` 或 `dev-mu5252`，小差异用 CSS 隐藏即可，例如通用页里的 `class="row u60only"` 在 TopFlow 上不显示。调试时可用环境变量 `DEVUI_DEVICE=mu5252` 强制机型。
 - 旧版若还残留 `/data/ui`，新版安装脚本会自动把它迁移到这里。
 
 ---
@@ -127,7 +128,7 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | 令牌 | 含义 | 例 |
 |------|------|----|
 | `{{TIME}}` `{{DATE}}` | 时间 / 日期和星期 | `14:30` / `10月28日 周二` |
-| `{{THEME}}` | body 类名：`dark` + 主题类 | `dark th-ocean` |
+| `{{THEME}}` | body 类名：`dark` + 主题类 + 机型类 | `dark th-ocean dev-mu5250` |
 | `{{SIGGAUGES}}` | 信号表盘卡片：SA 只有 NR 一排，纯 LTE 只有 LTE 一排，NSA / EN-DC 是 NR 和 LTE 两排 | 一段 HTML |
 | `{{OPER}}` `{{NETTYPE}}` | 运营商（大陆四家中文）/ 制式 | `中国移动` / `SA` |
 | `{{GEN}}` `{{GENCLASS}}` | 网络代际文字 / 样式类 | `5G+` / `g5p` |
@@ -153,6 +154,20 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `{{USBPWRCLASS}}/{{USBPWRSTATE}}` `{{USBNETCLASS}}/{{USBNETSTATE}}` `{{BATPCTCLASS}}/{{BATPCTSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{WIFI24CLASS}}/{{WIFI24STATE}}` `{{WIFI5CLASS}}/{{WIFI5STATE}}` `{{PSMCLASS}}/{{PSMSTATE}}` `{{DPSCLASS}}/{{DPSSTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMESTATE}}`（主题名，如 `海洋`） `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{LOCKCLASS}}/{{LOCKSTATE}}` | 各开关的类(`on`/`off`) 与状态文字 | `on` / `已开启` |
 | `{{LOCKTITLE}}` | 锁屏键盘标题（设置时「设置锁屏密码」/ 解锁时「请输入锁屏密码」） | |
 | `{{PAGE}}` `{{NPAGES}}` | 当前页 / 总页数 | `3` / `5` |
+
+TopFlow（MU5252）专用令牌，在其他机型上为空或 `—`：
+
+| 令牌 | 含义 | 例 |
+|------|------|----|
+| `{{MODEMCARDS}}` | 多基带卡片（整段）：每个基带一行，制式、运营商、在线状态、RSRP/SINR、频段、温度和上下行速率 | |
+| `{{AGGCLASS}}` `{{AGGSTATE}}` `{{AGGSUM}}` | 聚合开关类 / 状态文字 / 首页摘要 | `on` / `在线 · 3/3 条链路` / `3/3 在线` |
+| `{{AGGPATHS}}` | 聚合链路列表（整段）：在线点、名称、延迟、丢包 | |
+| `{{FANSEG}}` `{{FANSTATE}}` | 风扇模式分段控件（原厂 / 曲线 / 常开）/ 转速和温度 | / `18% · 49°C` |
+| `{{LIQSEG}}` `{{LIQSTATE}}` | 液冷模式分段控件（自动 / 低档 / 高档）/ 运行状态 | / `待机` |
+| `{{TEMPS}}` | CPU 和各基带温度（整段表格） | |
+| `{{CCEXTRA}}` | 控制中心第二排开关：聚合、风扇常开、液冷（整段） | |
+
+在 TopFlow 上 `{{RXSPEED}}` / `{{TXSPEED}}` 是所有基带速率之和。
 
 > 安全提示：`{{KEY}}`(WiFi 密码)、`{{CELLID}}`、`{{IMEI}}` **默认打码**(显示 `*`)，点对应"显示"动作才明文。请保留此行为。
 
@@ -191,6 +206,11 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `act:backfunc` | 从二级页面返回顶层页 |
 | `act:neighbors` | 首页展开 / 收起邻小区列表 |
 | `act:stpage` | 打开测速二级页（只有测速后端存在时更多功能页才显示入口） |
+| `act:agg` | TopFlow：聚合开关。开启点一下即可；关闭会断开聚合链路，第一下只提示“再点一次”，4 秒内再点才执行 |
+| `act:fan:<模式>` `act:fanon` | TopFlow：风扇模式 `automatic` / `custom` / `always_on`；`fanon` 在常开和曲线之间切换 |
+| `act:liq:<模式>` `act:liqon` | TopFlow：液冷模式 `automatic` / `low` / `high`；`liqon` 在高档和自动之间切换 |
+
+`act:usbpower` 和 `act:usbnet` 在 TopFlow 上不做任何事（它不支持反向供电和 USB 网络共享）。
 
 例：一个开关按钮
 
@@ -236,6 +256,7 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `home-bars` `home-wifi` `home-bolt` | 首页的信号格、Wi-Fi 图标、充电闪电（只在充电时画） |
 | `fic-wifi` `fic-sms` `fic-cell` `fic-lock` `fic-speed` `fic-custom-N` | 功能列表左侧圆圈里的线条图标（主题色），自定义页面是四宫格 |
 | `cc-wifi` `cc-nfc` `cc-dps` `cc-theme` | 控制中心的圆形开关图标，开着时圆盘是主题色、图标深色 |
+| `cc-agg` `cc-fan` `cc-liq` | TopFlow 控制中心的聚合、风扇常开、液冷图标 |
 
 渐变写进帧缓冲时带 4×4 有序抖动：屏幕是 RGB565，直接量化会出现一条条色带。
 

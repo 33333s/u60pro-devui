@@ -36,6 +36,7 @@
 
 extern void        html_view_init(uint16_t *fb, int w, int h, int pitch_px, int rotate, const char *font_path);
 extern void        html_view_set_uidir(const char *dir);
+extern void        html_view_set_rotate(int rotate);
 extern int         html_view_render_html(const char *html);
 extern int         html_view_render_to(uint16_t *buf, const char *html);
 extern int         html_view_render_to_scroll(uint16_t *buf, const char *html, int scroll);
@@ -143,11 +144,65 @@ static int  g_speed_bits = 1; /* 1 = Mbps (bit rate), 0 = MB/s (byte rate) */
 static unsigned theme_a(void) { return g_themes[g_theme].a; }
 static unsigned theme_b(void) { return g_themes[g_theme].b; }
 
-/* <body> class: "dark" keeps generated markup's .dark selectors, plus the palette */
+/* ---- device model ----
+ * The U60 Pro (MU5250) and the TopFlow (MU5252) share the panel, touch and
+ * power key, but not the features: the TopFlow has three modems, link
+ * aggregation and fan / liquid cooling, and no reverse charging or USB
+ * tethering. The model comes from datad's device.api_template. The last one
+ * seen is kept in a dotfile so the right pages show from the first frame after
+ * a reboot; DEVUI_DEVICE=mu5250|mu5252 overrides both.
+ *
+ * Pages follow the model by file name: NN-name.<tag>.html is shown only on
+ * that model and replaces NN-name.html there (tag mu5250 or mu5252). The same
+ * holds for subpages/<name>.<tag>.html. */
+enum { DEV_U60 = 0, DEV_TOPFLOW };
+static int g_dev = DEV_U60;
+static int g_dev_forced;
+#define DEVICE_FILE "/data/plugins/u60pro-devui/.device"
+
+static int dev_is_tf(void) { return g_dev == DEV_TOPFLOW; }
+static const char *dev_tag(void) { return dev_is_tf() ? "mu5252" : "mu5250"; }
+static int dev_from_name(const char *s)
+{
+    return s && (!strcasecmp(s, "mu5252") || !strcasecmp(s, "topflow")) ? DEV_TOPFLOW : DEV_U60;
+}
+
+static void device_init(void)
+{
+    const char *env = getenv("DEVUI_DEVICE");
+    char line[32] = "";
+    if (env && env[0]) {
+        g_dev = dev_from_name(env);
+        g_dev_forced = 1;
+        return;
+    }
+    FILE *fp = fopen(DEVICE_FILE, "r");
+    if (fp) {
+        if (fgets(line, sizeof line, fp)) line[strcspn(line, "\r\n")] = 0;
+        fclose(fp);
+    }
+    g_dev = dev_from_name(line);
+}
+
+/* Apply the model datad reports. Returns 1 when it changed. */
+static int device_update(const char *model_tag)
+{
+    int dev;
+    if (g_dev_forced || !model_tag || !model_tag[0]) return 0;
+    dev = dev_from_name(model_tag);
+    if (dev == g_dev) return 0;
+    g_dev = dev;
+    FILE *fp = fopen(DEVICE_FILE, "w");
+    if (fp) { fprintf(fp, "%s\n", dev_tag()); fclose(fp); }
+    return 1;
+}
+
+/* <body> class: "dark" keeps generated markup's .dark selectors, plus the
+ * palette and the model (dev-mu5250 / dev-mu5252) */
 static const char *theme_body_class(void)
 {
-    static char cls[40];
-    snprintf(cls, sizeof cls, "dark %s", g_themes[g_theme].cls);
+    static char cls[64];
+    snprintf(cls, sizeof cls, "dark %s dev-%s", g_themes[g_theme].cls, dev_tag());
     return cls;
 }
 static int  g_show_batpct = 1; /* show percent text inside status battery */
@@ -211,6 +266,12 @@ static int normalize_refresh_ms(int ms);
 static int  g_w24 = -1, g_w5 = -1, g_wpsm = -1;
 static int  g_dps = -1;   /* power direct-supply mode (/state power.direct_supply), -1 unknown */
 static uint32_t g_wifi_hold_until, g_dps_hold_until;   /* optimistic toggle hold */
+/* TopFlow cooling and aggregation (/state cooling / aggregation). A tap sets
+ * the value at once and holds it until datad has applied it. Turning
+ * aggregation off drops the bonded link, so the first tap only arms it. */
+static char g_fan_mode[16], g_liq_mode[16];
+static int  g_agg_on = -1;
+static uint32_t g_fan_hold_until, g_liq_hold_until, g_agg_hold_until, g_agg_armed_until;
 /* main AP config from datad wifi.status: /state no longer carries the password */
 static struct { char ssid[64], key[64]; } g_wifi_cfg[3];
 static int  g_adb_pending = -1; /* optimistic ADB state while USB re-enumerates */
@@ -327,6 +388,37 @@ static int  g_lock_state;    /* 0=normal, 1=locked preview, 2=setup pad, 3=unloc
 static char g_pin_entry[8];  /* digits typed so far */
 static int  g_lock_err;      /* 1 = show the unlock-pad error message */
 
+/* "x.mu5252.html" -> "mu5252"; "x.html" -> "" */
+static void page_model_tag(const char *name, char *tag, size_t cap)
+{
+    size_t l = strlen(name);
+    const char *dot;
+    tag[0] = 0;
+    if (l <= 5) return;
+    for (dot = name + l - 6; dot > name && *dot != '.'; dot--) {}
+    if (dot > name && *dot == '.') {
+        size_t n = (size_t)(name + l - 5 - (dot + 1));
+        /* only model names (two letters, four digits) count as a tag */
+        if (n < 6 || n >= cap || !isalpha((unsigned char)dot[1]) || !isalpha((unsigned char)dot[2]))
+            return;
+        for (size_t k = 2; k < 6; k++)
+            if (!isdigit((unsigned char)dot[1 + k])) return;
+        memcpy(tag, dot + 1, n);
+        tag[n] = 0;
+    }
+}
+
+/* Is name for this model, and not replaced by a model-specific copy in dir? */
+static int page_for_model(const char *dir, const char *name)
+{
+    char tag[16], path[320];
+    size_t l = strlen(name);
+    page_model_tag(name, tag, sizeof tag);
+    if (tag[0]) return !strcasecmp(tag, dev_tag());
+    snprintf(path, sizeof path, "%s/%.*s.%s.html", dir, (int)(l - 5), name, dev_tag());
+    return access(path, F_OK) != 0;
+}
+
 static void scan_pages(void)
 {
     g_npages = 0;
@@ -341,6 +433,8 @@ static void scan_pages(void)
             strcmp(de->d_name, "menu.html") != 0 &&
             strcmp(de->d_name, "lockscreen.html") != 0) {
             if (!g_sig_parse && strcmp(de->d_name, "01a-cell.html") == 0)
+                continue;
+            if (!page_for_model(UI_DIR, de->d_name))
                 continue;
             strncpy(names[n], de->d_name, 63); names[n][63] = 0; n++;
         }
@@ -882,7 +976,8 @@ static void aux_collect(aux_sample_t *a, uint32_t now)
         if (access(path, F_OK) == 0)
             o += snprintf(cmd + o, sizeof cmd - o, "iw dev wlan%d station dump 2>/dev/null;", i);
     }
-    o += snprintf(cmd + o, sizeof cmd - o, "echo @TC; ubus call zwrt_bsp.typec list 2>/dev/null;");
+    if (!dev_is_tf())   /* the TopFlow has no reverse charging */
+        o += snprintf(cmd + o, sizeof cmd - o, "echo @TC; ubus call zwrt_bsp.typec list 2>/dev/null;");
     int want_uci = !uci_at || now - uci_at >= AUX_UCI_MS;
     if (want_uci)
         snprintf(cmd + o, sizeof cmd - o,
@@ -997,8 +1092,12 @@ static void aux_apply(void)
     int settled = (int32_t)(millis() - g_wifi_hold_until) >= 0;
     int have_datad = settled && a.state_ok && wifi_state_parse(a.state);
     if (a.cfg_ok) wifi_cfg_parse(a.cfg);
-    /* operstate is only the fallback for a datad that is not answering */
-    if (!have_datad && settled) { g_w24 = a.w0_up; g_w5 = a.w2_up; }
+    /* operstate is only the fallback for a datad that is not answering
+     * (U60 Pro: wlan0 = 2.4G, wlan2 = 5G; TopFlow: wlan0 = 5G) */
+    if (!have_datad && settled) {
+        if (dev_is_tf()) g_w5 = a.w0_up;
+        else { g_w24 = a.w0_up; g_w5 = a.w2_up; }
+    }
     g_wpsm = a.psm;
     if (a.pool[0]) snprintf(g_dhcp_pool, sizeof g_dhcp_pool, "%s", a.pool);
     snprintf(g_assoc_macs, sizeof g_assoc_macs, "%s", a.macs);
@@ -1453,9 +1552,14 @@ static int g_sheet;
 static int subpage_open(const char *name)
 {
     char path[300];
+    size_t l;
     g_sheet = 0;
     if (!subpage_name_ok(name)) return 0;
-    snprintf(path, sizeof path, "%s/subpages/%s", UI_DIR, name);
+    /* a model-specific copy (wifi.mu5252.html) wins over the shared page */
+    l = strlen(name);
+    snprintf(path, sizeof path, "%s/subpages/%.*s.%s.html", UI_DIR, (int)(l - 5), name, dev_tag());
+    if (access(path, R_OK) != 0)
+        snprintf(path, sizeof path, "%s/subpages/%s", UI_DIR, name);
     if (access(path, R_OK) != 0) return 0;
     snprintf(g_subpage, sizeof g_subpage, "%s", name);
     snprintf(g_subpage_path, sizeof g_subpage_path, "%s", path);
@@ -2398,6 +2502,7 @@ static struct {
     dial_cell_t lte, nr;       /* a leg that is not up has no readings: "--" */
     int nr_serving;            /* the NR leg is up: it is the serving cell */
     int bat, charging, sig, wifi_on, nfc_on, dps_on;
+    int agg_on, fan_on, liq_on;  /* TopFlow control-center toggles */
 } g_dial;
 
 static float dial_clamp(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
@@ -2547,6 +2652,30 @@ static void draw_func_icons(void)
         int xs[6] = { (int)cx + 3, (int)cx - 8, (int)cx - 1, (int)cx - 4, (int)cx + 8, (int)cx + 1 };
         int ys[6] = { (int)cy - 13, (int)cy + 2, (int)cy + 2, (int)cy + 13, (int)cy - 3, (int)cy - 3 };
         html_view_fill_poly(xs, ys, 6, RGB3(k), 255);
+    }
+    if (FIC("#cc-agg")) {                        /* three links merging into one */
+        unsigned k = g_dial.agg_on ? 0x0B1220u : C_TXT;
+        float lx = cx - 12.f, mx = cx + 2.f, rx = cx + 13.f;
+        html_view_line(lx, cy - 9.f, mx, cy, 2.6f, RGB3(k), 255);
+        html_view_line(lx, cy, mx, cy, 2.6f, RGB3(k), 255);
+        html_view_line(lx, cy + 9.f, mx, cy, 2.6f, RGB3(k), 255);
+        html_view_line(mx, cy, rx, cy, 3.4f, RGB3(k), 255);
+        html_view_fill_circle(mx, cy, 3.2f, RGB3(k), 255);
+    }
+    if (FIC("#cc-fan")) {                        /* three blades around a hub */
+        unsigned k = g_dial.fan_on ? 0x0B1220u : C_TXT;
+        for (int b = 0; b < 3; b++) {
+            float a = (float)(b * 120) * 3.14159265f / 180.f;
+            html_view_fill_circle(cx + 7.f * cosf(a), cy + 7.f * sinf(a), 5.f, RGB3(k), 255);
+        }
+        html_view_fill_circle(cx, cy, 3.f, RGB3(k), 255);
+    }
+    if (FIC("#cc-liq")) {                        /* drop */
+        unsigned k = g_dial.liq_on ? 0x0B1220u : C_TXT;
+        int xs[3] = { (int)cx, (int)cx - 8, (int)cx + 8 };
+        int ys[3] = { (int)cy - 13, (int)cy + 2, (int)cy + 2 };
+        html_view_fill_poly(xs, ys, 3, RGB3(k), 255);
+        html_view_fill_circle(cx, cy + 4.f, 8.f, RGB3(k), 255);
     }
     if (FIC("#cc-theme")) {                      /* the palette's two accents and green */
         html_view_fill_circle(cx - 8.f, cy - 4.f, 5.f, RGB3(theme_a()), 255);
@@ -2756,6 +2885,11 @@ static void net_mode_apply(const char *mode)
 static const struct { const char *v, *lab; } g_netmodes[4] = {
     { "WL_AND_5G", "自动" }, { "Only_5G", "5G SA" },
     { "LTE_AND_5G", "5G NSA" }, { "Only_LTE", "4G" } };
+/* The TopFlow firmware names its automatic mode 4G_AND_5G. */
+static const char *netmode_value(int k)
+{
+    return k == 0 && dev_is_tf() ? "4G_AND_5G" : g_netmodes[k].v;
+}
 static const struct { int ms; const char *lab; } g_autooffs[6] = {
     { 0, "关" }, { 30000, "30秒" }, { 60000, "1分" },
     { 120000, "2分" }, { 300000, "5分" }, { 600000, "10分" } };
@@ -4437,6 +4571,14 @@ static int build_kv(struct kv *t, const char *path)
     static struct signal_bundle sig;
     int ta = -1;
     if (!data_refresh(&d)) memset(&d, 0, sizeof d);
+    if (dev_is_tf() && d.modem_n > 0) {
+        /* traffic covers the 5G modem only; the WAN rate is all modems together */
+        d.rx_speed = d.tx_speed = 0;
+        for (int k = 0; k < d.modem_n; k++) {
+            d.rx_speed += d.modem[k].rx_speed;
+            d.tx_speed += d.modem[k].tx_speed;
+        }
+    }
     g_charging = d.charger_connect;
     snprintf(s_page, sizeof s_page, "%d", g_cur + 1);
     snprintf(s_np, sizeof s_np, "%d", g_npages);
@@ -5071,12 +5213,12 @@ static int build_kv(struct kv *t, const char *path)
         if (g_net_pending[0] && !strcmp(g_net_pending, d.net_select)) g_net_pending[0] = 0;
         const char *cur = g_net_pending[0] ? g_net_pending : d.net_select;
         int active = 0;
-        for (int k = 0; k < 4; k++) if (!strcmp(g_netmodes[k].v, cur)) active = k;
+        for (int k = 0; k < 4; k++) if (!strcmp(netmode_value(k), cur)) active = k;
         int hl = g_segdrag == 1 ? -1 : active;   /* during drag the native box is the highlight */
         int o = snprintf(s_netseg, sizeof s_netseg, "<div id='netseg' class='seg seg4'>");
         for (int k = 0; k < 4; k++)
             o += snprintf(s_netseg + o, sizeof s_netseg - o, "<a href='act:net:%s' class='segc%s'>%s</a>",
-                          g_netmodes[k].v, k == hl ? " seg-on" : "", g_netmodes[k].lab);
+                          netmode_value(k), k == hl ? " seg-on" : "", g_netmodes[k].lab);
         snprintf(s_netseg + o, sizeof s_netseg - o, "</div>");
     }
     s_toast[0] = 0;
@@ -5211,6 +5353,139 @@ static int build_kv(struct kv *t, const char *path)
     const char *usb_pwr_state = g_typec_pending >= 0 ? "切换中" : (usb_reverse ? "反向供电" : "给U60充电");
     const char *usb_net_state = g_usb_net_pending >= 0 ? "切换中" : (usb_net_on ? "共享中" : "仅充电");
 
+    /* ---- TopFlow: modems, aggregation, cooling (empty on other models) ---- */
+    static char s_modemcards[3200], s_aggpaths[1400], s_aggstate[64], s_aggsum[40];
+    static char s_fanseg[420], s_liqseg[420], s_fanstate[40], s_liqstate[40], s_temps[640], s_ccextra[720];
+    s_modemcards[0] = s_aggpaths[0] = s_aggsum[0] = s_temps[0] = s_ccextra[0] = 0;
+    s_fanseg[0] = s_liqseg[0] = 0;
+    snprintf(s_aggstate, sizeof s_aggstate, "—");
+    snprintf(s_fanstate, sizeof s_fanstate, "—");
+    snprintf(s_liqstate, sizeof s_liqstate, "—");
+    if (dev_is_tf()) {
+        uint32_t tnow = millis();
+        if (d.agg_present && (int32_t)(tnow - g_agg_hold_until) >= 0) g_agg_on = d.agg_enabled;
+        if (d.fan_mode[0] && (int32_t)(tnow - g_fan_hold_until) >= 0)
+            snprintf(g_fan_mode, sizeof g_fan_mode, "%s", d.fan_mode);
+        if (d.liquid_mode[0] && (int32_t)(tnow - g_liq_hold_until) >= 0)
+            snprintf(g_liq_mode, sizeof g_liq_mode, "%s", d.liquid_mode);
+        g_dial.agg_on = g_agg_on == 1;
+        g_dial.fan_on = !strcmp(g_fan_mode, "always_on");
+        g_dial.liq_on = !strcmp(g_liq_mode, "low") || !strcmp(g_liq_mode, "high");
+
+        if (d.modem_n > 0) {
+            int o = snprintf(s_modemcards, sizeof s_modemcards,
+                             "<div class='card mdm'><div class='title'>多基带<span class='sub'>%d 路</span></div>",
+                             d.modem_n);
+            for (int k = 0; k < d.modem_n && o < (int)sizeof s_modemcards; k++) {
+                const devui_modem_t *m = &d.modem[k];
+                int nr = m->nr_rsrp != 0;
+                char rsrp[12], sinr[12], band[24], rx[20], tx[20], oper[40], temp[12];
+                const char *st, *stc;
+                snprintf(rsrp, sizeof rsrp, "%d", nr ? m->nr_rsrp : m->lte_rsrp);
+                if (!(nr ? m->nr_rsrp : m->lte_rsrp)) snprintf(rsrp, sizeof rsrp, "-");
+                snprintf(sinr, sizeof sinr, "%s", signal_value_present(nr ? m->nr_snr : m->lte_snr)
+                                                  ? (nr ? m->nr_snr : m->lte_snr) : "-");
+                if (nr && !strcmp(m->id, "5G") && d.nr_band[0])
+                    snprintf(band, sizeof band, "%s", d.nr_band);
+                else if (!strncmp(m->band, "LTE BAND ", 9))
+                    snprintf(band, sizeof band, "B%s", m->band + 9);
+                else
+                    snprintf(band, sizeof band, "%s", m->band[0] ? m->band : "-");
+                if (strstr(m->wwan, "connected") && !strstr(m->wwan, "dis")) { st = "在线"; stc = "ok"; }
+                else if (!m->sim_state[0] || strstr(m->sim_state, "absent") || strstr(m->sim_state, "no_sim"))
+                                                                              { st = "无卡"; stc = "muted"; }
+                else                                                          { st = "未连接"; stc = "q-mid"; }
+                fmt_speed_u(rx, sizeof rx, m->rx_speed, g_speed_bits);
+                fmt_speed_u(tx, sizeof tx, m->tx_speed, g_speed_bits);
+                html_esc(oper, sizeof oper, m->oper[0] ? m->oper : "--");
+                if (m->has_temp) snprintf(temp, sizeof temp, "%d°", m->temp);
+                else             snprintf(temp, sizeof temp, "--");
+                o += snprintf(s_modemcards + o, sizeof s_modemcards - o,
+                    "<div class='mrow'><div class='mh'><span class='chip %s'>%s</span>"
+                    "<span class='mo'>%s</span><span class='mst %s'>%s</span></div>"
+                    "<div class='mm'><span class='ml'>%s</span><b class='%s'>%s</b>"
+                    "<span class='ml ml2'>SINR</span><b>%s</b><span class='mb'>%s · %s</span></div>"
+                    "<div class='mr'><span class='acc'>↓</span>%s <span class='acc2'>↑</span>%s</div></div>",
+                    nr ? "g5" : "g4", m->id, oper, stc, st,
+                    nr ? "NR" : "RSRP", signal_rsrp_class(rsrp), rsrp, sinr, band, temp, rx, tx);
+            }
+            if (o < (int)sizeof s_modemcards)
+                snprintf(s_modemcards + o, sizeof s_modemcards - o, "</div>");
+        }
+
+        if (d.agg_present) {
+            int o = 0;
+            if (g_agg_on == 0)
+                snprintf(s_aggstate, sizeof s_aggstate, "已关闭 · 多链路负载均衡");
+            else if (d.agg_online)
+                snprintf(s_aggstate, sizeof s_aggstate, "在线 · %d/%d 条链路", d.agg_paths_online, d.agg_paths);
+            else
+                snprintf(s_aggstate, sizeof s_aggstate, "连接中 · %d/%d 条链路", d.agg_paths_online, d.agg_paths);
+            if ((int32_t)(tnow - g_agg_armed_until) < 0)
+                snprintf(s_aggstate, sizeof s_aggstate, "再点一次关闭聚合");
+            if (g_agg_on == 0) snprintf(s_aggsum, sizeof s_aggsum, "已关闭");
+            else               snprintf(s_aggsum, sizeof s_aggsum, "%d/%d 在线", d.agg_paths_online, d.agg_paths);
+            for (int k = 0; g_agg_on != 0 && k < d.agg_path_n && o < (int)sizeof s_aggpaths; k++) {
+                const devui_agg_path_t *a = &d.agg_path[k];
+                char lab[24], lat[16], loss[16];
+                html_esc(lab, sizeof lab, a->label);
+                if (a->latency_ms >= 0) snprintf(lat, sizeof lat, "%.0f ms", a->latency_ms);
+                else                    snprintf(lat, sizeof lat, "-- ms");
+                if (a->loss_pct >= 0)   snprintf(loss, sizeof loss, "%.1f%%", a->loss_pct);
+                else                    snprintf(loss, sizeof loss, "--");
+                o += snprintf(s_aggpaths + o, sizeof s_aggpaths - o,
+                    "<div class='aggp'><span class='ad %s'></span><span class='an'>%s</span>"
+                    "<span class='av'>%s<span class='muted'> · 丢包 </span>%s</span></div>",
+                    a->online ? "on" : "off", lab, lat, loss);
+            }
+        }
+
+        if (d.cool_present) {
+            static const struct { const char *v, *lab; } fans[3] = {
+                { "automatic", "原厂" }, { "custom", "曲线" }, { "always_on", "常开" } };
+            static const struct { const char *v, *lab; } liqs[3] = {
+                { "automatic", "自动" }, { "low", "低档" }, { "high", "高档" } };
+            int o = snprintf(s_fanseg, sizeof s_fanseg, "<div class='seg seg3'>");
+            for (int k = 0; k < 3; k++)
+                o += snprintf(s_fanseg + o, sizeof s_fanseg - o, "<a href='act:fan:%s' class='segc%s'>%s</a>",
+                              fans[k].v, !strcmp(g_fan_mode, fans[k].v) ? " seg-on" : "", fans[k].lab);
+            snprintf(s_fanseg + o, sizeof s_fanseg - o, "</div>");
+            o = snprintf(s_liqseg, sizeof s_liqseg, "<div class='seg seg3'>");
+            for (int k = 0; k < 3; k++)
+                o += snprintf(s_liqseg + o, sizeof s_liqseg - o, "<a href='act:liq:%s' class='segc%s'>%s</a>",
+                              liqs[k].v, !strcmp(g_liq_mode, liqs[k].v) ? " seg-on" : "", liqs[k].lab);
+            snprintf(s_liqseg + o, sizeof s_liqseg - o, "</div>");
+            snprintf(s_fanstate, sizeof s_fanstate, "%d%% · %d°C", d.fan_pct, d.fan_temp);
+            if (d.liquid_active) snprintf(s_liqstate, sizeof s_liqstate, "运行中 · %d%%", d.liquid_pct);
+            else                 snprintf(s_liqstate, sizeof s_liqstate, "待机");
+        }
+
+        {   /* CPU and per-modem temperatures, two per row */
+            int o = snprintf(s_temps, sizeof s_temps, "<table class='grid2'><tr><td class='gl'>CPU <b>%ld°</b></td>",
+                             d.cpu_temp);
+            for (int k = 0; k < d.modem_n; k++) {
+                char v[12];
+                if (d.modem[k].has_temp) snprintf(v, sizeof v, "%d°", d.modem[k].temp);
+                else                     snprintf(v, sizeof v, "--");
+                o += snprintf(s_temps + o, sizeof s_temps - o, "%s<td%s>%s <b>%s</b></td>",
+                              (k + 1) % 2 == 0 ? "</tr><tr>" : "", (k + 1) % 2 == 0 ? " class='gl'" : "",
+                              d.modem[k].id, v);
+            }
+            if ((d.modem_n + 1) % 2) o += snprintf(s_temps + o, sizeof s_temps - o, "<td></td>");
+            snprintf(s_temps + o, sizeof s_temps - o, "</tr></table>");
+        }
+
+        snprintf(s_ccextra, sizeof s_ccextra,
+            "<div class='cc-grid cc2'>"
+            "<a href='act:agg' class='ccb %s'><span class='ccc' id='cc-agg'></span><span class='ccl'>%s</span></a>"
+            "<a href='act:fanon' class='ccb %s'><span class='ccc' id='cc-fan'></span><span class='ccl'>风扇常开</span></a>"
+            "<a href='act:liqon' class='ccb %s'><span class='ccc' id='cc-liq'></span><span class='ccl'>液冷</span></a>"
+            "</div>",
+            g_dial.agg_on ? "on" : "off",
+            (int32_t)(tnow - g_agg_armed_until) < 0 ? "再点关闭" : "聚合",
+            g_dial.fan_on ? "on" : "off", g_dial.liq_on ? "on" : "off");
+    }
+
     int connected = strstr(d.wan_status, "connect") != NULL;
     int wifi_master = (g_w24 == 1 || g_w5 == 1);
     int i = 0;
@@ -5315,6 +5590,17 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "SMSLIST", s_smslist };
     t[i++] = (struct kv){ "DHCP_POOL", g_dhcp_pool[0] ? g_dhcp_pool : s_pool };
     t[i++] = (struct kv){ "DHCP_LEASE", s_lease };
+    t[i++] = (struct kv){ "MODEMCARDS", s_modemcards };
+    t[i++] = (struct kv){ "AGGCLASS", g_dial.agg_on ? "on" : "off" };
+    t[i++] = (struct kv){ "AGGSTATE", s_aggstate };
+    t[i++] = (struct kv){ "AGGSUM", s_aggsum };
+    t[i++] = (struct kv){ "AGGPATHS", s_aggpaths };
+    t[i++] = (struct kv){ "FANSEG", s_fanseg };
+    t[i++] = (struct kv){ "FANSTATE", s_fanstate };
+    t[i++] = (struct kv){ "LIQSEG", s_liqseg };
+    t[i++] = (struct kv){ "LIQSTATE", s_liqstate };
+    t[i++] = (struct kv){ "TEMPS", s_temps };
+    t[i++] = (struct kv){ "CCEXTRA", s_ccextra };
 
     /* ---- lock screen (PIN pad): dots reflect typed digits. ---- */
     static char s_pindots[512], s_lockaux[140];
@@ -5342,7 +5628,7 @@ static int build_kv(struct kv *t, const char *path)
 
 static void refresh_status_cache(void)
 {
-    struct kv t[192];
+    struct kv t[256];
     (void)build_kv(t, NULL);
 }
 
@@ -5360,7 +5646,7 @@ static const char *custom_page_html(const char *path)
     const char *start, *end, *body, *gt;
     char *body_src;
     size_t len;
-    struct kv t[192];
+    struct kv t[256];
     int n;
     char raw_title[96], title[160];
     const char *base;
@@ -5426,7 +5712,7 @@ static const char *page_html(const char *path)
     if (path_is_function_page(path)) return custom_page_html(path);
     const char *tmpl = read_template_cached(path);   /* cache templates with mtime invalidation */
     if (!tmpl) return NULL;
-    struct kv t[192];
+    struct kv t[256];
     int n = build_kv(t, path);
     char *html = apply_template(tmpl, t, n);
     return html;
@@ -5634,8 +5920,51 @@ static void draw_speedtest_widgets(void)
 /* ---- pulled sheets: open/close with a vertical slide ---- */
 #define EDGE_ZONE_PX 30      /* status bar / page-dot strip a sheet pull starts on */
 #define EDGE_PULL_PX 60      /* vertical travel that commits a sheet pull */
-static const int g_panel_rot = 1;   /* the panel is mounted upside down (html_view_init) */
+/* The U60 Pro panel is mounted upside down, so the framebuffer holds the page
+ * rotated 180 degrees; the TopFlow panel is upright (set in main()). */
+static int g_panel_rot = 1;
 static uint16_t g_slide_a[320 * 480], g_slide_b[320 * 480];
+
+/* Logical row y of the framebuffer: write n pixels from src at logical x0. */
+static void fb_put_row(drm_disp_t *d, int y, int x0, const uint16_t *src, int n)
+{
+    if (n <= 0) return;
+    if (!g_panel_rot) {
+        memcpy(d->fb + (size_t)y * d->pitch_px + x0, src, (size_t)n * sizeof *src);
+        return;
+    }
+    uint16_t *dp = d->fb + (size_t)(d->height - 1 - y) * d->pitch_px + (d->width - 1 - x0);
+    for (int i = 0; i < n; i++) *dp-- = src[i];
+}
+
+static void fb_fill_row(drm_disp_t *d, int y, uint16_t px)
+{
+    uint16_t *dp = d->fb + (size_t)(g_panel_rot ? d->height - 1 - y : y) * d->pitch_px;
+    for (int i = 0; i < d->width; i++) dp[i] = px;
+}
+
+static uint16_t fb_get(const drm_disp_t *d, int x, int y)
+{
+    return g_panel_rot ? d->fb[(size_t)(d->height - 1 - y) * d->pitch_px + (d->width - 1 - x)]
+                       : d->fb[(size_t)y * d->pitch_px + x];
+}
+
+/* The U60 Pro panel is upside down, the TopFlow one upright; touch follows
+ * the panel (they are one TDDI chip). */
+static void apply_panel_rotation(drm_disp_t *d, touch_input_t *t)
+{
+    g_panel_rot = !dev_is_tf();
+    d->rot180 = g_panel_rot;
+    html_view_set_rotate(g_panel_rot);
+    if (t) t->rot180 = g_panel_rot;
+}
+
+/* Push logical rows [y0, y1]. */
+static void fb_dirty_rows(drm_disp_t *d, int y0, int y1)
+{
+    if (g_panel_rot) drm_disp_dirty(d, 0, d->height - 1 - y1, d->width - 1, d->height - 1 - y0);
+    else             drm_disp_dirty(d, 0, y0, d->width - 1, y1);
+}
 
 /* Copy logical row r of src (a full-frame snapshot) to logical row dst_r of the fb. */
 static void slide_row(drm_disp_t *d, const uint16_t *src, int r, int dst_r)
@@ -5728,7 +6057,7 @@ static void maybe_dump_fb(drm_disp_t *d)
     const int W = d->width, H = d->height, pp = d->pitch_px;
     for (int y = 0; y < H; y++) {
         for (int x = 0; x < W; x++) {
-            uint16_t px = d->fb[(size_t)(H - 1 - y) * pp + (W - 1 - x)];
+            uint16_t px = fb_get(d, x, y);
             fwrite(&px, sizeof px, 1, f);
         }
     }
@@ -5846,17 +6175,6 @@ static int motion_frame_due(uint32_t now, uint32_t *last)
     return 0;
 }
 
-static inline uint16_t *copy_rev_span(uint16_t *dp, const uint16_t *src, int n)
-{
-    for (int i = 0; i < n; i++) *dp-- = src[i];
-    return dp;
-}
-
-static inline void fill_rev_span(uint16_t *dp, uint16_t px, int n)
-{
-    while (n-- > 0) *dp-- = px;
-}
-
 static float clamp_scroll_v(float v)
 {
     if (v >  SCROLL_INERTIA_MAX_V) return  SCROLL_INERTIA_MAX_V;
@@ -5866,19 +6184,17 @@ static float clamp_scroll_v(float v)
 
 static void compose_frame(drm_disp_t *d, int o)
 {
-    const int W = d->width, H = d->height, pp = d->pitch_px;
+    const int W = d->width, H = d->height;
     int left;
     if (o < 0) o = 0; if (o > W) o = W;
     left = W - o;
     for (int y = SBAR_H; y < H; y++) {
-        uint16_t *dp = d->fb + (size_t)(H - 1 - y) * pp + (W - 1);
         const uint16_t *lr = g_bufA + (size_t)y * W, *rr = g_bufB + (size_t)y * W;
-        if (left > 0) dp = copy_rev_span(dp, lr + o, left);
-        if (o > 0)    copy_rev_span(dp, rr, o);
+        fb_put_row(d, y, 0, lr + o, left);
+        fb_put_row(d, y, left, rr, o);
     }
-    /* Only the content area changes during a horizontal swipe. With the
-     * framebuffer rotated 180 degrees that maps to the top physical rows. */
-    drm_disp_dirty(d, 0, 0, W - 1, H - SBAR_H - 1);
+    /* Only the content area below the status bar changes during a horizontal swipe. */
+    fb_dirty_rows(d, SBAR_H, H - 1);
     maybe_dump_fb(d);
 }
 
@@ -5910,9 +6226,8 @@ static void prep_current(const drm_disp_t *d, uint16_t *buf)
         return;
     }
     for (int y = 0; y < H; y++) {
-        const uint16_t *sp = d->fb + (size_t)(H - 1 - y) * d->pitch_px + (W - 1);
         uint16_t *dp = buf + (size_t)y * W;
-        for (int x = 0; x < W; x++) dp[x] = *sp--;
+        for (int x = 0; x < W; x++) dp[x] = fb_get(d, x, y);
     }
 }
 
@@ -5961,13 +6276,11 @@ static int g_scroll_h;
 
 static void scroll_blit(drm_disp_t *d, int scroll)
 {
-    const int W = d->width, Hh = d->height, pp = d->pitch_px;
+    const int W = d->width, Hh = d->height;
     for (int y = SBAR_H; y < Hh; y++) {
         int sy = y + scroll;
-        const uint16_t *src = (sy >= 0 && sy < g_scroll_h) ? &g_scrollbuf[(size_t)sy * W] : NULL;
-        uint16_t *dp = d->fb + (size_t)(Hh - 1 - y) * pp + (W - 1);
-        if (src) copy_rev_span(dp, src, W);
-        else     fill_rev_span(dp, 0, W);
+        if (sy >= 0 && sy < g_scroll_h) fb_put_row(d, y, 0, &g_scrollbuf[(size_t)sy * W], W);
+        else                            fb_fill_row(d, y, 0);
     }
     html_view_set_scroll(scroll);
     /* the page buffer has no native drawings: add them for this window, kept
@@ -5978,10 +6291,8 @@ static void scroll_blit(drm_disp_t *d, int scroll)
     draw_func_icons();
     html_view_set_clip_top(0);
     if (!g_lock_state && (path_is_speedtest(active_page_path()) || g_st_home_open)) draw_speedtest_widgets();
-    /* The native status bar is pinned; dragging only changes the content below it.
-     * With the framebuffer rotated 180 degrees, that content maps to the top
-     * framebuffer rows, so the dirty rectangle intentionally excludes the tail. */
-    drm_disp_dirty(d, 0, 0, W - 1, Hh - SBAR_H - 1);
+    /* The native status bar is pinned; dragging only changes the content below it. */
+    fb_dirty_rows(d, SBAR_H, Hh - 1);
 }
 
 /* fb snapshot for fast overlay refresh (modal toggles, segmented-control drag):
@@ -6196,6 +6507,7 @@ int main(void)
     signal(SIGTERM, on_sig);
 
     g_charge_boot = boot_is_charge_mode();
+    device_init();
     if (!g_charge_boot) {
         scan_pages();
         if (g_npages == 0) { fprintf(stderr, "no pages in %s\n", UI_DIR); return 1; }
@@ -6212,6 +6524,8 @@ int main(void)
     backlight_init();
     (void)data_backend_init();
     (void)data_backend_commit_latest();
+    (void)device_update(data_model_tag());   /* pages are rescanned below */
+    apply_panel_rotation(&disp, &touch);
 
     if (!g_charge_boot && !touch_ok && boot_has_external_power()) {
         fprintf(stderr, "boot: forcing charge UI (touch missing, external power present)\n");
@@ -6267,7 +6581,7 @@ int main(void)
     if (!g_charge_boot) {
         load_pin();
         aux_start();                          /* page-2 switch states etc., off this thread */
-        if (usb_pid_is("9057") || usb_pid_is("90b1") || usb_pid_is("90B1"))
+        if (!dev_is_tf() && (usb_pid_is("9057") || usb_pid_is("90b1") || usb_pid_is("90B1")))
             usb_net_watchdog_start();
         enter_lock(0);                        /* boot into the locked preview */
         render(&disp, CUR_PATH);
@@ -6779,8 +7093,8 @@ int main(void)
                 else if (segging) {   /* snap to nearest cell + apply */
                     int c = clampi((x - seg_x) * seg_n / (seg_w > 0 ? seg_w : 1), 0, seg_n - 1);
                     if (seg_which == 1) {
-                        net_mode_apply(g_netmodes[c].v);
-                        snprintf(g_net_pending, sizeof g_net_pending, "%s", g_netmodes[c].v);
+                        net_mode_apply(netmode_value(c));
+                        snprintf(g_net_pending, sizeof g_net_pending, "%s", netmode_value(c));
                     } else if (seg_which == 2) {
                         g_autooff_ms = g_autooffs[c].ms; last_act = now; save_conf();
                     } else {
@@ -6914,8 +7228,11 @@ int main(void)
                             int on = (g_w24 == 1 || g_w5 == 1);
                             const char *ic = on ? "down" : "up";
                             char cmd[160];
-                            snprintf(cmd, sizeof cmd,
-                                "(ifconfig wlan0 %s; ifconfig wlan2 %s) >/dev/null 2>&1", ic, ic);
+                            if (dev_is_tf())   /* TopFlow: wlan0 is the only main AP netdev */
+                                snprintf(cmd, sizeof cmd, "ifconfig wlan0 %s >/dev/null 2>&1", ic);
+                            else
+                                snprintf(cmd, sizeof cmd,
+                                    "(ifconfig wlan0 %s; ifconfig wlan2 %s) >/dev/null 2>&1", ic, ic);
                             datad_control_async("wifi.set_module",
                                                 on ? "{\"enabled\":false}" : "{\"enabled\":true}", cmd);
                             g_w24 = g_w5 = !on;
@@ -6927,14 +7244,60 @@ int main(void)
                             int on = (is24 ? g_w24 : g_w5) == 1;
                             char cmd[120], params[48];
                             snprintf(cmd, sizeof cmd, "ifconfig %s %s >/dev/null 2>&1",
-                                     is24 ? "wlan0" : "wlan2", on ? "down" : "up");
+                                     dev_is_tf() ? "wlan0" : is24 ? "wlan0" : "wlan2", on ? "down" : "up");
                             snprintf(params, sizeof params, "{\"band\":\"%s\",\"enabled\":%s}",
                                      is24 ? "2g" : "5g", on ? "false" : "true");
                             /* datad refuses layouts the firmware cannot start (last band,
                              * three APs on U60 Pro); the next wifi.state read shows that. */
-                            datad_control_async("wifi.radio.set", params, cmd);
+                            /* no netdev to fall back on for the TopFlow 2.4G radio */
+                            datad_control_async("wifi.radio.set", params,
+                                                dev_is_tf() && is24 ? NULL : cmd);
                             if (is24) g_w24 = !on; else g_w5 = !on;
                             g_wifi_hold_until = now + 8000;
+                            need_render = 1;
+                        }
+                        else if (dev_is_tf() && !strcmp(a, "agg")) {
+                            /* aggregation on: one tap; off drops the bonded link, so arm first */
+                            if (g_agg_on == 1 && (int32_t)(now - g_agg_armed_until) >= 0) {
+                                g_agg_armed_until = now + 4000;
+                                snprintf(g_toast, sizeof g_toast, "再点一次关闭聚合");
+                                g_toast_until = now + 2000;
+                            } else {
+                                int on = g_agg_on != 1;
+                                datad_control_async("aggregation.set",
+                                                    on ? "{\"enabled\":true}" : "{\"enabled\":false}", NULL);
+                                g_agg_on = on;
+                                g_agg_armed_until = 0;
+                                g_agg_hold_until = now + 15000;
+                                snprintf(g_toast, sizeof g_toast, on ? "正在开启聚合" : "正在关闭聚合");
+                                g_toast_until = now + 1600;
+                            }
+                            need_render = 1;
+                        }
+                        else if (dev_is_tf() && (!strncmp(a, "fan:", 4) || !strcmp(a, "fanon"))) {
+                            /* fanon: control-center toggle between always-on and the curve */
+                            const char *m = a[3] == ':' ? a + 4 :
+                                            !strcmp(g_fan_mode, "always_on") ? "custom" : "always_on";
+                            if (!strcmp(m, "automatic") || !strcmp(m, "custom") || !strcmp(m, "always_on")) {
+                                char params[48];
+                                snprintf(params, sizeof params, "{\"mode\":\"%s\"}", m);
+                                datad_control_async("cooling.fan.set_mode", params, NULL);
+                                snprintf(g_fan_mode, sizeof g_fan_mode, "%s", m);
+                                g_fan_hold_until = now + 5000;
+                            }
+                            need_render = 1;
+                        }
+                        else if (dev_is_tf() && (!strncmp(a, "liq:", 4) || !strcmp(a, "liqon"))) {
+                            /* liqon: control-center toggle between high and automatic */
+                            const char *m = a[3] == ':' ? a + 4 :
+                                            (!strcmp(g_liq_mode, "low") || !strcmp(g_liq_mode, "high")) ? "automatic" : "high";
+                            if (!strcmp(m, "automatic") || !strcmp(m, "low") || !strcmp(m, "high")) {
+                                char params[48];
+                                snprintf(params, sizeof params, "{\"mode\":\"%s\"}", m);
+                                datad_control_async("cooling.liquid.set_mode", params, NULL);
+                                snprintf(g_liq_mode, sizeof g_liq_mode, "%s", m);
+                                g_liq_hold_until = now + 5000;
+                            }
                             need_render = 1;
                         }
                         else if (!strcmp(a, "dps")) {   /* power direct-supply mode */
@@ -6992,6 +7355,10 @@ int main(void)
                              * datad has no action for it. */
                             if (g_adb_pending) system(cmd);
                             else datad_control_async("usb.set", "{\"mode\":\"user\"}", cmd);
+                            need_render = 1;
+                        }
+                        else if (dev_is_tf() && (!strcmp(a, "usbpower") || !strcmp(a, "usbnet"))) {
+                            /* no reverse charging or USB tethering on the TopFlow */
                             need_render = 1;
                         }
                         else if (!strcmp(a, "usbpower")) {
@@ -7287,6 +7654,12 @@ action_done:
 
         if (!g_charge_boot && now - g_pages_scan_at >= 1000) {
             g_pages_scan_at = now;
+            if (device_update(data_model_tag())) {
+                apply_panel_rotation(&disp, &touch);
+                rescan_pages_keep_current();
+                invalidate_render_html_cache();
+                need_render = 1;
+            }
             if (rescan_pages_if_changed()) need_render = 1;
         }
 
