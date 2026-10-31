@@ -35,7 +35,7 @@
 ├── 02-functions.html # 第 2 页：更多功能入口
 ├── 05-charts.html    # 第 5 页：CPU / 内存 / 网速 图表
 ├── 06-system.html    # 第 6 页：系统信息 / 屏幕 / 开关（含锁屏开关）
-├── subpages/         # 内置二级页面：wifi / sms / cell / lock / speedtest，以及下拉的控制中心 control
+├── subpages/         # 内置二级页面：wifi / sms / cell / lock / speedtest / glass，以及下拉的控制中心 control
 ├── functions/        # 用户自定义功能页，*.html 会自动出现在更多功能页
 ├── menu.html         # 电源键长按弹出的菜单（不算翻页）
 ├── lockscreen.html   # 锁屏 PIN 键盘（不算翻页，开启锁屏后覆盖显示）
@@ -155,7 +155,7 @@ litehtml 不是浏览器，**限制比较多**，踩坑前先看这里：
 | `{{BRIGHTBAR}}` | 自动亮度开启时为 `auto`，加在亮度滑条上把它隐藏，只留百分比 | `auto` / 空 |
 | `{{AUTOOFF}}` | 自动息屏预设按钮组(整段，当前项高亮) | |
 | `{{CURSA}}` `{{CURNSA}}` `{{CURLTE}}` | 各制式当前锁定频段摘要 | `已锁 n41 n78` |
-| `{{USBPWRCLASS}}/{{USBPWRSTATE}}` `{{USBNETCLASS}}/{{USBNETSTATE}}` `{{BATPCTCLASS}}/{{BATPCTSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{WIFI24CLASS}}/{{WIFI24STATE}}` `{{WIFI5CLASS}}/{{WIFI5STATE}}` `{{PSMCLASS}}/{{PSMSTATE}}` `{{DPSCLASS}}/{{DPSSTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMESTATE}}`（主题名，如 `海洋`） `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{LOCKCLASS}}/{{LOCKSTATE}}` | 各开关的类(`on`/`off`) 与状态文字 | `on` / `已开启` |
+| `{{USBPWRCLASS}}/{{USBPWRSTATE}}` `{{USBNETCLASS}}/{{USBNETSTATE}}` `{{BATPCTCLASS}}/{{BATPCTSTATE}}` `{{SBSPEEDCLASS}}/{{SBSPEEDSTATE}}` `{{TEXTADAPTCLASS}}/{{TEXTADAPTSTATE}}` `{{WIFICLASS}}/{{WIFISTATE}}` `{{WIFI24CLASS}}/{{WIFI24STATE}}` `{{WIFI5CLASS}}/{{WIFI5STATE}}` `{{PSMCLASS}}/{{PSMSTATE}}` `{{DPSCLASS}}/{{DPSSTATE}}` `{{NFCCLASS}}/{{NFCSTATE}}` `{{THEMESTATE}}`（主题名，如 `海洋`） `{{SPUNITCLASS}}/{{SPUNITSTATE}}` `{{LOCKCLASS}}/{{LOCKSTATE}}` | 各开关的类(`on`/`off`) 与状态文字 | `on` / `已开启` |
 | `{{LOCKTITLE}}` | 锁屏键盘标题（设置时「设置锁屏密码」/ 解锁时「请输入锁屏密码」） | |
 | `{{PAGE}}` `{{NPAGES}}` | 当前页 / 总页数 | `3` / `5` |
 
@@ -189,6 +189,10 @@ TopFlow（MU5252）专用令牌，在其他机型上为空或 `—`：
 | `act:usbpower` | 切换 USB-C 供电方向：给 U60 充电 / U60 反向供电 |
 | `act:usbnet` | 切换 USB 网络共享：开启时先走官方 `9057` RNDIS:ECM（无 ADB），若无 carrier 自动降到纯 ECM `90B1`；关闭时回到无网卡的 `1225 mass_storage` |
 | `act:batpct` | 切换状态栏电池框内百分比显示 |
+| `act:sbspeed` | 切换状态栏网速（时钟右侧上下两行，默认关） |
+| `act:textadapt` | 切换文字自动变色（默认开，见“壁纸与液态玻璃”） |
+| `act:glass` | 点在 `id="glass-bar"` 的条上设玻璃透明度；按住条拖动时跟手调节 |
+| `act:glasstint:N` | 玻璃颜色：0 夜蓝、1 石墨、2 白雾、3 主题色 |
 | `act:wifi` `act:nfc` | 切换 WiFi 总开关（两个主频段）/ NFC 碰一碰 |
 | `act:wifi24` `act:wifi5` | 切换 2.4G / 5G 主频段（`ifconfig wlan0/wlan2 up/down`） |
 | `act:psm` | 切换 WiFi 节能模式（`iw set power_save`，开=省电 / 关=高性能） |
@@ -267,18 +271,22 @@ TopFlow（MU5252）专用令牌，在其他机型上为空或 `—`：
 
 ### 壁纸与液态玻璃
 
-插件把壁纸存成安装目录下的 `wallpaper.jpg`（320×480），把设置存成 `wallpaper.conf`：`glass=` 按钮透明度 0–100，`dim=` 壁纸暗度 0–90。两个文件改了约 1 秒内生效，删掉 `wallpaper.jpg` 就回到主题底色。
+插件把壁纸存成安装目录下的 `wallpaper.jpg`（320×480），把设置存成 `wallpaper.conf`：`glass=` 按钮透明度 0–100，`dim=` 壁纸暗度 0–90，`tint=` 玻璃颜色（同 `act:glasstint`）。两个文件改了约 1 秒内生效，删掉 `wallpaper.jpg` 就回到主题底色。屏幕上的设置页“玻璃效果”（`subpages/glass.html`）也能调透明度和颜色，会改写 `wallpaper.conf`。
+
+玻璃设置的令牌：`{{GLASS}}`（透明度数字）、`{{GLASSTINT}}`（颜色名）、`{{GLASSTINTSEG}}`（整排颜色选项）。
 
 CSS 里有两个内建的背景图：
 
-- `url(wallpaper)`：壁纸。设了壁纸时 `<body>` 会多一个 `wp` 类，默认样式写的是 `body.wp { background: #070c15 url(wallpaper); }`。壁纸跟着页面滚动，超过一屏后镜像续接；状态栏下面画的是同一张壁纸。
+- `url(wallpaper)`：壁纸。设了壁纸时 `<body>` 会多一个 `wp` 类，默认样式写的是 `body.wp { background: #070c15 url(wallpaper); }`。壁纸固定在屏幕上：翻页、滚动、拉面板、右滑返回时只有页面内容在动，壁纸和状态栏下面的那一截都不动。
 - `url(glass)`：液态玻璃。框里是它下面的壁纸（没有壁纸时是页面底色）经过模糊、边缘像透镜一样往里弯，再按透明度混入深色面板，边缘有一圈上亮下暗的高光。边框写成 `transparent`，高光由程序画。
 
 ```css
 .mybtn { border-radius: 16px; background: url(glass); border: 1px solid transparent; }
 ```
 
-玻璃直接取壁纸，不取叠在下面的其他框，所以别把玻璃框放进另一个玻璃框里；卡片里的小按钮照旧用 `rgba()` 半透明色。有壁纸时文字会带一道很淡的阴影，好在亮处看清。
+玻璃直接取壁纸，不取叠在下面的其他框，所以别把玻璃框放进另一个玻璃框里；卡片里的小按钮照旧用 `rgba()` 半透明色。有壁纸时浅色文字会带一道很淡的阴影，好在亮处看清。
+
+**文字自动变色**（设置页开关，默认开）：每个字按它底下那一格的亮度判断，浅色字落在浅色背景上（壁纸亮处、白雾玻璃）就压成同色相的深色，保留主次深浅；状态栏的图标也一样。默认深色界面上的浅色字不受影响。
 
 ### 上下拉面板
 

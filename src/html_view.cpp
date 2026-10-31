@@ -270,8 +270,10 @@ static inline int R(pixel_t v) { return (int)floorf(v + 0.5f); }
 /* ---- wallpaper and liquid glass ----
  * The wallpaper is cover-scaled to the 320x480 page once and kept twice: dimmed
  * RGB565 for the page background and a blurred RGB copy that glass boxes show
- * through. It is attached to the page, so it scrolls with it; past one screen
- * it continues mirrored. CSS asks for it with url(wallpaper) and for a glass box
+ * through. It is pinned to the screen: whatever the scroll, buffer row y shows
+ * wallpaper row y (mirrored past one screen in the tall scroll buffer, where
+ * the host swaps it for the screen row while blitting; see htmlmain.c).
+ * CSS asks for it with url(wallpaper) and for a glass box
  * with url(glass) (see style.css). */
 extern "C" unsigned char *stbi_load(const char *filename, int *x, int *y, int *comp, int req_comp);
 extern "C" void stbi_image_free(void *retval_from_stbi_load);
@@ -281,7 +283,7 @@ static std::vector<uint16_t> g_wp;      /* WP_W*WP_H dimmed, dithered */
 static std::vector<uint8_t>  g_wp_blur; /* WP_W*WP_H*3 dimmed, blurred */
 static int  g_glass_clear = 50;         /* glass transparency, 0 (solid) .. 100 (clear) */
 static bool g_wp_drawn;                 /* the current page painted the wallpaper */
-static int  g_wp_top;                   /* screen y of wallpaper row 0 on that page */
+static int  g_tint_r = 22, g_tint_g = 30, g_tint_b = 44;   /* glass pane colour */
 
 /* Wallpaper row for page row y: rows past the image mirror back. */
 static inline int wp_row(int y)
@@ -363,6 +365,14 @@ extern "C" int html_view_load_wallpaper(const char *path, int dim)
 
 extern "C" int  html_view_wallpaper_on(void) { return !g_wp.empty(); }
 extern "C" void html_view_set_glass(int clear) { g_glass_clear = std::min(std::max(clear, 0), 100); }
+extern "C" void html_view_set_glass_tint(int r, int g, int b) { g_tint_r = r; g_tint_g = g; g_tint_b = b; }
+
+/* Wallpaper row as drawn into buffer row y (rows past the image mirror), or
+ * NULL without a wallpaper: the host compares moving frames against it. */
+extern "C" const uint16_t *html_view_wallpaper_row(int y)
+{
+    return g_wp.empty() ? nullptr : &g_wp[(size_t)wp_row(y) * WP_W];
+}
 
 /* Distance of the centre of pixel (x, y) inside a rounded rect (negative
  * outside) and the outward normal of the nearest edge. */
@@ -409,14 +419,14 @@ static void glass_box(int bx, int by, int bw, int bh, int rtl, int rtr, int rbr,
                 float k = d < lens ? (1.f - d / lens) : 0.f;
                 int sx = x - (int)lrintf(nx * 7.f * k * k), sy = y - (int)lrintf(ny * 7.f * k * k);
                 sx = std::min(std::max(sx, 0), WP_W - 1);
-                const uint8_t *p = &g_wp_blur[((size_t)wp_row(sy - g_wp_top) * WP_W + sx) * 3];
+                const uint8_t *p = &g_wp_blur[((size_t)wp_row(sy) * WP_W + sx) * 3];
                 r = p[0]; g = p[1]; b = p[2];
             } else {
                 uint16_t o = get_px565(x, y);
                 r = (float)(((o >> 11) & 0x1F) << 3); g = (float)(((o >> 5) & 0x3F) << 2); b = (float)((o & 0x1F) << 3);
             }
             /* the pane, then a faint frost so even clear glass reads as a surface */
-            r += (22.f - r) * pane; g += (30.f - g) * pane; b += (44.f - b) * pane;
+            r += ((float)g_tint_r - r) * pane; g += ((float)g_tint_g - g) * pane; b += ((float)g_tint_b - b) * pane;
             r += (255.f - r) * .06f; g += (255.f - g) * .06f; b += (255.f - b) * .06f;
             /* rim: about 1.5 px, brightest where the edge faces up */
             float rim = clampf01(1.5f - d) * (.10f + .32f * std::max(0.f, -ny) + .06f * std::max(0.f, -nx));
@@ -426,6 +436,53 @@ static void glass_box(int bx, int by, int bw, int bh, int rtl, int rtr, int rbr,
             r += (255.f - r) * rim; g += (255.f - g) * rim; b += (255.f - b) * rim;
             put_px_dither(x, y, (int)r, (int)g, (int)b, cov_alpha(cov, 255));
         }
+}
+
+/* ---- text colour that follows the background ----
+ * With a wallpaper or light glass, light text can land on a light patch. When
+ * on, each character looks at the average brightness under its cell; if the
+ * text has too little contrast there it is pulled to the other end, keeping
+ * its hue and its rank (dim text stays dimmer than bright text). The default
+ * dark pages are left as designed: light text on dark never changes. */
+static bool g_text_adapt = true;
+
+static inline int luma(int r, int g, int b) { return (r * 299 + g * 587 + b * 114) / 1000; }
+
+/* Average luma of the framebuffer over a box, every other pixel. */
+static int fb_luma(int x, int y, int w, int h)
+{
+    long sum = 0, n = 0;
+    for (int yy = std::max(y, 0); yy < std::min(y + h, g_h); yy += 2)
+        for (int xx = std::max(x, 0); xx < std::min(x + w, g_w); xx += 2, n++) {
+            uint16_t o = get_px565(xx, yy);
+            sum += luma(((o >> 11) & 0x1F) << 3, ((o >> 5) & 0x3F) << 2, (o & 0x1F) << 3);
+        }
+    return n ? (int)(sum / n) : 0;
+}
+
+/* Adjust (r, g, b) for a ground of luma bl. */
+static void adapt_rgb(int bl, int &r, int &g, int &b)
+{
+    int tl = luma(r, g, b);
+    if (bl >= 140 && tl > bl - 70) {                 /* light on light: darken */
+        int target = std::max(16, bl - 150 + (255 - tl) * 3 / 5);
+        if (tl > 0) {
+            r = std::min(255, r * target / tl); g = std::min(255, g * target / tl); b = std::min(255, b * target / tl);
+        }
+    } else if (bl < 110 && tl < bl + 30) {           /* dark on dark: lighten */
+        int target = std::min(240, bl + 150), k = tl < 255 ? (target - tl) * 256 / (255 - tl) : 0;
+        r += (255 - r) * k / 256; g += (255 - g) * k / 256; b += (255 - b) * k / 256;
+    }
+}
+
+extern "C" void html_view_set_text_adapt(int on) { g_text_adapt = !!on; }
+
+/* A colour for host drawings (status-bar icons) over the box, as text there would get. */
+extern "C" unsigned html_view_adapt_color(int x, int y, int w, int h, unsigned rgb)
+{
+    int r = rgb >> 16 & 255, g = rgb >> 8 & 255, b = rgb & 255;
+    if (g_text_adapt) adapt_rgb(fb_luma(x, y, w, h), r, g, b);
+    return (unsigned)(r << 16 | g << 8 | b);
 }
 
 /* ---- container ---- */
@@ -529,26 +586,30 @@ public:
     void draw_text(uint_ptr, const char *text, uint_ptr h, web_color color, const position &pos) override {
         auto *f = (ft_font *)h;
         position cl = eff_clip();
-        /* over a wallpaper, a soft shadow one pixel down keeps text readable on light spots */
-        for (int pass = g_wp_drawn ? 0 : 1; pass < 2; pass++) {
-            int pen = R(pos.x), base = R(pos.y) + f->ascent + (pass ? 0 : 1);
-            int cr = pass ? color.red : 0, cg = pass ? color.green : 0, cb = pass ? color.blue : 0;
-            int ca = pass ? color.alpha : color.alpha * 2 / 5;
-            for (const char *s = text; *s; ) {
-                const glyph &gl = glyph_get(utf8_next(s), f->size);
-                int ox = pen + gl.left, oy = base - gl.top;
+        int pen = R(pos.x), top = R(pos.y), base = top + f->ascent;
+        int cx1 = R(cl.left()), cy1 = R(cl.top()), cx2 = R(cl.right()), cy2 = R(cl.bottom());
+        for (const char *s = text; *s; ) {
+            const glyph &gl = glyph_get(utf8_next(s), f->size);
+            int tr = color.red, tg = color.green, tb = color.blue;
+            if (g_text_adapt)   /* each character by the background under its own cell */
+                adapt_rgb(fb_luma(pen, top, std::max(gl.adv, 1), R(pos.height)), tr, tg, tb);
+            /* light text over a wallpaper gets a soft shadow one pixel down for the light spots */
+            for (int pass = g_wp_drawn && luma(tr, tg, tb) > 128 ? 0 : 1; pass < 2; pass++) {
+                int cr = pass ? tr : 0, cg = pass ? tg : 0, cb = pass ? tb : 0;
+                int ca = pass ? color.alpha : color.alpha * 2 / 5;
+                int ox = pen + gl.left, oy = base - gl.top + (pass ? 0 : 1);
                 for (int r = 0; r < gl.h; r++) {
                     int yy = oy + r;
-                    if (yy < R(cl.top()) || yy >= R(cl.bottom())) continue;
+                    if (yy < cy1 || yy >= cy2) continue;
                     for (int cx = 0; cx < gl.w; cx++) {
                         int xx = ox + cx;
-                        if (xx < R(cl.left()) || xx >= R(cl.right())) continue;
+                        if (xx < cx1 || xx >= cx2) continue;
                         int a = gl.px[(size_t)r * gl.w + cx];
                         if (a) put_px(xx, yy, cr, cg, cb, a * ca / 255);
                     }
                 }
-                pen += gl.adv;
             }
+            pen += gl.adv;
         }
     }
 
@@ -706,11 +767,10 @@ public:
         } else if (url == "wallpaper" && !g_wp.empty()) {
             int bx = R(b.left());
             g_wp_drawn = true;
-            g_wp_top = R(b.top());
             x1 = std::max(x1, bx); x2 = std::min(x2, bx + WP_W);
             y1 = std::max({ y1, R(b.top()), g_clip_top }); y2 = std::min(y2, R(b.bottom()));
             for (int y = y1; y < y2; y++) {
-                const uint16_t *src = &g_wp[(size_t)wp_row(y - g_wp_top) * WP_W + (x1 - bx)];
+                const uint16_t *src = &g_wp[(size_t)wp_row(y) * WP_W + (x1 - bx)];
                 if (g_rotate) {
                     uint16_t *dp = &g_fb[(g_h - 1 - y) * g_pitch_px + (g_w - 1 - x1)];
                     for (int i = 0; i < x2 - x1; i++) *dp-- = src[i];
@@ -1016,14 +1076,14 @@ extern "C" void html_view_glass_rect(int x, int y, int w, int h, int rad)
     glass_box(x, y, w, h, rad, rad, rad, rad, 0, std::max(0, g_clip_top), g_w, g_h);
 }
 
-/* The wallpaper behind the native status bar, continuing the page under it at
- * the current scroll. Returns 0 (drawing nothing) when the page has none. */
+/* The wallpaper behind the native status bar. Returns 0 (drawing nothing)
+ * when the page has none. */
 extern "C" int html_view_wallpaper_rect(int x, int y, int w, int h)
 {
     if (g_wp.empty() || !g_wp_drawn) return 0;
     for (int yy = std::max(y, 0); yy < std::min(y + h, g_h); yy++)
         for (int xx = std::max(x, 0); xx < std::min(x + w, std::min(g_w, (int)WP_W)); xx++) {
-            uint16_t px = g_wp[(size_t)wp_row(yy + g_scroll_y) * WP_W + xx];
+            uint16_t px = g_wp[(size_t)wp_row(yy) * WP_W + xx];
             int dx = g_rotate ? (g_w - 1 - xx) : xx, dy = g_rotate ? (g_h - 1 - yy) : yy;
             g_fb[dy * g_pitch_px + dx] = px;
         }
@@ -1073,21 +1133,23 @@ extern "C" void html_view_draw_text_px(int x, int y, const char *text, int size,
                                        int r, int g, int b, int a)
 {
     if (!g_face || !text) return;
-    for (int sh = g_wp_drawn ? 1 : 0; sh >= 0; sh--) {   /* shadow first, as in draw_text */
-        int pen = x, base = y + font_ascent(size) + sh;
-        int cr = sh ? 0 : r, cg = sh ? 0 : g, cb = sh ? 0 : b, ca = sh ? a * 2 / 5 : a;
-        for (const char *s = text; *s; ) {
-            const glyph &gl = glyph_get(utf8_next(s), size);
+    int pen = x, base = y + font_ascent(size);
+    for (const char *s = text; *s; ) {
+        const glyph &gl = glyph_get(utf8_next(s), size);
+        int tr = r, tg = g, tb = b;
+        if (g_text_adapt) adapt_rgb(fb_luma(pen, y, std::max(gl.adv, 1), size), tr, tg, tb);
+        for (int sh = g_wp_drawn && luma(tr, tg, tb) > 128 ? 1 : 0; sh >= 0; sh--) {   /* shadow first, as in draw_text */
+            int cr = sh ? 0 : tr, cg = sh ? 0 : tg, cb = sh ? 0 : tb, ca = sh ? a * 2 / 5 : a;
             for (int pass = 0; pass < (bold ? 2 : 1); pass++) {
-                int ox = pen + gl.left + pass, oy = base - gl.top;
+                int ox = pen + gl.left + pass, oy = base - gl.top + sh;
                 for (int row = 0; row < gl.h; row++)
                     for (int col = 0; col < gl.w; col++) {
                         int aa = gl.px[(size_t)row * gl.w + col];
                         if (aa) put_px(ox + col, oy + row, cr, cg, cb, aa * ca / 255);
                     }
             }
-            pen += gl.adv;
         }
+        pen += gl.adv;
     }
 }
 

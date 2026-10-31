@@ -218,6 +218,9 @@ a.rev.r { float: right; }
         border-radius: 12px; text-decoration: none; }
 .aoff { background: rgba(255,255,255,0.08); color: #c7d2de; }
 .aoff-on { font-weight: 700; }
+/* colour swatch inside a chip (glass colours) */
+.swatch { display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 5px;
+          vertical-align: middle; border: 1px solid rgba(255,255,255,0.35); }
 
 .resetbtn { display: block; text-align: center; }
 
