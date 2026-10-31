@@ -65,7 +65,10 @@ extern void        html_view_draw_text_contrast_px(int x, int y, const char *tex
                                                    int dr, int dg, int db, int lr, int lg, int lb, int a);
 extern int         html_view_render_tall(uint16_t *buf, const char *html, int bufh);
 extern int         html_view_render_overlay(const char *html);
-extern int         html_view_load_wallpaper(const char *path, int dim);
+extern int         html_view_load_wallpaper(const char *path, int dim, int blur);
+extern void        html_view_set_glass_blur(int blur);
+extern void        html_view_glass_log_copy(const uint16_t *dst, const uint16_t *src);
+extern void        html_view_glass_fix_row(const uint16_t *src, uint16_t *row, int y, int x0, int n, int ox, int oy);
 extern int         html_view_wallpaper_on(void);
 extern int         html_view_wallpaper_rect(int x, int y, int w, int h);
 extern void        html_view_set_glass(int clear);
@@ -640,7 +643,8 @@ static long long file_mtime_ns(const char *path)
 /* Wallpaper and glass: wallpaper.jpg (any format stb_image reads) and
  * wallpaper.conf next to the binary. The plugin writes both; the glass page on
  * the screen writes the conf too. conf: glass= transparency 0-100, dim=
- * wallpaper darkening 0-90, tint= glass colour (index into g_tints). */
+ * wallpaper darkening 0-90, tint= glass colour (index into g_tints), blur=
+ * glass blur 0-100. */
 static const struct { const char *name; unsigned rgb; } g_tints[] = {
     { "夜蓝", 0x161E2Cu },
     { "石墨", 0x1C1C1Eu },
@@ -648,7 +652,7 @@ static const struct { const char *name; unsigned rgb; } g_tints[] = {
     { "主题", 0 },          /* the theme accent, darkened */
 };
 #define NTINTS ((int)(sizeof g_tints / sizeof g_tints[0]))
-static int g_glass = 50, g_wp_dim = 30, g_glass_tint;
+static int g_glass = 50, g_wp_dim = 30, g_glass_tint, g_glass_blur = 50;
 static int g_wp_gen;                  /* bumped on every wallpaper (re)load */
 static long long g_wp_stamp = -2;
 
@@ -678,18 +682,19 @@ static int wallpaper_poll(void)
     char line[64];
     if (stamp == g_wp_stamp) return 0;
     g_wp_stamp = stamp;
-    g_glass = 50; g_wp_dim = 30; g_glass_tint = 0;
+    g_glass = 50; g_wp_dim = 30; g_glass_tint = 0; g_glass_blur = 50;
     FILE *fp = fopen(g_wp_conf_file, "r");
     if (fp) {
         while (fgets(line, sizeof line, fp)) {
             if (sscanf(line, "glass=%d", &v) == 1) g_glass = clampi(v, 0, 100);
             else if (sscanf(line, "dim=%d", &v) == 1) g_wp_dim = clampi(v, 0, 90);
             else if (sscanf(line, "tint=%d", &v) == 1) g_glass_tint = clampi(v, 0, NTINTS - 1);
+            else if (sscanf(line, "blur=%d", &v) == 1) g_glass_blur = clampi(v, 0, 100);
         }
         fclose(fp);
     }
     apply_glass();
-    html_view_load_wallpaper(access(g_wp_file, R_OK) == 0 ? g_wp_file : NULL, g_wp_dim);
+    html_view_load_wallpaper(access(g_wp_file, R_OK) == 0 ? g_wp_file : NULL, g_wp_dim, g_glass_blur);
     g_wp_gen++;
     return 1;
 }
@@ -701,7 +706,7 @@ static void wallpaper_save(void)
     apply_glass();
     FILE *fp = fopen(g_wp_conf_file, "w");
     if (!fp) return;
-    fprintf(fp, "glass=%d\ndim=%d\ntint=%d\n", g_glass, g_wp_dim, g_glass_tint);
+    fprintf(fp, "glass=%d\ndim=%d\ntint=%d\nblur=%d\n", g_glass, g_wp_dim, g_glass_tint, g_glass_blur);
     fclose(fp);
     g_wp_stamp = wallpaper_stamp();
 }
@@ -2597,19 +2602,6 @@ static void draw_native_statusbar(void)
     g_sbar_fg = html_view_adapt_color(0, 0, 320, 26, C_TXT);           /* dark on a light wallpaper */
     html_view_draw_text_px(SBAR_TIME_X, sbar_text_y(16), g_stat_time, 16, 0, RGB3(g_sbar_fg), 255);
 
-    if (g_show_sbspeed) {   /* up over down, small, right of the clock (and envelope) */
-        char up[24], dn[24], t[32];
-        int x = SBAR_TIME_X + html_view_text_width_px(g_stat_time, 16) + 8 + (g_sms_unread_now ? 23 : 0);
-        int x0, y0, x1, y1;
-        fmt_speed_u(up, sizeof up, g_stat_tx, g_speed_bits);
-        fmt_speed_u(dn, sizeof dn, g_stat_rx, g_speed_bits);
-        html_view_text_bounds_px("0", 10, &x0, &y0, &x1, &y1);
-        snprintf(t, sizeof t, "↑ %s", up);
-        html_view_draw_text_px(x, 7 - (y0 + y1) / 2, t, 10, 0, RGB3(g_sbar_fg), 220);
-        snprintf(t, sizeof t, "↓ %s", dn);
-        html_view_draw_text_px(x, 19 - (y0 + y1) / 2, t, 10, 0, RGB3(g_sbar_fg), 220);
-    }
-
     /* battery: 23x12 outline + tip */
     const float bw = 23.f, bh = 12.f, bx = 320.f - 9.f - bw, by = 7.f;
     int pct = clampi(g_stat_bat, 0, 100);
@@ -2647,6 +2639,32 @@ static void draw_native_statusbar(void)
     right -= 18 + 4;
     int gw = html_view_text_width_px(g_stat_gen, 14);
     html_view_draw_text_px(right - gw, sbar_text_y(14), g_stat_gen, 14, 0, RGB3(g_sbar_fg), 255);
+
+    if (g_show_sbspeed) {   /* down and up on one line, between the clock (and envelope) and the network */
+        static const int sizes[] = { 13, 12, 11 };
+        char dn[24], up[24], t[56];
+        int x = SBAR_TIME_X + html_view_text_width_px(g_stat_time, 16) + 9 + (g_sms_unread_now ? 23 : 0);
+        int room = right - gw - 8 - x, size = 0;
+        fmt_speed_u(dn, sizeof dn, g_stat_rx, g_speed_bits);
+        fmt_speed_u(up, sizeof up, g_stat_tx, g_speed_bits);
+        /* the largest size that fits: with units, else units cut to the prefix
+         * ("28 Mbps" -> "28M", "3.5 MB/s" -> "3.5MB") */
+        for (int compact = 0; compact < 2 && !size; compact++) {
+            if (compact) {
+                char *u;
+                for (char *v = dn; v; v = v == dn ? up : NULL)
+                    if ((u = strchr(v, ' '))) {
+                        if (strchr(u, '/')) { memmove(u, u + 1, strlen(u)); *strchr(u, '/') = 0; }
+                        else { u[0] = u[1] == 'M' || u[1] == 'K' ? u[1] : 0; u[1] = 0; }
+                    }
+            }
+            snprintf(t, sizeof t, "↓ %s  ↑ %s", dn, up);
+            for (int k = 0; k < (int)(sizeof sizes / sizeof sizes[0]) && !size; k++)
+                if (html_view_text_width_px(t, sizes[k]) <= room) size = sizes[k];
+        }
+        if (!size) size = 11;
+        html_view_draw_text_px(x, sbar_text_y(size), t, size, 0, RGB3(g_sbar_fg), 220);
+    }
 }
 
 static void draw_center_text_px(int cx, int y, const char *text, int size, int bold,
@@ -5398,8 +5416,9 @@ static int build_kv(struct kv *t, const char *path)
     static char s_memdet[24], s_upshort[16], s_autooff[420], s_refreshseg[480];
     { int bmax = backlight_max(); if (bmax <= 0) bmax = 255;
       snprintf(s_bright, sizeof s_bright, "%d", clampi(backlight_get() * 100 / bmax, 0, 100)); }
-    static char s_glass[8], s_tintseg[900];
+    static char s_glass[8], s_gblur[8], s_tintseg[900];
     snprintf(s_glass, sizeof s_glass, "%d", g_glass);
+    snprintf(s_gblur, sizeof s_gblur, "%d", g_glass_blur);
     {   /* glass colour chips, each with a swatch of the pane colour */
         int o = snprintf(s_tintseg, sizeof s_tintseg, "<div class='aoffs'>");
         for (int k = 0; k < NTINTS; k++)
@@ -5714,6 +5733,7 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "TEXTADAPTCLASS", g_text_adapt ? "on" : "off" };
     t[i++] = (struct kv){ "TEXTADAPTSTATE", g_text_adapt ? "已开启 · 浅色背景上自动变深" : "已关闭" };
     t[i++] = (struct kv){ "GLASS", s_glass };
+    t[i++] = (struct kv){ "GLASSBLUR", s_gblur };
     t[i++] = (struct kv){ "GLASSTINT", g_tints[g_glass_tint].name };
     t[i++] = (struct kv){ "GLASSTINTSEG", s_tintseg };
     t[i++] = (struct kv){ "THEMECLASS", "on" };
@@ -6642,11 +6662,13 @@ static void compose_frame(drm_disp_t *d, int o)
     int pin = wp_pinned(d);
     for (int y = SBAR_H; y < H; y++) {
         const uint16_t *lr = g_bufA + (size_t)y * W, *rr = g_bufB + (size_t)y * W;
-        if (pin) {   /* the pages slide, the wallpaper stays */
+        if (pin) {   /* the pages slide, the wallpaper stays and the glass shows it */
             uint16_t row[320];
             const uint16_t *wp = &g_wpl[(size_t)y * 320];
             wp_key(row, lr + o, left, wp + o, wp);
             wp_key(row + left, rr, o, wp, wp + left);
+            html_view_glass_fix_row(g_bufA, row, y, 0, left, o, 0);
+            html_view_glass_fix_row(g_bufB, row + left, y, left, o, -left, 0);
             fb_put_row(d, y, 0, row, W);
             continue;
         }
@@ -6689,6 +6711,7 @@ static void prep_current(const drm_disp_t *d, uint16_t *buf)
         uint16_t *dp = buf + (size_t)y * W;
         for (int x = 0; x < W; x++) dp[x] = fb_get(d, x, y);
     }
+    html_view_glass_log_copy(buf, d->fb);   /* the frame's glass boxes come along */
 }
 
 /* The target page as it shows once it is current (its page dot lit). */
@@ -6743,6 +6766,7 @@ static void scroll_blit(drm_disp_t *d, int scroll)
         if (sy >= 0 && sy < g_scroll_h && pin) {   /* the page scrolls, the wallpaper stays */
             uint16_t row[320];
             wp_key(row, &g_scrollbuf[(size_t)sy * W], W, html_view_wallpaper_row(sy), &g_wpl[(size_t)y * 320]);
+            html_view_glass_fix_row(g_scrollbuf, row, y, 0, W, 0, scroll);
             fb_put_row(d, y, 0, row, W);
         }
         else if (sy >= 0 && sy < g_scroll_h) fb_put_row(d, y, 0, &g_scrollbuf[(size_t)sy * W], W);
@@ -6942,6 +6966,15 @@ static void set_glass_x(int x, int bx, int bw)
     if (bw <= 0) return;
     g_glass = clampi(((x - bx) * 100 / bw + 2) / 5 * 5, 0, 100);
     apply_glass();
+    invalidate_render_html_cache();
+}
+
+/* Glass blur from a tap/drag x within its bar, stepless (0..100). */
+static void set_blur_x(int x, int bx, int bw)
+{
+    if (bw <= 0) return;
+    g_glass_blur = clampi((x - bx) * 100 / bw, 0, 100);
+    html_view_set_glass_blur(g_glass_blur);
     invalidate_render_html_cache();
 }
 
@@ -7570,6 +7603,13 @@ int main(void)
                     render(&disp, CUR_PATH);
                     last_motion_frame = now;
                     animating = 1;
+                } else if (html_view_rect("#blur-bar", &bx, &by, &bw, &bh) &&
+                           x >= bx && x < bx + bw && y >= by - 5 && y < by + bh + 5) {
+                    sliding = 3; bar_x = bx; bar_w = bw;   /* glass blur */
+                    set_blur_x(x, bx, bw);
+                    render(&disp, CUR_PATH);
+                    last_motion_frame = now;
+                    animating = 1;
                 } else {   /* segmented controls: net mode / auto-off / refresh */
                     int which = 0, n = 4;
                     if (html_view_rect("#netseg", &bx, &by, &bw, &bh) &&
@@ -7592,8 +7632,9 @@ int main(void)
             }
             else if (pressed && dragging && !menu) {
                 if (sliding) {
-                    if (sliding == 2) set_glass_x(x, bar_x, bar_w);
-                    else              set_bright_x(x, bar_x, bar_w);
+                    if (sliding == 3)      set_blur_x(x, bar_x, bar_w);
+                    else if (sliding == 2) set_glass_x(x, bar_x, bar_w);
+                    else                   set_bright_x(x, bar_x, bar_w);
                     if (motion_frame_due(now, &last_motion_frame)) {
                         render(&disp, CUR_PATH);
                         animating = 1;
@@ -7691,7 +7732,7 @@ int main(void)
                         animating = 1;
                     }
                 }
-                else if (sliding == 2) wallpaper_save();   /* persist glass after drag */
+                else if (sliding >= 2) wallpaper_save();   /* persist glass after drag */
                 else if (sliding) { save_conf(); /* persist brightness after drag */ }
                 else if (segging) {   /* snap to nearest cell + apply */
                     int c = clampi((x - seg_x) * seg_n / (seg_w > 0 ? seg_w : 1), 0, seg_n - 1);
@@ -7834,6 +7875,14 @@ int main(void)
                                 wallpaper_save();
                             }
                             invalidate_render_html_cache();
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "glassblur")) { /* tap position on the bar = blur */
+                            int bx, by, bw, bh;
+                            if (html_view_rect("#blur-bar", &bx, &by, &bw, &bh) && bw > 0) {
+                                set_blur_x(x, bx, bw);
+                                wallpaper_save();
+                            }
                             need_render = 1;
                         }
                         else if (!strncmp(a, "glasstint:", 10)) {

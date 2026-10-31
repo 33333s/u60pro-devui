@@ -189,9 +189,10 @@ TopFlow（MU5252）专用令牌，在其他机型上为空或 `—`：
 | `act:usbpower` | 切换 USB-C 供电方向：给 U60 充电 / U60 反向供电 |
 | `act:usbnet` | 切换 USB 网络共享：开启时先走官方 `9057` RNDIS:ECM（无 ADB），若无 carrier 自动降到纯 ECM `90B1`；关闭时回到无网卡的 `1225 mass_storage` |
 | `act:batpct` | 切换状态栏电池框内百分比显示 |
-| `act:sbspeed` | 切换状态栏网速（时钟右侧上下两行，默认关） |
+| `act:sbspeed` | 切换状态栏网速（时钟右侧一行，下行在左、上行在右，放不下时缩小字号、单位缩写；默认关） |
 | `act:textadapt` | 切换文字自动变色（默认开，见“壁纸与液态玻璃”） |
 | `act:glass` | 点在 `id="glass-bar"` 的条上设玻璃透明度；按住条拖动时跟手调节 |
+| `act:glassblur` | 点在 `id="blur-bar"` 的条上设玻璃模糊程度（0–100 连续）；按住条拖动时跟手调节 |
 | `act:glasstint:N` | 玻璃颜色：0 夜蓝、1 石墨、2 白雾、3 主题色 |
 | `act:wifi` `act:nfc` | 切换 WiFi 总开关（两个主频段）/ NFC 碰一碰 |
 | `act:wifi24` `act:wifi5` | 切换 2.4G / 5G 主频段（`ifconfig wlan0/wlan2 up/down`） |
@@ -271,13 +272,13 @@ TopFlow（MU5252）专用令牌，在其他机型上为空或 `—`：
 
 ### 壁纸与液态玻璃
 
-插件把壁纸存成安装目录下的 `wallpaper.jpg`（320×480），把设置存成 `wallpaper.conf`：`glass=` 按钮透明度 0–100，`dim=` 壁纸暗度 0–90，`tint=` 玻璃颜色（同 `act:glasstint`）。两个文件改了约 1 秒内生效，删掉 `wallpaper.jpg` 就回到主题底色。屏幕上的设置页“玻璃效果”（`subpages/glass.html`）也能调透明度和颜色，会改写 `wallpaper.conf`。
+插件把壁纸存成安装目录下的 `wallpaper.jpg`（320×480），把设置存成 `wallpaper.conf`：`glass=` 按钮透明度 0–100，`dim=` 壁纸暗度 0–90，`tint=` 玻璃颜色（同 `act:glasstint`），`blur=` 模糊程度 0–100（默认 50，有壁纸时才有作用）。两个文件改了约 1 秒内生效，删掉 `wallpaper.jpg` 就回到主题底色。屏幕上的设置页“玻璃效果”（`subpages/glass.html`）也能调透明度、模糊程度和颜色，会改写 `wallpaper.conf`。
 
-玻璃设置的令牌：`{{GLASS}}`（透明度数字）、`{{GLASSTINT}}`（颜色名）、`{{GLASSTINTSEG}}`（整排颜色选项）。
+玻璃设置的令牌：`{{GLASS}}`（透明度数字）、`{{GLASSBLUR}}`（模糊程度数字）、`{{GLASSTINT}}`（颜色名）、`{{GLASSTINTSEG}}`（整排颜色选项）。
 
 CSS 里有两个内建的背景图：
 
-- `url(wallpaper)`：壁纸。设了壁纸时 `<body>` 会多一个 `wp` 类，默认样式写的是 `body.wp { background: #070c15 url(wallpaper); }`。壁纸固定在屏幕上：翻页、滚动、拉面板、右滑返回时只有页面内容在动，壁纸和状态栏下面的那一截都不动。
+- `url(wallpaper)`：壁纸。设了壁纸时 `<body>` 会多一个 `wp` 类，默认样式写的是 `body.wp { background: #070c15 url(wallpaper); }`。壁纸固定在屏幕上：翻页、滚动、拉面板、右滑返回时只有页面内容在动，壁纸和状态栏下面的那一截都不动。翻页和滚动时玻璃框每一帧都按它当时所在的位置透出壁纸。
 - `url(glass)`：液态玻璃。框里是它下面的壁纸（没有壁纸时是页面底色）经过模糊、边缘像透镜一样往里弯，再按透明度混入深色面板，边缘有一圈上亮下暗的高光。边框写成 `transparent`，高光由程序画。
 
 ```css
