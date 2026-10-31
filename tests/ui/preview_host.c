@@ -59,7 +59,7 @@ static void shot_page(drm_disp_t *d, const char *dir, const char *name, const ch
 
 int main(int argc, char **argv)
 {
-    static const char *const subs[] = { "control.html", "wifi.html", "sms.html", "cell.html", "lock.html",
+    static const char *const subs[] = { "control.html", "wifi.html", "sms.html", "cell.html", "lock.html", "glass.html",
                                         "speedtest.html" };
     drm_disp_t disp = { .fd = -1, .fb = g_preview_fb, .width = 320, .height = 480,
                         .pitch = 640, .pitch_px = 320 };

@@ -69,6 +69,10 @@ extern int         html_view_load_wallpaper(const char *path, int dim);
 extern int         html_view_wallpaper_on(void);
 extern int         html_view_wallpaper_rect(int x, int y, int w, int h);
 extern void        html_view_set_glass(int clear);
+extern void        html_view_set_glass_tint(int r, int g, int b);
+extern const uint16_t *html_view_wallpaper_row(int y);
+extern void        html_view_set_text_adapt(int on);
+extern unsigned    html_view_adapt_color(int x, int y, int w, int h, unsigned rgb);
 extern void        html_view_glass_rect(int x, int y, int w, int h, int rad);
 static void        maybe_dump_fb(drm_disp_t *d);
 
@@ -255,6 +259,9 @@ static const char *theme_body_class(void)
     return cls;
 }
 static int  g_show_batpct = 1; /* show percent text inside status battery */
+static int  g_show_sbspeed;    /* show down/up rates in the status bar */
+static int  g_text_adapt = 1;  /* text colour follows the background under it */
+static long g_stat_rx, g_stat_tx;   /* bytes/s, for the status bar */
 static int  g_charging;   /* set from snapshot; drives charge animation cadence */
 static int  g_stat_bat, g_stat_sig, g_stat_lowbat;
 static char g_stat_time[8], g_stat_gen[8];
@@ -630,29 +637,73 @@ static long long file_mtime_ns(const char *path)
     return (long long)st.st_mtime * 1000000000LL + (long long)st.st_mtim.tv_nsec;
 }
 
-/* Wallpaper and glass, both set from the plugin: wallpaper.jpg (any format
- * stb_image reads) and wallpaper.conf ("glass=" transparency 0-100, "dim="
- * wallpaper darkening 0-90) next to the binary. Reloaded when either changes;
- * returns 1 then. */
+/* Wallpaper and glass: wallpaper.jpg (any format stb_image reads) and
+ * wallpaper.conf next to the binary. The plugin writes both; the glass page on
+ * the screen writes the conf too. conf: glass= transparency 0-100, dim=
+ * wallpaper darkening 0-90, tint= glass colour (index into g_tints). */
+static const struct { const char *name; unsigned rgb; } g_tints[] = {
+    { "夜蓝", 0x161E2Cu },
+    { "石墨", 0x1C1C1Eu },
+    { "白雾", 0xE1E8F0u },
+    { "主题", 0 },          /* the theme accent, darkened */
+};
+#define NTINTS ((int)(sizeof g_tints / sizeof g_tints[0]))
+static int g_glass = 50, g_wp_dim = 30, g_glass_tint;
+static int g_wp_gen;                  /* bumped on every wallpaper (re)load */
 static long long g_wp_stamp = -2;
+
+static unsigned tint_rgb(int k)
+{
+    unsigned a = theme_a();
+    if (g_tints[k].rgb) return g_tints[k].rgb;
+    return ((a >> 16 & 255) * 2 / 5) << 16 | ((a >> 8 & 255) * 2 / 5) << 8 | (a & 255) * 2 / 5;
+}
+
+static void apply_glass(void)
+{
+    html_view_set_glass(g_glass);
+    html_view_set_glass_tint(RGB3(tint_rgb(g_glass_tint)));
+}
+
+static long long wallpaper_stamp(void)
+{
+    return file_mtime_ns(g_wp_file) * 31 + file_mtime_ns(g_wp_conf_file);
+}
+
+/* Reload when either file changed; returns 1 then. */
 static int wallpaper_poll(void)
 {
-    long long stamp = file_mtime_ns(g_wp_file) * 31 + file_mtime_ns(g_wp_conf_file);
-    int glass = 50, dim = 30, v;
+    long long stamp = wallpaper_stamp();
+    int v;
     char line[64];
     if (stamp == g_wp_stamp) return 0;
     g_wp_stamp = stamp;
+    g_glass = 50; g_wp_dim = 30; g_glass_tint = 0;
     FILE *fp = fopen(g_wp_conf_file, "r");
     if (fp) {
         while (fgets(line, sizeof line, fp)) {
-            if (sscanf(line, "glass=%d", &v) == 1) glass = v;
-            else if (sscanf(line, "dim=%d", &v) == 1) dim = v;
+            if (sscanf(line, "glass=%d", &v) == 1) g_glass = clampi(v, 0, 100);
+            else if (sscanf(line, "dim=%d", &v) == 1) g_wp_dim = clampi(v, 0, 90);
+            else if (sscanf(line, "tint=%d", &v) == 1) g_glass_tint = clampi(v, 0, NTINTS - 1);
         }
         fclose(fp);
     }
-    html_view_set_glass(glass);
-    html_view_load_wallpaper(access(g_wp_file, R_OK) == 0 ? g_wp_file : NULL, dim);
+    apply_glass();
+    html_view_load_wallpaper(access(g_wp_file, R_OK) == 0 ? g_wp_file : NULL, g_wp_dim);
+    g_wp_gen++;
     return 1;
+}
+
+/* Settings changed on the screen: apply them and write the conf, without
+ * reloading the wallpaper for our own write. */
+static void wallpaper_save(void)
+{
+    apply_glass();
+    FILE *fp = fopen(g_wp_conf_file, "w");
+    if (!fp) return;
+    fprintf(fp, "glass=%d\ndim=%d\ntint=%d\n", g_glass, g_wp_dim, g_glass_tint);
+    fclose(fp);
+    g_wp_stamp = wallpaper_stamp();
 }
 
 static long long ui_scan_mtime_ns(void)
@@ -1238,6 +1289,8 @@ static void load_conf(void)
         if      (sscanf(line, "theme=%d", &v) == 1)      { if (v >= 0 && v < NTHEMES) g_theme = v; }
         else if (sscanf(line, "speed_bits=%d", &v) == 1) g_speed_bits = !!v;
         else if (sscanf(line, "show_batpct=%d", &v) == 1) g_show_batpct = !!v;
+        else if (sscanf(line, "show_sbspeed=%d", &v) == 1) g_show_sbspeed = !!v;
+        else if (sscanf(line, "text_adapt=%d", &v) == 1) g_text_adapt = !!v;
         else if (sscanf(line, "autooff=%d", &v) == 1)    g_autooff_ms = v;
         else if (sscanf(line, "refresh_ms=%d", &v) == 1) g_refresh_ms = normalize_refresh_ms(v);
         else if (sscanf(line, "sig_read=%d", &v) == 1)   g_sig_read = !!v;
@@ -1255,8 +1308,8 @@ static void save_conf(void)
     FILE *fp = fopen(CONF_FILE, "w");
     if (!fp) return;
     fprintf(fp,
-            "theme=%d\nspeed_bits=%d\nshow_batpct=%d\nautooff=%d\nrefresh_ms=%d\nsig_read=%d\nsig_parse=%d\nbright=%d\nauto_bright=%d\nst_src=%s\nst_dir=%s\nst_dur=%d\n",
-            g_theme, g_speed_bits, g_show_batpct, g_autooff_ms, g_refresh_ms,
+            "theme=%d\nspeed_bits=%d\nshow_batpct=%d\nshow_sbspeed=%d\ntext_adapt=%d\nautooff=%d\nrefresh_ms=%d\nsig_read=%d\nsig_parse=%d\nbright=%d\nauto_bright=%d\nst_src=%s\nst_dir=%s\nst_dur=%d\n",
+            g_theme, g_speed_bits, g_show_batpct, g_show_sbspeed, g_text_adapt, g_autooff_ms, g_refresh_ms,
             g_sig_read, g_sig_parse, backlight_get(), g_auto_bright, g_st_src, g_st_dir, g_st_dur);
     fclose(fp);
 }
@@ -2473,15 +2526,16 @@ static void draw_lock_icon(void)
     int tw = html_view_text_width_px(hint, 14);
 
     html_view_glass_rect(x, y, w, h, h / 2);
+    unsigned fg = html_view_adapt_color(x, y, w, h, C_TXT);   /* light glass: dark glyph */
     if (g_lock_hold > 0)
         html_view_fill_round_rect(x, y, w * g_lock_hold / 100 < h ? h : w * g_lock_hold / 100, h, h / 2,
                                   RGB3(theme_a()), 200);
     /* padlock: shackle arc over a rounded body */
-    html_view_arc(cx, cy - 3.f, 4.5f, 2.f, -90.f, 90.f, RGB3(C_TXT), 255);
-    html_view_line(cx - 4.5f, cy - 3.f, cx - 4.5f, cy, 2.f, RGB3(C_TXT), 255);
-    html_view_line(cx + 4.5f, cy - 3.f, cx + 4.5f, cy, 2.f, RGB3(C_TXT), 255);
-    html_view_fill_round_rect((int)cx - 7, (int)cy, 14, 10, 2, RGB3(C_TXT), 255);
-    html_view_draw_text_px((int)cx + 14 + (w - 38 - tw) / 2, y + 7, hint, 14, 0, RGB3(C_TXT), 255);
+    html_view_arc(cx, cy - 3.f, 4.5f, 2.f, -90.f, 90.f, RGB3(fg), 255);
+    html_view_line(cx - 4.5f, cy - 3.f, cx - 4.5f, cy, 2.f, RGB3(fg), 255);
+    html_view_line(cx + 4.5f, cy - 3.f, cx + 4.5f, cy, 2.f, RGB3(fg), 255);
+    html_view_fill_round_rect((int)cx - 7, (int)cy, 14, 10, 2, RGB3(fg), 255);
+    html_view_draw_text_px((int)cx + 14 + (w - 38 - tw) / 2, y + 7, hint, 14, 0, RGB3(fg), 255);
 }
 
 /* SMS detail dialog + status-bar envelope state. */
@@ -2503,6 +2557,7 @@ static void sms_close(touch_input_t *touch, int *need_render)
 }
 
 #define SBAR_TIME_X 10
+static unsigned g_sbar_fg = C_TXT;   /* status-bar glyph colour, set with its background */
 
 /* Draw a small envelope in the fixed status bar, just right of the clock, when
  * there are unread messages: a single-colour line drawing in the clock's
@@ -2512,11 +2567,11 @@ static void draw_sms_icon(void)
     if (!g_sms_unread_now) return;
     const float ew = 16.f, eh = 12.f, th = 1.5f, ey = 13.f - eh / 2.f;
     float ex = (float)(SBAR_TIME_X + html_view_text_width_px(g_stat_time, 16) + 7);
-    html_view_round_rect_aa(ex, ey, ew, eh, 2.f, th, RGB3(C_TXT), 255);
+    html_view_round_rect_aa(ex, ey, ew, eh, 2.f, th, RGB3(g_sbar_fg), 255);
     /* flap: from just inside the top corners down to the middle */
     float fy = ey + th * .5f + .5f, my = ey + eh * .55f;
-    html_view_line(ex + 2.f, fy, ex + ew / 2.f, my, th, RGB3(C_TXT), 255);
-    html_view_line(ex + ew - 2.f, fy, ex + ew / 2.f, my, th, RGB3(C_TXT), 255);
+    html_view_line(ex + 2.f, fy, ex + ew / 2.f, my, th, RGB3(g_sbar_fg), 255);
+    html_view_line(ex + ew - 2.f, fy, ex + ew / 2.f, my, th, RGB3(g_sbar_fg), 255);
 }
 
 /* ---- band lock (éé¢): comma-list band sets ---- */
@@ -2539,14 +2594,28 @@ static void draw_native_statusbar(void)
         html_view_fill_rect(0, 0, 320, 26, RGB3(C_BAR), 255);
         html_view_fill_rect(0, 25, 320, 1, RGB3(C_TXT), 14);          /* bar + hairline */
     }
-    html_view_draw_text_px(SBAR_TIME_X, sbar_text_y(16), g_stat_time, 16, 0, RGB3(C_TXT), 255);
+    g_sbar_fg = html_view_adapt_color(0, 0, 320, 26, C_TXT);           /* dark on a light wallpaper */
+    html_view_draw_text_px(SBAR_TIME_X, sbar_text_y(16), g_stat_time, 16, 0, RGB3(g_sbar_fg), 255);
+
+    if (g_show_sbspeed) {   /* up over down, small, right of the clock (and envelope) */
+        char up[24], dn[24], t[32];
+        int x = SBAR_TIME_X + html_view_text_width_px(g_stat_time, 16) + 8 + (g_sms_unread_now ? 23 : 0);
+        int x0, y0, x1, y1;
+        fmt_speed_u(up, sizeof up, g_stat_tx, g_speed_bits);
+        fmt_speed_u(dn, sizeof dn, g_stat_rx, g_speed_bits);
+        html_view_text_bounds_px("0", 10, &x0, &y0, &x1, &y1);
+        snprintf(t, sizeof t, "↑ %s", up);
+        html_view_draw_text_px(x, 7 - (y0 + y1) / 2, t, 10, 0, RGB3(g_sbar_fg), 220);
+        snprintf(t, sizeof t, "↓ %s", dn);
+        html_view_draw_text_px(x, 19 - (y0 + y1) / 2, t, 10, 0, RGB3(g_sbar_fg), 220);
+    }
 
     /* battery: 23x12 outline + tip */
     const float bw = 23.f, bh = 12.f, bx = 320.f - 9.f - bw, by = 7.f;
     int pct = clampi(g_stat_bat, 0, 100);
-    unsigned fill = g_charging ? ok : g_stat_lowbat ? bad : C_TXT;
-    html_view_round_rect_aa(bx, by, bw, bh, 3.5f, 1.4f, RGB3(C_TXT), 170);
-    html_view_round_rect_aa(bx + bw + 1.f, by + 3.5f, 2.f, 5.f, 1.f, 0.f, RGB3(C_TXT), 170);
+    unsigned fill = g_charging ? ok : g_stat_lowbat ? bad : g_sbar_fg;
+    html_view_round_rect_aa(bx, by, bw, bh, 3.5f, 1.4f, RGB3(g_sbar_fg), 170);
+    html_view_round_rect_aa(bx + bw + 1.f, by + 3.5f, 2.f, 5.f, 1.f, 0.f, RGB3(g_sbar_fg), 170);
     if (pct > 0)
         html_view_round_rect_aa(bx + 2.5f, by + 2.5f, (bw - 5.f) * (float)pct / 100.f, bh - 5.f, 1.5f, 0.f,
                                 RGB3(fill), 255);
@@ -2557,7 +2626,7 @@ static void draw_native_statusbar(void)
         snprintf(bp, sizeof bp, "%d%%", pct);
         int w = html_view_text_width_px(bp, 15);
         html_view_draw_text_px(right - w, sbar_text_y(15), bp, 15, 0,
-                               RGB3(g_stat_lowbat && !g_charging ? bad : C_TXT), 255);
+                               RGB3(g_stat_lowbat && !g_charging ? bad : g_sbar_fg), 255);
         right -= w + 3;
     }
     if (g_charging) {                                                   /* bolt */
@@ -2573,11 +2642,11 @@ static void draw_native_statusbar(void)
     int lit = g_stat_sig > 0 ? (g_stat_sig * 4 + 2) / 5 : 0;
     for (int i = 0; i < 4; i++) {
         float h = 4.f + 2.7f * (float)i, x = (float)right - 18.f + 5.f * (float)i;
-        html_view_round_rect_aa(x, 19.f - h, 3.f, h, 1.f, 0.f, RGB3(C_TXT), i < lit ? 255 : 55);
+        html_view_round_rect_aa(x, 19.f - h, 3.f, h, 1.f, 0.f, RGB3(g_sbar_fg), i < lit ? 255 : 55);
     }
     right -= 18 + 4;
     int gw = html_view_text_width_px(g_stat_gen, 14);
-    html_view_draw_text_px(right - gw, sbar_text_y(14), g_stat_gen, 14, 0, RGB3(C_TXT), 255);
+    html_view_draw_text_px(right - gw, sbar_text_y(14), g_stat_gen, 14, 0, RGB3(g_sbar_fg), 255);
 }
 
 static void draw_center_text_px(int cx, int y, const char *text, int size, int bold,
@@ -5280,6 +5349,8 @@ static int build_kv(struct kv *t, const char *path)
         g_stat_bat = clampi(d.bat_percent, 0, 100);
         g_stat_lowbat = d.bat_percent <= 20;
         g_sms_unread_now = d.sms_unread > 0;
+        g_stat_rx = d.rx_speed;
+        g_stat_tx = d.tx_speed;
         snprintf(s_sbar, sizeof s_sbar, "<div class='sbar'></div>");
     }
 
@@ -5327,6 +5398,16 @@ static int build_kv(struct kv *t, const char *path)
     static char s_memdet[24], s_upshort[16], s_autooff[420], s_refreshseg[480];
     { int bmax = backlight_max(); if (bmax <= 0) bmax = 255;
       snprintf(s_bright, sizeof s_bright, "%d", clampi(backlight_get() * 100 / bmax, 0, 100)); }
+    static char s_glass[8], s_tintseg[900];
+    snprintf(s_glass, sizeof s_glass, "%d", g_glass);
+    {   /* glass colour chips, each with a swatch of the pane colour */
+        int o = snprintf(s_tintseg, sizeof s_tintseg, "<div class='aoffs'>");
+        for (int k = 0; k < NTINTS; k++)
+            o += snprintf(s_tintseg + o, sizeof s_tintseg - o,
+                          "<a href='act:glasstint:%d' class='%s'><span class='swatch' style='background:#%06x'></span>%s</a>",
+                          k, k == g_glass_tint ? "aoff-on" : "aoff", tint_rgb(k), g_tints[k].name);
+        snprintf(s_tintseg + o, sizeof s_tintseg - o, "</div>");
+    }
     { long mt = d.mem_total, ma = d.mem_avail;
       snprintf(s_memdet, sizeof s_memdet, "%ld/%ld MB", mt ? (mt - ma) / 1048576 : 0, mt / 1048576); }
     static char s_chgv[8], s_chgi[10], s_batv[8], s_bati[10], s_pwr[10], s_batpwr[10], s_batpwrlbl[8];
@@ -5628,6 +5709,13 @@ static int build_kv(struct kv *t, const char *path)
     t[i++] = (struct kv){ "USBNETSTATE", usb_net_state };
     t[i++] = (struct kv){ "BATPCTCLASS", g_show_batpct ? "on" : "off" };
     t[i++] = (struct kv){ "BATPCTSTATE", g_show_batpct ? "已显示" : "已隐藏" };
+    t[i++] = (struct kv){ "SBSPEEDCLASS", g_show_sbspeed ? "on" : "off" };
+    t[i++] = (struct kv){ "SBSPEEDSTATE", g_show_sbspeed ? "已显示" : "已隐藏" };
+    t[i++] = (struct kv){ "TEXTADAPTCLASS", g_text_adapt ? "on" : "off" };
+    t[i++] = (struct kv){ "TEXTADAPTSTATE", g_text_adapt ? "已开启 · 浅色背景上自动变深" : "已关闭" };
+    t[i++] = (struct kv){ "GLASS", s_glass };
+    t[i++] = (struct kv){ "GLASSTINT", g_tints[g_glass_tint].name };
+    t[i++] = (struct kv){ "GLASSTINTSEG", s_tintseg };
     t[i++] = (struct kv){ "THEMECLASS", "on" };
     t[i++] = (struct kv){ "THEMESTATE", g_themes[g_theme].name };
     t[i++] = (struct kv){ "SPUNITCLASS", g_speed_bits ? "on" : "off" };
@@ -6051,6 +6139,37 @@ static uint16_t fb_get(const drm_disp_t *d, int x, int y)
                        : d->fb[(size_t)y * d->pitch_px + x];
 }
 
+/* ---- the wallpaper stays put while frames move ----
+ * A rendered frame carries the wallpaper drawn into it, so sliding the frame
+ * (page swipe, scroll, sheet, back swipe) would slide the wallpaper too. A
+ * pixel still equal to the wallpaper where it was drawn is bare background:
+ * it shows the wallpaper where it lands instead. Only anti-aliased edges keep
+ * their old background, and only while the frame moves. */
+static uint16_t g_wpl[320 * 480], g_wpp[320 * 480];   /* logical / as the fb holds it */
+static int g_wpc_gen = -1, g_wpc_rot = -1;
+
+static int wp_pinned(const drm_disp_t *d)
+{
+    if (d->width != 320 || d->height != 480 || d->pitch_px != 320 || !html_view_wallpaper_on()) return 0;
+    if (g_wpc_gen != g_wp_gen || g_wpc_rot != g_panel_rot) {
+        for (int y = 0; y < 480; y++) {
+            const uint16_t *row = html_view_wallpaper_row(y);
+            memcpy(&g_wpl[y * 320], row, 320 * sizeof *row);
+            for (int x = 0; x < 320; x++)
+                g_wpp[(g_panel_rot ? 479 - y : y) * 320 + (g_panel_rot ? 319 - x : x)] = row[x];
+        }
+        g_wpc_gen = g_wp_gen;
+        g_wpc_rot = g_panel_rot;
+    }
+    return 1;
+}
+
+/* dst = src, except pixels equal to the wallpaper `from` show `to` */
+static void wp_key(uint16_t *dst, const uint16_t *src, int n, const uint16_t *from, const uint16_t *to)
+{
+    for (int i = 0; i < n; i++) dst[i] = src[i] == from[i] ? to[i] : src[i];
+}
+
 /* The U60 Pro panel is upside down, the TopFlow one upright; touch follows
  * the panel (they are one TDDI chip). */
 static void apply_panel_rotation(drm_disp_t *d, touch_input_t *t)
@@ -6072,7 +6191,10 @@ static void fb_dirty_rows(drm_disp_t *d, int y0, int y1)
 static void slide_row(drm_disp_t *d, const uint16_t *src, int r, int dst_r)
 {
     int H = d->height, pr = g_panel_rot ? H - 1 - r : r, pd = g_panel_rot ? H - 1 - dst_r : dst_r;
-    memcpy(d->fb + (size_t)pd * d->pitch_px, src + (size_t)pr * d->pitch_px, (size_t)d->pitch_px * 2);
+    if (r != dst_r && wp_pinned(d))
+        wp_key(d->fb + (size_t)pd * 320, src + (size_t)pr * 320, 320, &g_wpp[pr * 320], &g_wpp[pd * 320]);
+    else
+        memcpy(d->fb + (size_t)pd * d->pitch_px, src + (size_t)pr * d->pitch_px, (size_t)d->pitch_px * 2);
 }
 
 /* Slide between two frames: `over` moves in (opening) or out (closing) from
@@ -6301,16 +6423,20 @@ static void back_draw(drm_disp_t *d, int off)
     if (off < 0) off = 0;
     if (off > W) off = W;
     int k = 256 - 80 * (W - off) / W;             /* darker while mostly covered */
+    int pin = wp_pinned(d);
     for (int r = 0; r < H; r++) {
         uint16_t *dst = d->fb + (size_t)r * P;
         const uint16_t *over = g_slide_a + (size_t)r * P, *under = g_slide_b + (size_t)r * P;
+        const uint16_t *wp = &g_wpp[(size_t)r * 320];
         if ((g_panel_rot ? H - 1 - r : r) < DEVUI_EXT_STATUSBAR_H) {   /* the status bar stays put */
             memcpy(dst, over, (size_t)W * sizeof(uint16_t));
         } else if (!g_panel_rot) {
             dim565(dst, under, off, k);
-            memcpy(dst + off, over, (size_t)(W - off) * sizeof(uint16_t));
+            if (pin) wp_key(dst + off, over, W - off, wp, wp + off);
+            else     memcpy(dst + off, over, (size_t)(W - off) * sizeof(uint16_t));
         } else {
-            memcpy(dst, over + off, (size_t)(W - off) * sizeof(uint16_t));
+            if (pin) wp_key(dst, over + off, W - off, wp + off, wp);
+            else     memcpy(dst, over + off, (size_t)(W - off) * sizeof(uint16_t));
             dim565(dst + W - off, under + W - off, off, k);
         }
     }
@@ -6513,8 +6639,17 @@ static void compose_frame(drm_disp_t *d, int o)
     int left;
     if (o < 0) o = 0; if (o > W) o = W;
     left = W - o;
+    int pin = wp_pinned(d);
     for (int y = SBAR_H; y < H; y++) {
         const uint16_t *lr = g_bufA + (size_t)y * W, *rr = g_bufB + (size_t)y * W;
+        if (pin) {   /* the pages slide, the wallpaper stays */
+            uint16_t row[320];
+            const uint16_t *wp = &g_wpl[(size_t)y * 320];
+            wp_key(row, lr + o, left, wp + o, wp);
+            wp_key(row + left, rr, o, wp, wp + left);
+            fb_put_row(d, y, 0, row, W);
+            continue;
+        }
         fb_put_row(d, y, 0, lr + o, left);
         fb_put_row(d, y, left, rr, o);
     }
@@ -6602,9 +6737,15 @@ static int g_scroll_h;
 static void scroll_blit(drm_disp_t *d, int scroll)
 {
     const int W = d->width, Hh = d->height;
+    int pin = wp_pinned(d);
     for (int y = SBAR_H; y < Hh; y++) {
         int sy = y + scroll;
-        if (sy >= 0 && sy < g_scroll_h) fb_put_row(d, y, 0, &g_scrollbuf[(size_t)sy * W], W);
+        if (sy >= 0 && sy < g_scroll_h && pin) {   /* the page scrolls, the wallpaper stays */
+            uint16_t row[320];
+            wp_key(row, &g_scrollbuf[(size_t)sy * W], W, html_view_wallpaper_row(sy), &g_wpl[(size_t)y * 320]);
+            fb_put_row(d, y, 0, row, W);
+        }
+        else if (sy >= 0 && sy < g_scroll_h) fb_put_row(d, y, 0, &g_scrollbuf[(size_t)sy * W], W);
         else                            fb_fill_row(d, y, 0);
     }
     html_view_set_scroll(scroll);
@@ -6616,15 +6757,8 @@ static void scroll_blit(drm_disp_t *d, int scroll)
     draw_func_icons();
     html_view_set_clip_top(0);
     if (!g_lock_state && (path_is_speedtest(active_page_path()) || g_st_home_open)) draw_speedtest_widgets();
-    /* The native status bar is pinned; dragging only changes the content below
-     * it, unless the bar shows the wallpaper, which moves with the page. */
-    if (html_view_wallpaper_on()) {
-        draw_native_statusbar();
-        draw_sms_icon();
-        fb_dirty_rows(d, 0, Hh - 1);
-    } else {
-        fb_dirty_rows(d, SBAR_H, Hh - 1);
-    }
+    /* The native status bar is pinned; dragging only changes the content below it. */
+    fb_dirty_rows(d, SBAR_H, Hh - 1);
 }
 
 /* fb snapshot for fast overlay refresh (modal toggles, segmented-control drag):
@@ -6799,6 +6933,16 @@ static void set_bright_x(int x, int bx, int bw)
     int f = (x - bx) * 100 / bw; if (f < 3) f = 3; if (f > 100) f = 100;
     int m = backlight_max(); if (m <= 0) m = 255;
     backlight_set(f * m / 100);
+}
+
+/* Glass transparency from a tap/drag x within its bar, in steps of 5; the
+ * page re-renders with it while dragging, the conf is written on release. */
+static void set_glass_x(int x, int bx, int bw)
+{
+    if (bw <= 0) return;
+    g_glass = clampi(((x - bx) * 100 / bw + 2) / 5 * 5, 0, 100);
+    apply_glass();
+    invalidate_render_html_cache();
 }
 
 /* ---- auto brightness (TopFlow): the ambient light sensor, through datad ----
@@ -6985,6 +7129,7 @@ int main(void)
     #define CUR_PATH (g_lock_state == 1 ? g_pages[0] : g_lock_state ? lock_path : menu ? menu_path : active_page_path())
 
     load_conf();                          /* restore persisted UI settings */
+    html_view_set_text_adapt(g_text_adapt);
     (void)wallpaper_poll();
     mkdir(FUNCTIONS_DIR, 0755);
     speedtest_apply_saved_prefs();
@@ -7418,6 +7563,13 @@ int main(void)
                     render(&disp, CUR_PATH);
                     last_motion_frame = now;
                     animating = 1;
+                } else if (html_view_rect("#glass-bar", &bx, &by, &bw, &bh) &&
+                           x >= bx && x < bx + bw && y >= by - 5 && y < by + bh + 5) {
+                    sliding = 2; bar_x = bx; bar_w = bw;   /* glass transparency */
+                    set_glass_x(x, bx, bw);
+                    render(&disp, CUR_PATH);
+                    last_motion_frame = now;
+                    animating = 1;
                 } else {   /* segmented controls: net mode / auto-off / refresh */
                     int which = 0, n = 4;
                     if (html_view_rect("#netseg", &bx, &by, &bw, &bh) &&
@@ -7440,7 +7592,8 @@ int main(void)
             }
             else if (pressed && dragging && !menu) {
                 if (sliding) {
-                    set_bright_x(x, bar_x, bar_w);
+                    if (sliding == 2) set_glass_x(x, bar_x, bar_w);
+                    else              set_bright_x(x, bar_x, bar_w);
                     if (motion_frame_due(now, &last_motion_frame)) {
                         render(&disp, CUR_PATH);
                         animating = 1;
@@ -7538,6 +7691,7 @@ int main(void)
                         animating = 1;
                     }
                 }
+                else if (sliding == 2) wallpaper_save();   /* persist glass after drag */
                 else if (sliding) { save_conf(); /* persist brightness after drag */ }
                 else if (segging) {   /* snap to nearest cell + apply */
                     int c = clampi((x - seg_x) * seg_n / (seg_w > 0 ? seg_w : 1), 0, seg_n - 1);
@@ -7643,6 +7797,7 @@ int main(void)
                         else if (!strcmp(a, "theme")) {
                             g_theme = (g_theme + 1) % NTHEMES;
                             save_conf();
+                            apply_glass();                    /* the "主题" glass colour follows */
                             snprintf(g_toast, sizeof g_toast, "主题：%s", g_themes[g_theme].name);
                             g_toast_until = now + 1600;
                             need_render = 1;
@@ -7664,6 +7819,29 @@ int main(void)
                         }
                         else if (!strcmp(a, "spunit"))    { g_speed_bits = !g_speed_bits; save_conf(); need_render = 1; }
                         else if (!strcmp(a, "batpct"))    { g_show_batpct = !g_show_batpct; save_conf(); need_render = 1; }
+                        else if (!strcmp(a, "sbspeed"))   { g_show_sbspeed = !g_show_sbspeed; save_conf(); need_render = 1; }
+                        else if (!strcmp(a, "textadapt")) {
+                            g_text_adapt = !g_text_adapt;
+                            html_view_set_text_adapt(g_text_adapt);
+                            save_conf();
+                            invalidate_render_html_cache();
+                            need_render = 1;
+                        }
+                        else if (!strcmp(a, "glass")) {     /* tap position on the bar = transparency */
+                            int bx, by, bw, bh;
+                            if (html_view_rect("#glass-bar", &bx, &by, &bw, &bh) && bw > 0) {
+                                set_glass_x(x, bx, bw);
+                                wallpaper_save();
+                            }
+                            invalidate_render_html_cache();
+                            need_render = 1;
+                        }
+                        else if (!strncmp(a, "glasstint:", 10)) {
+                            g_glass_tint = clampi(atoi(a + 10), 0, NTINTS - 1);
+                            wallpaper_save();
+                            invalidate_render_html_cache();
+                            need_render = 1;
+                        }
                         else if (!strcmp(a, "nfc")) {
                             static devui_data_t dd; char cmd[120];
                             int on = (data_refresh_live(&dd) && dd.nfc_switch) ? 0 : 1;
