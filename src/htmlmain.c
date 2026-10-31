@@ -65,6 +65,11 @@ extern void        html_view_draw_text_contrast_px(int x, int y, const char *tex
                                                    int dr, int dg, int db, int lr, int lg, int lb, int a);
 extern int         html_view_render_tall(uint16_t *buf, const char *html, int bufh);
 extern int         html_view_render_overlay(const char *html);
+extern int         html_view_load_wallpaper(const char *path, int dim);
+extern int         html_view_wallpaper_on(void);
+extern int         html_view_wallpaper_rect(int x, int y, int w, int h);
+extern void        html_view_set_glass(int clear);
+extern void        html_view_glass_rect(int x, int y, int w, int h, int rad);
 static void        maybe_dump_fb(drm_disp_t *d);
 
 /* Install directory: the folder the binary runs from when it holds ui/, else
@@ -81,6 +86,7 @@ static char g_app_dir[160] = DEVUI_DEFAULT_DIR;
 static char g_ui_dir[176];
 static char g_functions_dir[192];
 static char g_device_file[192], g_conf_file[192], g_signal_cache_file[192], g_lockpin_file[192];
+static char g_wp_file[192], g_wp_conf_file[192];
 #define UI_DIR g_ui_dir
 #define FUNCTIONS_DIR g_functions_dir
 
@@ -110,6 +116,8 @@ static void paths_init(void)
     snprintf(g_conf_file, sizeof g_conf_file, "%s/devui.conf", g_app_dir);
     snprintf(g_signal_cache_file, sizeof g_signal_cache_file, "%s/signal.cache", g_app_dir);
     snprintf(g_lockpin_file, sizeof g_lockpin_file, "%s/.lockpin", g_ui_dir);
+    snprintf(g_wp_file, sizeof g_wp_file, "%s/wallpaper.jpg", g_app_dir);
+    snprintf(g_wp_conf_file, sizeof g_wp_conf_file, "%s/wallpaper.conf", g_app_dir);
 }
 #define UI_FONT "/usr/ui/fonts/ZTEZhengYuan.ttf"
 
@@ -242,7 +250,8 @@ static int device_update(const char *model_tag)
 static const char *theme_body_class(void)
 {
     static char cls[64];
-    snprintf(cls, sizeof cls, "dark %s dev-%s", g_themes[g_theme].cls, dev_tag());
+    snprintf(cls, sizeof cls, "dark %s dev-%s%s", g_themes[g_theme].cls, dev_tag(),
+             html_view_wallpaper_on() ? " wp" : "");
     return cls;
 }
 static int  g_show_batpct = 1; /* show percent text inside status battery */
@@ -619,6 +628,31 @@ static long long file_mtime_ns(const char *path)
     struct stat st;
     if (stat(path, &st) != 0) return -1;
     return (long long)st.st_mtime * 1000000000LL + (long long)st.st_mtim.tv_nsec;
+}
+
+/* Wallpaper and glass, both set from the plugin: wallpaper.jpg (any format
+ * stb_image reads) and wallpaper.conf ("glass=" transparency 0-100, "dim="
+ * wallpaper darkening 0-90) next to the binary. Reloaded when either changes;
+ * returns 1 then. */
+static long long g_wp_stamp = -2;
+static int wallpaper_poll(void)
+{
+    long long stamp = file_mtime_ns(g_wp_file) * 31 + file_mtime_ns(g_wp_conf_file);
+    int glass = 50, dim = 30, v;
+    char line[64];
+    if (stamp == g_wp_stamp) return 0;
+    g_wp_stamp = stamp;
+    FILE *fp = fopen(g_wp_conf_file, "r");
+    if (fp) {
+        while (fgets(line, sizeof line, fp)) {
+            if (sscanf(line, "glass=%d", &v) == 1) glass = v;
+            else if (sscanf(line, "dim=%d", &v) == 1) dim = v;
+        }
+        fclose(fp);
+    }
+    html_view_set_glass(glass);
+    html_view_load_wallpaper(access(g_wp_file, R_OK) == 0 ? g_wp_file : NULL, dim);
+    return 1;
 }
 
 static long long ui_scan_mtime_ns(void)
@@ -2438,8 +2472,7 @@ static void draw_lock_icon(void)
     const float cx = (float)x + 24.f, cy = (float)y + h / 2.f + 1.f;
     int tw = html_view_text_width_px(hint, 14);
 
-    html_view_fill_round_rect(x, y, w, h, h / 2, RGB3(C_BAR), 255);
-    html_view_fill_round_rect(x, y, w, h, h / 2, RGB3(C_TXT), 30);
+    html_view_glass_rect(x, y, w, h, h / 2);
     if (g_lock_hold > 0)
         html_view_fill_round_rect(x, y, w * g_lock_hold / 100 < h ? h : w * g_lock_hold / 100, h, h / 2,
                                   RGB3(theme_a()), 200);
@@ -2502,8 +2535,10 @@ static void draw_native_statusbar(void)
 {
     const unsigned bad = C_BAD, ok = C_OK;
 
-    html_view_fill_rect(0, 0, 320, 26, RGB3(C_BAR), 255);
-    html_view_fill_rect(0, 25, 320, 1, RGB3(C_TXT), 14);              /* hairline */
+    if (!html_view_wallpaper_rect(0, 0, 320, 26)) {                    /* over the wallpaper, or */
+        html_view_fill_rect(0, 0, 320, 26, RGB3(C_BAR), 255);
+        html_view_fill_rect(0, 25, 320, 1, RGB3(C_TXT), 14);          /* bar + hairline */
+    }
     html_view_draw_text_px(SBAR_TIME_X, sbar_text_y(16), g_stat_time, 16, 0, RGB3(C_TXT), 255);
 
     /* battery: 23x12 outline + tip */
@@ -5847,7 +5882,8 @@ static void pm_glyph(const char *sel, int kind, unsigned col)
         html_view_fill_circle(cx, cy, rad + 5.f, RGB3(col), 70);   /* soft halo */
         html_view_fill_circle(cx, cy, rad, RGB3(col), 255);
     } else {
-        html_view_fill_circle(cx, cy, rad, RGB3(C_TXT), 22);
+        html_view_glass_rect(x + (w - (int)(2.f * rad)) / 2, y + (h - (int)(2.f * rad)) / 2,
+                             (int)(2.f * rad), (int)(2.f * rad), (int)rad);
         html_view_arc(cx, cy, rad - 1.f, 1.6f, 0.f, 360.f, RGB3(col), 110);
     }
     if (kind == 0) {                         /* power: open ring + bar through the gap */
@@ -6580,8 +6616,15 @@ static void scroll_blit(drm_disp_t *d, int scroll)
     draw_func_icons();
     html_view_set_clip_top(0);
     if (!g_lock_state && (path_is_speedtest(active_page_path()) || g_st_home_open)) draw_speedtest_widgets();
-    /* The native status bar is pinned; dragging only changes the content below it. */
-    fb_dirty_rows(d, SBAR_H, Hh - 1);
+    /* The native status bar is pinned; dragging only changes the content below
+     * it, unless the bar shows the wallpaper, which moves with the page. */
+    if (html_view_wallpaper_on()) {
+        draw_native_statusbar();
+        draw_sms_icon();
+        fb_dirty_rows(d, 0, Hh - 1);
+    } else {
+        fb_dirty_rows(d, SBAR_H, Hh - 1);
+    }
 }
 
 /* fb snapshot for fast overlay refresh (modal toggles, segmented-control drag):
@@ -6942,6 +6985,7 @@ int main(void)
     #define CUR_PATH (g_lock_state == 1 ? g_pages[0] : g_lock_state ? lock_path : menu ? menu_path : active_page_path())
 
     load_conf();                          /* restore persisted UI settings */
+    (void)wallpaper_poll();
     mkdir(FUNCTIONS_DIR, 0755);
     speedtest_apply_saved_prefs();
     speedtest_poll(millis());
@@ -8076,6 +8120,10 @@ action_done:
                 need_render = 1;
             }
             if (rescan_pages_if_changed()) need_render = 1;
+            if (wallpaper_poll()) {
+                invalidate_render_html_cache();
+                need_render = 1;
+            }
             als_sync();                       /* picks up a late model detection too */
         }
         if (backlight_is_on()) als_poll(now);

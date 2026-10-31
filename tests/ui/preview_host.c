@@ -75,6 +75,14 @@ int main(int argc, char **argv)
     g_panel_rot = 0;            /* shots are taken from the logical, unrotated frame */
     html_view_init(disp.fb, disp.width, disp.height, disp.pitch_px, 0, resolve_ui_font());
     html_view_set_uidir(UI_DIR);
+    {   /* DEVUI_PREVIEW_WALLPAPER=DIR: DIR/wallpaper.jpg and DIR/wallpaper.conf */
+        const char *wd = getenv("DEVUI_PREVIEW_WALLPAPER");
+        if (wd && wd[0]) {
+            snprintf(g_wp_file, sizeof g_wp_file, "%s/wallpaper.jpg", wd);
+            snprintf(g_wp_conf_file, sizeof g_wp_conf_file, "%s/wallpaper.conf", wd);
+        }
+        (void)wallpaper_poll();
+    }
     (void)data_backend_init();
     (void)data_backend_commit_latest();
     if (device_update(data_model_tag())) scan_pages();   /* model from the sample state */

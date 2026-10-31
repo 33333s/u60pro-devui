@@ -115,6 +115,7 @@ static float round_cov(int x, int y, int fx, int fy, int fw, int fh,
 }
 
 static inline int cov_alpha(float cov, int a) { return (int)(cov * (float)a + .5f); }
+static inline float clampf01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
 
 /* ---- FreeType ---- */
 static FT_Library g_ft;
@@ -266,6 +267,167 @@ static int text_advance(const char *text, int size)
  * together instead of truncating to different rows. */
 static inline int R(pixel_t v) { return (int)floorf(v + 0.5f); }
 
+/* ---- wallpaper and liquid glass ----
+ * The wallpaper is cover-scaled to the 320x480 page once and kept twice: dimmed
+ * RGB565 for the page background and a blurred RGB copy that glass boxes show
+ * through. It is attached to the page, so it scrolls with it; past one screen
+ * it continues mirrored. CSS asks for it with url(wallpaper) and for a glass box
+ * with url(glass) (see style.css). */
+extern "C" unsigned char *stbi_load(const char *filename, int *x, int *y, int *comp, int req_comp);
+extern "C" void stbi_image_free(void *retval_from_stbi_load);
+
+enum { WP_W = 320, WP_H = 480 };
+static std::vector<uint16_t> g_wp;      /* WP_W*WP_H dimmed, dithered */
+static std::vector<uint8_t>  g_wp_blur; /* WP_W*WP_H*3 dimmed, blurred */
+static int  g_glass_clear = 50;         /* glass transparency, 0 (solid) .. 100 (clear) */
+static bool g_wp_drawn;                 /* the current page painted the wallpaper */
+static int  g_wp_top;                   /* screen y of wallpaper row 0 on that page */
+
+/* Wallpaper row for page row y: rows past the image mirror back. */
+static inline int wp_row(int y)
+{
+    y %= 2 * WP_H;
+    if (y < 0) y += 2 * WP_H;
+    return y < WP_H ? y : 2 * WP_H - 1 - y;
+}
+
+/* One pass of a running-sum box blur of radius r along n samples spaced
+ * `step` apart (edge samples repeat). */
+static void box_blur_line(uint8_t *p, int n, int step, int r, std::vector<int> &tmp)
+{
+    tmp.resize((size_t)n);
+    int sum = 0, win = 2 * r + 1;
+    for (int i = -r; i <= r; i++) sum += p[(size_t)std::min(std::max(i, 0), n - 1) * step];
+    for (int i = 0; i < n; i++) {
+        tmp[(size_t)i] = sum;
+        sum += p[(size_t)std::min(i + r + 1, n - 1) * step] - p[(size_t)std::max(i - r, 0) * step];
+    }
+    for (int i = 0; i < n; i++) p[(size_t)i * step] = (uint8_t)((tmp[(size_t)i] + win / 2) / win);
+}
+
+/* Load (or with a NULL path, drop) the wallpaper. dim: 0..90 percent darker.
+ * Returns 1 when a wallpaper is in use. */
+extern "C" int html_view_load_wallpaper(const char *path, int dim)
+{
+    g_wp.clear();
+    g_wp_blur.clear();
+    if (!path) return 0;
+    int iw = 0, ih = 0, comp = 0;
+    unsigned char *img = stbi_load(path, &iw, &ih, &comp, 3);
+    if (!img) {
+        fprintf(stderr, "html_view: cannot load wallpaper %s\n", path);
+        return 0;
+    }
+    /* cover: scale so both sides fill the page, crop the overflow evenly */
+    float s = std::max((float)WP_W / (float)iw, (float)WP_H / (float)ih);
+    float ox = ((float)iw - (float)WP_W / s) * .5f, oy = ((float)ih - (float)WP_H / s) * .5f;
+    int keep = 100 - std::min(std::max(dim, 0), 90);
+    std::vector<uint8_t> rgb((size_t)WP_W * WP_H * 3);
+    for (int y = 0; y < WP_H; y++) {
+        int sy0 = (int)(oy + (float)y / s), sy1 = std::max(sy0 + 1, (int)(oy + (float)(y + 1) / s));
+        sy0 = std::min(std::max(sy0, 0), ih - 1);
+        sy1 = std::min(sy1, ih);
+        for (int x = 0; x < WP_W; x++) {
+            /* average the source pixels under this one (one of them when enlarging) */
+            int sx0 = (int)(ox + (float)x / s), sx1 = std::max(sx0 + 1, (int)(ox + (float)(x + 1) / s));
+            sx0 = std::min(std::max(sx0, 0), iw - 1);
+            sx1 = std::min(sx1, iw);
+            unsigned acc[3] = { 0, 0, 0 }, n = 0;
+            for (int yy = sy0; yy < sy1; yy++)
+                for (int xx = sx0; xx < sx1; xx++, n++) {
+                    const unsigned char *p = img + ((size_t)yy * iw + xx) * 3;
+                    acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2];
+                }
+            uint8_t *o = &rgb[((size_t)y * WP_W + x) * 3];
+            for (int c = 0; c < 3; c++) o[c] = (uint8_t)(acc[c] / (n ? n : 1) * keep / 100);
+        }
+    }
+    stbi_image_free(img);
+
+    g_wp.resize((size_t)WP_W * WP_H);
+    for (int y = 0; y < WP_H; y++)
+        for (int x = 0; x < WP_W; x++) {
+            const uint8_t *p = &rgb[((size_t)y * WP_W + x) * 3];
+            g_wp[(size_t)y * WP_W + x] = dither565(x, y, p[0], p[1], p[2]);
+        }
+    /* three box passes each way approximate a Gaussian of about 12 px */
+    std::vector<int> tmp;
+    for (int pass = 0; pass < 3; pass++)
+        for (int c = 0; c < 3; c++) {
+            for (int y = 0; y < WP_H; y++) box_blur_line(&rgb[(size_t)y * WP_W * 3 + c], WP_W, 3, 7, tmp);
+            for (int x = 0; x < WP_W; x++) box_blur_line(&rgb[(size_t)x * 3 + c], WP_H, WP_W * 3, 7, tmp);
+        }
+    g_wp_blur = std::move(rgb);
+    return 1;
+}
+
+extern "C" int  html_view_wallpaper_on(void) { return !g_wp.empty(); }
+extern "C" void html_view_set_glass(int clear) { g_glass_clear = std::min(std::max(clear, 0), 100); }
+
+/* Distance of the centre of pixel (x, y) inside a rounded rect (negative
+ * outside) and the outward normal of the nearest edge. */
+static float round_dist(int x, int y, int fx, int fy, int fw, int fh,
+                        int rtl, int rtr, int rbr, int rbl, float *nx, float *ny)
+{
+    float hw = fw * .5f, hh = fh * .5f;
+    float px = (float)x + .5f - ((float)fx + hw), py = (float)y + .5f - ((float)fy + hh);
+    float r = (float)(py < 0.f ? (px < 0.f ? rtl : rtr) : (px < 0.f ? rbl : rbr));
+    if (r > hw) r = hw;
+    if (r > hh) r = hh;
+    float sx = px < 0.f ? -1.f : 1.f, sy = py < 0.f ? -1.f : 1.f;
+    float qx = std::fabs(px) - (hw - r), qy = std::fabs(py) - (hh - r);
+    if (qx > 0.f && qy > 0.f) {
+        float l = std::sqrt(qx * qx + qy * qy);
+        *nx = sx * qx / l; *ny = sy * qy / l;
+        return r - l;
+    }
+    if (qx > qy) { *nx = sx; *ny = 0.f; return r - qx; }
+    *nx = 0.f; *ny = sy;
+    return r - qy;
+}
+
+/* Paint a liquid-glass box: what lies under it, blurred (the wallpaper) and
+ * bent inward near the rim like a lens, washed toward a dark pane by the
+ * opacity, with a light rim lit from above. Without a wallpaper the page under
+ * the box is a smooth gradient, so it is used as is. */
+static void glass_box(int bx, int by, int bw, int bh, int rtl, int rtr, int rbr, int rbl,
+                      int x1, int y1, int x2, int y2)
+{
+    if (bw <= 0 || bh <= 0) return;
+    x1 = std::max(x1, bx); y1 = std::max(y1, by);
+    x2 = std::min(x2, bx + bw); y2 = std::min(y2, by + bh);
+    const bool wp = g_wp_drawn && !g_wp_blur.empty();
+    const float pane = (float)(100 - g_glass_clear) / 100.f;   /* share of the pane colour */
+    const float lens = std::min(10.f, std::min(bw, bh) * .35f);
+    for (int y = y1; y < y2; y++)
+        for (int x = x1; x < x2; x++) {
+            float nx, ny, d = round_dist(x, y, bx, by, bw, bh, rtl, rtr, rbr, rbl, &nx, &ny);
+            float cov = clampf01(d + .5f);
+            if (cov <= 0.f) continue;
+            float r, g, b;
+            if (wp) {
+                float k = d < lens ? (1.f - d / lens) : 0.f;
+                int sx = x - (int)lrintf(nx * 7.f * k * k), sy = y - (int)lrintf(ny * 7.f * k * k);
+                sx = std::min(std::max(sx, 0), WP_W - 1);
+                const uint8_t *p = &g_wp_blur[((size_t)wp_row(sy - g_wp_top) * WP_W + sx) * 3];
+                r = p[0]; g = p[1]; b = p[2];
+            } else {
+                uint16_t o = get_px565(x, y);
+                r = (float)(((o >> 11) & 0x1F) << 3); g = (float)(((o >> 5) & 0x3F) << 2); b = (float)((o & 0x1F) << 3);
+            }
+            /* the pane, then a faint frost so even clear glass reads as a surface */
+            r += (22.f - r) * pane; g += (30.f - g) * pane; b += (44.f - b) * pane;
+            r += (255.f - r) * .06f; g += (255.f - g) * .06f; b += (255.f - b) * .06f;
+            /* rim: about 1.5 px, brightest where the edge faces up */
+            float rim = clampf01(1.5f - d) * (.10f + .32f * std::max(0.f, -ny) + .06f * std::max(0.f, -nx));
+            /* sheen over the top third */
+            float top = (float)(y - by) / ((float)bh * .34f);
+            if (top < 1.f) rim += .05f * (1.f - top);
+            r += (255.f - r) * rim; g += (255.f - g) * rim; b += (255.f - b) * rim;
+            put_px_dither(x, y, (int)r, (int)g, (int)b, cov_alpha(cov, 255));
+        }
+}
+
 /* ---- container ---- */
 class fb_container : public document_container {
     std::vector<position> m_clip;
@@ -366,23 +528,27 @@ public:
 
     void draw_text(uint_ptr, const char *text, uint_ptr h, web_color color, const position &pos) override {
         auto *f = (ft_font *)h;
-        int pen = R(pos.x);
-        int base = R(pos.y) + f->ascent;
         position cl = eff_clip();
-        for (const char *s = text; *s; ) {
-            const glyph &gl = glyph_get(utf8_next(s), f->size);
-            int ox = pen + gl.left, oy = base - gl.top;
-            for (int r = 0; r < gl.h; r++) {
-                int yy = oy + r;
-                if (yy < R(cl.top()) || yy >= R(cl.bottom())) continue;
-                for (int cx = 0; cx < gl.w; cx++) {
-                    int xx = ox + cx;
-                    if (xx < R(cl.left()) || xx >= R(cl.right())) continue;
-                    int a = gl.px[(size_t)r * gl.w + cx];
-                    if (a) put_px(xx, yy, color.red, color.green, color.blue, a * color.alpha / 255);
+        /* over a wallpaper, a soft shadow one pixel down keeps text readable on light spots */
+        for (int pass = g_wp_drawn ? 0 : 1; pass < 2; pass++) {
+            int pen = R(pos.x), base = R(pos.y) + f->ascent + (pass ? 0 : 1);
+            int cr = pass ? color.red : 0, cg = pass ? color.green : 0, cb = pass ? color.blue : 0;
+            int ca = pass ? color.alpha : color.alpha * 2 / 5;
+            for (const char *s = text; *s; ) {
+                const glyph &gl = glyph_get(utf8_next(s), f->size);
+                int ox = pen + gl.left, oy = base - gl.top;
+                for (int r = 0; r < gl.h; r++) {
+                    int yy = oy + r;
+                    if (yy < R(cl.top()) || yy >= R(cl.bottom())) continue;
+                    for (int cx = 0; cx < gl.w; cx++) {
+                        int xx = ox + cx;
+                        if (xx < R(cl.left()) || xx >= R(cl.right())) continue;
+                        int a = gl.px[(size_t)r * gl.w + cx];
+                        if (a) put_px(xx, yy, cr, cg, cb, a * ca / 255);
+                    }
                 }
+                pen += gl.adv;
             }
-            pen += gl.adv;
         }
     }
 
@@ -520,10 +686,40 @@ public:
 
     void draw_list_marker(uint_ptr, const list_marker &) override {}
 
-    /* images: not supported (the example uses none) */
+    /* Images: only the two built-in backgrounds, url(wallpaper) and
+     * url(glass). They size themselves to the box, so any size will do. */
     void load_image(const char *, const char *, bool) override {}
-    void get_image_size(const char *, const char *, size &sz) override { sz.width = sz.height = 0; }
-    void draw_image(uint_ptr, const background_layer &, const std::string &, const std::string &) override {}
+    void get_image_size(const char *src, const char *, size &sz) override {
+        bool ours = src && (!strcmp(src, "wallpaper") || !strcmp(src, "glass"));
+        sz.width = sz.height = ours ? 1 : 0;
+    }
+    void draw_image(uint_ptr, const background_layer &l, const std::string &url, const std::string &) override {
+        const position &b = l.border_box;
+        position cl = eff_clip();
+        int x1 = std::max(R(cl.left()), R(l.clip_box.left())), y1 = std::max(R(cl.top()), R(l.clip_box.top()));
+        int x2 = std::min(R(cl.right()), R(l.clip_box.right())), y2 = std::min(R(cl.bottom()), R(l.clip_box.bottom()));
+        if (url == "glass") {
+            const border_radiuses &br = l.border_radius;
+            glass_box(R(b.left()), R(b.top()), R(b.right()) - R(b.left()), R(b.bottom()) - R(b.top()),
+                      (int)br.top_left_x, (int)br.top_right_x, (int)br.bottom_right_x, (int)br.bottom_left_x,
+                      x1, y1, x2, y2);
+        } else if (url == "wallpaper" && !g_wp.empty()) {
+            int bx = R(b.left());
+            g_wp_drawn = true;
+            g_wp_top = R(b.top());
+            x1 = std::max(x1, bx); x2 = std::min(x2, bx + WP_W);
+            y1 = std::max({ y1, R(b.top()), g_clip_top }); y2 = std::min(y2, R(b.bottom()));
+            for (int y = y1; y < y2; y++) {
+                const uint16_t *src = &g_wp[(size_t)wp_row(y - g_wp_top) * WP_W + (x1 - bx)];
+                if (g_rotate) {
+                    uint16_t *dp = &g_fb[(g_h - 1 - y) * g_pitch_px + (g_w - 1 - x1)];
+                    for (int i = 0; i < x2 - x1; i++) *dp-- = src[i];
+                } else if (x2 > x1) {
+                    memcpy(&g_fb[y * g_pitch_px + x1], src, (size_t)(x2 - x1) * sizeof(uint16_t));
+                }
+            }
+        }
+    }
 
     void set_clip(const position &pos, const border_radiuses &) override { m_clip.push_back(pos); }
     void del_clip() override { if (!m_clip.empty()) m_clip.pop_back(); }
@@ -585,6 +781,7 @@ extern "C" int html_view_render_html(const char *html)
 
     g_doc = doc;
     g_doc_overlay = 0;
+    g_wp_drawn = false;
     g_doc->render((pixel_t)g_w);
     for (int i = 0; i < g_pitch_px * g_h; i++) g_fb[i] = 0;
     position clip(0, 0, (pixel_t)g_w, (pixel_t)g_h);
@@ -724,8 +921,6 @@ extern "C" void html_view_fill_poly(const int *xs, const int *ys, int n, int r, 
     }
 }
 
-static inline float clampf01(float v) { return v < 0.f ? 0.f : (v > 1.f ? 1.f : v); }
-
 /* Anti-aliased filled circle (coverage from the signed distance to the edge). */
 extern "C" void html_view_fill_circle(float cx, float cy, float rad, int r, int g, int b, int a)
 {
@@ -814,6 +1009,27 @@ extern "C" void html_view_fill_round_rect(int x, int y, int w, int h, int rad, i
         }
 }
 
+/* Native glass box (host overlays: lock pill, power discs); a circle when
+ * rad is half the side. */
+extern "C" void html_view_glass_rect(int x, int y, int w, int h, int rad)
+{
+    glass_box(x, y, w, h, rad, rad, rad, rad, 0, std::max(0, g_clip_top), g_w, g_h);
+}
+
+/* The wallpaper behind the native status bar, continuing the page under it at
+ * the current scroll. Returns 0 (drawing nothing) when the page has none. */
+extern "C" int html_view_wallpaper_rect(int x, int y, int w, int h)
+{
+    if (g_wp.empty() || !g_wp_drawn) return 0;
+    for (int yy = std::max(y, 0); yy < std::min(y + h, g_h); yy++)
+        for (int xx = std::max(x, 0); xx < std::min(x + w, std::min(g_w, (int)WP_W)); xx++) {
+            uint16_t px = g_wp[(size_t)wp_row(yy + g_scroll_y) * WP_W + xx];
+            int dx = g_rotate ? (g_w - 1 - xx) : xx, dy = g_rotate ? (g_h - 1 - yy) : yy;
+            g_fb[dy * g_pitch_px + dx] = px;
+        }
+    return 1;
+}
+
 extern "C" int html_view_text_width_px(const char *text, int size)
 {
     if (!g_face || !text) return 0;
@@ -857,18 +1073,21 @@ extern "C" void html_view_draw_text_px(int x, int y, const char *text, int size,
                                        int r, int g, int b, int a)
 {
     if (!g_face || !text) return;
-    int pen = x, base = y + font_ascent(size);
-    for (const char *s = text; *s; ) {
-        const glyph &gl = glyph_get(utf8_next(s), size);
-        for (int pass = 0; pass < (bold ? 2 : 1); pass++) {
-            int ox = pen + gl.left + pass, oy = base - gl.top;
-            for (int row = 0; row < gl.h; row++)
-                for (int col = 0; col < gl.w; col++) {
-                    int aa = gl.px[(size_t)row * gl.w + col];
-                    if (aa) put_px(ox + col, oy + row, r, g, b, aa * a / 255);
-                }
+    for (int sh = g_wp_drawn ? 1 : 0; sh >= 0; sh--) {   /* shadow first, as in draw_text */
+        int pen = x, base = y + font_ascent(size) + sh;
+        int cr = sh ? 0 : r, cg = sh ? 0 : g, cb = sh ? 0 : b, ca = sh ? a * 2 / 5 : a;
+        for (const char *s = text; *s; ) {
+            const glyph &gl = glyph_get(utf8_next(s), size);
+            for (int pass = 0; pass < (bold ? 2 : 1); pass++) {
+                int ox = pen + gl.left + pass, oy = base - gl.top;
+                for (int row = 0; row < gl.h; row++)
+                    for (int col = 0; col < gl.w; col++) {
+                        int aa = gl.px[(size_t)row * gl.w + col];
+                        if (aa) put_px(ox + col, oy + row, cr, cg, cb, aa * ca / 255);
+                    }
+            }
+            pen += gl.adv;
         }
-        pen += gl.adv;
     }
 }
 

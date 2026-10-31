@@ -3,6 +3,7 @@
 # usage: bash tests/ui/preview.sh OUT_DIR [theme: 0 dark, 1 light] [state.json]
 # Needs gcc/g++, git, python3 with Pillow, and a CJK font (DEVUI_FONT, default
 # Noto Sans CJK). The device font differs, so line breaks can shift slightly.
+# DEVUI_PREVIEW_WALLPAPER=DIR renders with DIR/wallpaper.jpg and wallpaper.conf.
 set -e
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
