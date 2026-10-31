@@ -7,7 +7,12 @@
              ok #4ADE80     warn #FBBF24  bad #F87171
    Accents   ocean  #38D0FF / #FF7AC8    aurora #4ADE80 / #FFC857
              sunset #FF9F43 / #6C8CFF    violet #A78BFA / #2DD4BF
-   The status bar is drawn natively in #070C15, the edge colour of the page glow. */
+   The status bar is drawn natively in #070C15, the edge colour of the page glow.
+
+   Wallpaper and glass: with a wallpaper set in the plugin, <body> also carries
+   "wp" and url(wallpaper) paints it. url(glass) as a background makes a box
+   liquid glass (the wallpaper or page under it, blurred, tinted to the
+   plugin's transparency, with a lit rim); its border stays transparent. */
 
 html, body { margin: 0; padding: 0; }
 body {
@@ -19,6 +24,8 @@ body.th-ocean  { background: radial-gradient(circle at 50% 200px, #19344c 0%, #0
 body.th-aurora { background: radial-gradient(circle at 50% 200px, #1a353f 0%, #0c1722 55%, #070c15 80%); }
 body.th-sunset { background: radial-gradient(circle at 50% 200px, #2d2f39 0%, #121521 55%, #070c15 80%); }
 body.th-violet { background: radial-gradient(circle at 50% 200px, #242d4c 0%, #0f1427 55%, #070c15 80%); }
+body.wp { background: #070c15 url(wallpaper); }
+.wp .sbar { background: transparent; }
 
 /* ---- accents: filled controls (dark text on the accent) ---- */
 .th-ocean  .seg-on, .th-ocean  .aoff-on, .th-ocean  .bchip-on, .th-ocean  .mbtn2, .th-ocean  .stsegc.on, .th-ocean  .stbtn { background: #38d0ff; border-color: #38d0ff; color: #0b1220; }
@@ -76,7 +83,7 @@ body.th-violet { background: radial-gradient(circle at 50% 200px, #242d4c 0%, #0
 
 /* ---- cards: translucent glass ---- */
 .card { margin: 8px 10px 0; border-radius: 16px; padding: 9px 12px; overflow: hidden;
-        background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); }
+        background: url(glass); border: 1px solid transparent; }
 .card.hsrmode { border-color: rgba(167,139,250,0.55); box-shadow: inset 3px 0 0 #a78bfa;
                 background: linear-gradient(145deg, rgba(139,92,246,0.30), rgba(76,29,149,0.18)); }
 .card.hsrmode .title { color: #f5f3ff; }
@@ -126,7 +133,7 @@ a.rev.r { float: right; }
 .home-facts { margin: 16px 10px 0; font-size: 0; text-align: center; }
 .home-fact { display: inline-block; box-sizing: border-box; width: 145px; margin: 0 2px; padding: 8px 4px; vertical-align: top;
              white-space: nowrap; overflow: hidden;
-             border-radius: 14px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); }
+             border-radius: 14px; background: url(glass); border: 1px solid transparent; }
 .home-fact .fk { display: block; font-size: 11px; color: #93a4b8; }
 .home-fact .fv { display: block; margin-top: 2px; font-size: 13px; font-weight: 700; }
 
@@ -331,14 +338,14 @@ body.mo { background: transparent; }
 
 /* optional speedtest entry */
 .speed-home { display: block; margin: 8px 10px 0; padding: 13px 10px; border-radius: 16px; text-align: center; text-decoration: none; font-size: 17px; font-weight: 800;
-              background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); color: #f2f6fa; }
+              background: url(glass); border: 1px solid transparent; color: #f2f6fa; }
 .speed-home.on { background: rgba(255,255,255,0.10); }
 
 /* ---- function list: icon circle, name + description, chevron ---- */
 .func-grid { padding: 4px 10px 0; }
 .func-tile { display: block; margin-top: 8px; padding: 8px 14px 8px 8px; border-radius: 28px;
              text-decoration: none; overflow: hidden; color: #f2f6fa;
-             background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); }
+             background: url(glass); border: 1px solid transparent; }
 .func-ic { float: left; width: 40px; height: 40px; line-height: 40px; margin-right: 12px;
            border-radius: 20px; text-align: center; font-size: 18px; font-weight: 800;
            background: rgba(255,255,255,0.10); }
@@ -349,7 +356,7 @@ body.mo { background: transparent; }
 /* ---- control center (pulled sheet): round toggles, icons drawn natively ---- */
 .cc-grid { padding: 10px 10px 2px; font-size: 0; text-align: center; }
 .ccb { display: inline-block; width: 75px; text-decoration: none; color: #f2f6fa; vertical-align: top; }
-.ccc { display: block; width: 56px; height: 56px; margin: 0 auto; border-radius: 28px; background: rgba(255,255,255,0.10); }
+.ccc { display: block; width: 56px; height: 56px; margin: 0 auto; border-radius: 28px; background: url(glass); }
 .ccl { display: block; margin-top: 6px; font-size: 12px; color: #c7d2de; white-space: nowrap; overflow: hidden; }
 .th-ocean  .ccb.on .ccc { background: #38d0ff; }
 .th-aurora .ccb.on .ccc { background: #4ade80; }
@@ -366,7 +373,7 @@ body.mo { background: transparent; }
 .subback { display: inline-block; box-sizing: border-box; min-width: 58px; height: 32px;
            line-height: 32px; margin-top: 5px; padding: 0 12px; border-radius: 16px;
            text-align: center; text-decoration: none; font-size: 14px; font-weight: 700;
-           vertical-align: top; background: rgba(255,255,255,0.08); color: #f2f6fa; }
+           vertical-align: top; background: url(glass); color: #f2f6fa; }
 .subname { position: absolute; left: 70px; right: 70px; top: 0; text-align: center;
            font-size: 17px; font-weight: 700; overflow: hidden; white-space: nowrap; }
 .custom-page { margin: 0; padding: 0; }
@@ -387,20 +394,20 @@ body.mo { background: transparent; }
 .pin-slots .ps { display: inline-block; width: 16px; height: 30px; margin: 0 9px;
                  line-height: 30px; text-align: center; vertical-align: middle; }
 /* empty slot: hollow ring (outer circle + page-coloured inner hole) */
-.ring { display: inline-block; width: 16px; height: 16px; border-radius: 50%;
-        background: #93a4b8; position: relative; vertical-align: middle; }
-.ring .ri { position: absolute; top: 3px; left: 3px; width: 10px; height: 10px; border-radius: 50%; background: #0e1828; }
+.ring { display: inline-block; box-sizing: border-box; width: 16px; height: 16px; border-radius: 50%;
+        border: 3px solid #93a4b8; vertical-align: middle; }
+.ring .ri { display: none; }
 .pin-slots .dot { display: inline-block; width: 16px; height: 16px; border-radius: 50%; vertical-align: middle; }
 .pin-del { display: inline-block; vertical-align: middle; margin-left: 16px; font-size: 14px;
            text-decoration: none; padding: 7px 14px; border-radius: 16px;
-           background: rgba(255,255,255,0.08); color: #f2f6fa; }
+           background: url(glass); color: #f2f6fa; }
 /* keypad: round keys */
 .keypad { width: 300px; margin: 16px auto 0; }
 .kprow { text-align: center; font-size: 0; margin-bottom: 10px; }
 .kpcell { display: inline-block; width: 98px; vertical-align: middle; }
 a.kp { display: inline-block; width: 66px; height: 66px; line-height: 65px; border-radius: 33px;
        font-size: 26px; font-weight: 700; text-decoration: none; vertical-align: middle;
-       background: rgba(255,255,255,0.08); color: #f2f6fa; }
+       background: url(glass); color: #f2f6fa; }
 a.kp.kpx { font-size: 15px; font-weight: 400; }   /* 取消 key */
 .lock-err { position: absolute; left: 48px; right: 48px; top: 210px; text-align: center;
             font-size: 16px; font-weight: 700; padding: 12px; border-radius: 22px;
@@ -420,7 +427,7 @@ a.kp.kpx { font-size: 15px; font-weight: 400; }   /* 取消 key */
 /* ---- speedtest ---- */
 .st-home-panel { margin: 0; padding: 0 0 10px; }
 .st-card { margin: 8px 10px 0; padding: 10px; border-radius: 16px; overflow: hidden;
-           background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); }
+           background: url(glass); border: 1px solid transparent; }
 .st-gauge { text-align: center; padding-top: 12px; }
 .st-gauge-dial { border-radius: 92px; overflow: hidden; }
 .st-gauge-sub { margin-top: 8px; font-size: 14px; color: #93a4b8; }
