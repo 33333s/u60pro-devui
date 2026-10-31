@@ -3,7 +3,7 @@
 <head><meta charset="UTF-8"><link rel="stylesheet" href="style.css"></head>
 <body class="{{THEME}}">
   {{STATUSBAR}}
-  <!-- glass settings: transparency and colour of url(glass) boxes; the page's own cards show the result -->
+  <!-- glass settings: transparency, blur and colour of url(glass) boxes; the page's own cards show the result -->
   <div class="subtop">
     <a href="act:backfunc" class="subback">返回</a>
     <span class="subname">玻璃效果</span>
@@ -12,6 +12,8 @@
   <div class="card">
     <div class="srow"><span>透明度</span><span class="sval">{{GLASS}}%</span></div>
     <a href="act:glass" id="glass-bar" class="slider"><span class="sfill" style="width:{{GLASS}}%"></span></a>
+    <div class="srow"><span>模糊程度</span><span class="sval">{{GLASSBLUR}}%</span></div>
+    <a href="act:glassblur" id="blur-bar" class="slider"><span class="sfill" style="width:{{GLASSBLUR}}%"></span></a>
     <div class="srow"><span>颜色</span></div>
     {{GLASSTINTSEG}}
   </div>
@@ -21,7 +23,7 @@
     <span class="home-fact"><span class="fk">颜色</span><span class="fv">{{GLASSTINT}}</span></span>
   </div>
 
-  <div class="custom-page"><p>壁纸和壁纸暗度在网页的屏幕管理插件里设置。</p></div>
+  <div class="custom-page"><p>模糊程度在设了壁纸时生效。壁纸和壁纸暗度在网页的屏幕管理插件里设置。</p></div>
   {{TOAST}}
 </body>
 </html>
